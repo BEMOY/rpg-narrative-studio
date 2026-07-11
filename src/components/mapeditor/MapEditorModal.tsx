@@ -123,6 +123,13 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
   const [renamingLayerId, setRenamingLayerId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Free-typing drafts for the canvas-size/grid-size inputs — clamping on every
+  // keystroke made it impossible to type e.g. "20" when the minimum is 8, since
+  // typing "2" alone would immediately get clamped up to 8 before "0" could follow.
+  // Clamping only happens once the value is committed (blur / Enter).
+  const [widthDraft, setWidthDraft] = useState(String(map.width));
+  const [heightDraft, setHeightDraft] = useState(String(map.height));
+  const [gridSizeDraft, setGridSizeDraft] = useState(String(map.gridSize));
   const [addColorDraft, setAddColorDraft] = useState({ color: "#888888", label: "" });
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const exportBtnRef = useRef<HTMLButtonElement>(null);
@@ -150,6 +157,17 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
   const zoneDragRef = useRef<{ id: string; startClientX: number; startClientY: number; startX: number; startY: number } | null>(
     null
   );
+
+  // Re-sync the size drafts from the real map state whenever the settings panel is
+  // (re)opened, so stale typed-but-not-committed text doesn't linger between opens.
+  useEffect(() => {
+    if (settingsOpen) {
+      setWidthDraft(String(map.width));
+      setHeightDraft(String(map.height));
+      setGridSizeDraft(String(map.gridSize));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settingsOpen]);
 
   // Autosave into the project — same "no Save button" convention as everywhere else in the Studio.
   useEffect(() => {
@@ -298,6 +316,22 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
   // ---- canvas settings ----
   const resizeCanvas = (patch: Partial<Pick<MapData, "width" | "height" | "gridSize">>) => {
     setMap((prev) => ({ ...cloneMap(prev), ...patch }), false);
+  };
+
+  const commitWidth = () => {
+    const n = clamp(parseInt(widthDraft, 10) || 1, 1, 200);
+    resizeCanvas({ width: n });
+    setWidthDraft(String(n));
+  };
+  const commitHeight = () => {
+    const n = clamp(parseInt(heightDraft, 10) || 1, 1, 200);
+    resizeCanvas({ height: n });
+    setHeightDraft(String(n));
+  };
+  const commitGridSize = () => {
+    const n = clamp(parseInt(gridSizeDraft, 10) || 8, 8, 128);
+    resizeCanvas({ gridSize: n });
+    setGridSizeDraft(String(n));
   };
 
   // ---- image layer ----
@@ -935,8 +969,10 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
                 min={1}
                 max={200}
                 className="input w-16 py-1"
-                value={map.width}
-                onChange={(e) => resizeCanvas({ width: clamp(Number(e.target.value) || 1, 1, 200) })}
+                value={widthDraft}
+                onChange={(e) => setWidthDraft(e.target.value)}
+                onBlur={commitWidth}
+                onKeyDown={(e) => e.key === "Enter" && (commitWidth(), (e.target as HTMLInputElement).blur())}
               />
             </label>
             <label className="flex items-center gap-1.5">
@@ -946,8 +982,10 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
                 min={1}
                 max={200}
                 className="input w-16 py-1"
-                value={map.height}
-                onChange={(e) => resizeCanvas({ height: clamp(Number(e.target.value) || 1, 1, 200) })}
+                value={heightDraft}
+                onChange={(e) => setHeightDraft(e.target.value)}
+                onBlur={commitHeight}
+                onKeyDown={(e) => e.key === "Enter" && (commitHeight(), (e.target as HTMLInputElement).blur())}
               />
             </label>
             <label className="flex items-center gap-1.5">
@@ -957,8 +995,10 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
                 min={8}
                 max={128}
                 className="input w-16 py-1"
-                value={map.gridSize}
-                onChange={(e) => resizeCanvas({ gridSize: clamp(Number(e.target.value) || 8, 8, 128) })}
+                value={gridSizeDraft}
+                onChange={(e) => setGridSizeDraft(e.target.value)}
+                onBlur={commitGridSize}
+                onKeyDown={(e) => e.key === "Enter" && (commitGridSize(), (e.target as HTMLInputElement).blur())}
               />
             </label>
           </div>
@@ -967,8 +1007,8 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
         <div className="flex-1 flex overflow-hidden">
           {/* Left rail: tools + layers + palette */}
           <ResizablePanel panelKey="map-editor-left" side="left" defaultWidth={250} min={180} max={420}>
-          <div className="border-r border-[var(--op-10)] flex flex-col overflow-y-auto h-full">
-            <div className="p-3 border-b border-[var(--op-10)]">
+          <div className="border-r border-[var(--op-10)] flex flex-col h-full overflow-hidden">
+            <div className="p-3 border-b border-[var(--op-10)] shrink-0 overflow-y-auto max-h-[46vh]">
               <div className="text-xs uppercase tracking-wider text-[var(--op-35)] mb-2">Инструмент</div>
               <div className="grid grid-cols-4 gap-1.5">
                 <ToolBtn icon={Paintbrush} active={tool === "paint"} onClick={() => setTool("paint")} title="Кисть" />
@@ -1140,7 +1180,7 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
                   </div>
                 </PortalMenu>
               </div>
-              <div className="space-y-1">
+              <div className="space-y-1 max-h-48 overflow-y-auto">
                 {[...map.layers].reverse().map((l, revIdx) => {
                   const idx = map.layers.length - 1 - revIdx;
                   return (
