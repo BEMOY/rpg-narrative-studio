@@ -243,7 +243,7 @@ export function GraphView() {
   const pos = posRef.current;
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden">
+    <div className="h-full flex flex-col overflow-hidden">
       <div className="flex items-center gap-3 px-5 py-4 border-b border-[var(--op-10)] flex-wrap">
         <div className="flex items-center gap-2 text-lg font-medium text-[#ece4d2]">
           <Waypoints size={18} />

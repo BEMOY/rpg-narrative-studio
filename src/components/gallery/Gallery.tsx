@@ -207,7 +207,7 @@ export function Gallery() {
   };
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden">
+    <div className="h-full flex flex-col overflow-hidden">
       <div className="flex items-center gap-3 px-5 py-4 border-b border-[var(--op-10)] flex-wrap">
         <div className="flex items-center gap-2 text-lg font-medium" style={{ color }}>
           {activeCategory === "all" ? <LayoutGrid size={18} /> : null}

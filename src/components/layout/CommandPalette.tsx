@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Search, User, MapPin, Flag, Swords, Shirt, Package, Box, BookOpen, CornerDownLeft } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { CAT_COLOR, CAT_LABEL, type Category, type Entry } from "../../types/database";
@@ -69,8 +70,8 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
 
   if (!open) return null;
 
-  return (
-    <div className="fixed inset-0 z-[9998] bg-black/60 flex items-start justify-center pt-28" onClick={onClose}>
+  return createPortal(
+    <div className="fixed inset-0 z-[9998] flex items-start justify-center pt-28" onClick={onClose}>
       <div
         className="popover rounded-lg w-full max-w-xl mx-4 overflow-hidden shadow-2xl"
         onClick={(e) => e.stopPropagation()}
@@ -123,6 +124,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
