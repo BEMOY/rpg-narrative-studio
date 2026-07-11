@@ -20,6 +20,8 @@ import type { Category, Entry } from "../../types/database";
 import { CAT_COLOR, CAT_LABEL, isQuest, hasRelationship, canHaveStats } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
 import { resizeImageFile } from "../../lib/image";
+import { usePasteImage } from "../../lib/usePasteImage";
+import { MapEditorModal } from "../mapeditor/MapEditorModal";
 
 const CAT_ICON: Record<Category, React.ComponentType<any>> = {
   character: User,
@@ -185,6 +187,7 @@ function LocationMapBlock({ entry }: { entry: Entry }) {
   const updateEntry = useProjectStore((s) => s.updateEntry);
   const fileRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
+  const [editorOpen, setEditorOpen] = useState(false);
 
   const onFile = async (file: File | undefined) => {
     if (!file) return;
@@ -199,8 +202,34 @@ function LocationMapBlock({ entry }: { entry: Entry }) {
     }
   };
 
+  usePasteImage((file) => onFile(file));
+
+  const layerCounts = entry.map
+    ? {
+        tiles: entry.map.layers.filter((l) => l.kind === "tile").reduce((n, l) => n + (l.kind === "tile" ? Object.keys(l.cells).length : 0), 0),
+        objects: entry.map.layers.find((l) => l.kind === "object")?.kind === "object" ? (entry.map.layers.find((l) => l.kind === "object") as any).objects.length : 0,
+        zones: entry.map.layers.find((l) => l.kind === "zone")?.kind === "zone" ? (entry.map.layers.find((l) => l.kind === "zone") as any).zones.length : 0,
+      }
+    : null;
+
   return (
     <Block title="Карта локации">
+      <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
+        <div className="text-xs text-[var(--op-40)]">
+          {layerCounts
+            ? `Тайлов: ${layerCounts.tiles} · объектов: ${layerCounts.objects} · зон: ${layerCounts.zones}`
+            : "Карта ещё не создана в редакторе."}
+        </div>
+        <button
+          onClick={() => setEditorOpen(true)}
+          className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md bg-accent/80 hover:bg-accent transition-colors"
+        >
+          <MapIcon size={12} /> {entry.map ? "Открыть редактор карты" : "Создать карту в редакторе"}
+        </button>
+      </div>
+      {editorOpen && <MapEditorModal entry={entry} onClose={() => setEditorOpen(false)} />}
+
+      <div className="text-[10px] text-[var(--op-30)] mb-2">Или прикрепите готовую картинку карты:</div>
       <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => onFile(e.target.files?.[0])} />
       {entry.mapImage ? (
         <div className="space-y-2">

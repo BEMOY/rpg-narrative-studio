@@ -4,6 +4,7 @@ import type { Entry, EquipSlot, Relationship } from "../../types/database";
 import { canHaveStats, hasRelationship, isEquip, isQuest } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
 import { resizeImageFile } from "../../lib/image";
+import { usePasteImage } from "../../lib/usePasteImage";
 
 const SLOTS: EquipSlot[] = ["head", "body", "weapon", "offhand"];
 const RELATIONSHIPS: Relationship[] = ["friend", "neutral", "enemy"];
@@ -198,6 +199,8 @@ function VisualSection({ entry }: { entry: Entry }) {
     }
   };
 
+  usePasteImage((file) => onFile(file));
+
   return (
     <Section title="Visual">
       <div className="flex items-center gap-4">
@@ -223,6 +226,7 @@ function VisualSection({ entry }: { entry: Entry }) {
           >
             <Upload size={12} /> {busy ? "Загрузка…" : "Загрузить картинку"}
           </button>
+          <div className="text-[10px] text-[var(--op-30)]">или Ctrl/⌘+V, чтобы вставить из буфера обмена</div>
           {entry.image && (
             <button
               onClick={() => updateEntry(entry.id, { image: undefined })}

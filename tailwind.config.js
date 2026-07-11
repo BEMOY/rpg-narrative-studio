@@ -12,7 +12,9 @@ export default {
           DEFAULT: "rgba(255,255,255,0.04)",
           hover: "rgba(255,255,255,0.07)",
         },
-        accent: "#8b7bff",
+        // Driven by --accent-rgb (set at runtime by src/lib/theme.ts), so bg-accent/80 etc.
+        // keep working with Tailwind opacity modifiers while being fully theme-able.
+        accent: "rgb(var(--accent-rgb) / <alpha-value>)",
       },
       borderRadius: {
         sm: "8px",

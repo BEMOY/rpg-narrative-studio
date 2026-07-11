@@ -1,6 +1,6 @@
 import { Search, Play, Download, ArrowLeft } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
-import { ThemeToggle } from "../ThemeToggle";
+import { ThemeMenu } from "../ThemeMenu";
 
 export function TopBar({ onExport }: { onExport: () => void }) {
   const projectName = useProjectStore((s) => s.project.name);
@@ -36,7 +36,7 @@ export function TopBar({ onExport }: { onExport: () => void }) {
       >
         <Download size={14} /> Export
       </button>
-      <ThemeToggle />
+      <ThemeMenu />
     </div>
   );
 }

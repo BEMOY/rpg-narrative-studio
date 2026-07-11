@@ -3,10 +3,11 @@
 @tailwind utilities;
 
 /* ---------------------------------------------------------------------- */
-/* Theme tokens. Default (no data-theme attr, or data-theme="dark") is the
-   original dark glass look. data-theme="light" overrides the same variable
-   names with a warm parchment palette. Every component reads colors through
-   these vars via Tailwind arbitrary values, e.g. bg-[var(--op-10)]. */
+/* Theme tokens. These are fallback/default values only — src/lib/theme.ts
+   overwrites every one of them at runtime (inline style on <html>) based on
+   the active preset or custom theme, before first paint. Components read
+   colors through these vars via Tailwind arbitrary values, e.g. bg-[var(--op-10)]
+   or the accent-rgb-driven `accent` color in tailwind.config.js. */
 /* ---------------------------------------------------------------------- */
 
 :root {
@@ -15,8 +16,8 @@
   --glass-bg: rgba(255, 255, 255, 0.045);
   --glass-border: rgba(255, 255, 255, 0.07);
   --scrollbar-thumb: rgba(255, 255, 255, 0.12);
+  --accent-rgb: 139 123 255;
 
-  /* opacity ladder — same numeric key used for text, backgrounds and borders */
   --op-5: rgba(255, 255, 255, 0.05);
   --op-6: rgba(255, 255, 255, 0.06);
   --op-7: rgba(255, 255, 255, 0.07);
@@ -36,32 +37,6 @@
   --op-90: rgba(255, 255, 255, 0.9);
 }
 
-[data-theme="light"] {
-  --bg-grad-a: #f4efe2;
-  --bg-grad-b: #e9e2d0;
-  --glass-bg: rgba(30, 24, 12, 0.04);
-  --glass-border: rgba(30, 24, 12, 0.1);
-  --scrollbar-thumb: rgba(30, 24, 12, 0.18);
-
-  --op-5: rgba(30, 24, 12, 0.05);
-  --op-6: rgba(30, 24, 12, 0.06);
-  --op-7: rgba(30, 24, 12, 0.07);
-  --op-8: rgba(30, 24, 12, 0.08);
-  --op-10: rgba(30, 24, 12, 0.1);
-  --op-15: rgba(30, 24, 12, 0.15);
-  --op-20: rgba(30, 24, 12, 0.2);
-  --op-25: rgba(30, 24, 12, 0.28);
-  --op-30: rgba(30, 24, 12, 0.34);
-  --op-35: rgba(30, 24, 12, 0.4);
-  --op-40: rgba(30, 24, 12, 0.46);
-  --op-45: rgba(30, 24, 12, 0.52);
-  --op-50: rgba(30, 24, 12, 0.58);
-  --op-60: rgba(30, 24, 12, 0.66);
-  --op-70: rgba(30, 24, 12, 0.74);
-  --op-80: rgba(30, 24, 12, 0.82);
-  --op-90: rgba(30, 24, 12, 0.9);
-}
-
 html, body, #root {
   height: 100%;
 }
@@ -71,13 +46,14 @@ body {
   background: radial-gradient(circle at 20% 0%, var(--bg-grad-a) 0%, var(--bg-grad-b) 55%);
   color: var(--op-90);
   font-family: Inter, system-ui, -apple-system, sans-serif;
-  transition: background 0.2s ease, color 0.2s ease;
+  transition: background 0.25s ease, color 0.25s ease;
 }
 
 .glass {
   background: var(--glass-bg);
   backdrop-filter: blur(24px);
   border: 1px solid var(--glass-border);
+  transition: background 0.25s ease, border-color 0.25s ease;
 }
 
 .mono {
@@ -99,6 +75,6 @@ body {
   transition: border-color 0.15s, background 0.15s;
 }
 .input:focus {
-  border-color: rgba(139, 123, 255, 0.6);
+  border-color: rgb(var(--accent-rgb) / 0.6);
   background: var(--op-7);
 }

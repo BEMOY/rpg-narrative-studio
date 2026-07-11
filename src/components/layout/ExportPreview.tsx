@@ -35,7 +35,7 @@ export function ExportPreview({ onClose }: { onClose: () => void }) {
             <button
               key={f.path}
               onClick={() => setActiveFile(i)}
-              className={`px-3 py-2 mono ${i === activeFile ? "text-white border-b-2 border-accent" : "text-[var(--op-40)]"}`}
+              className={`px-3 py-2 mono ${i === activeFile ? "text-[var(--op-90)] border-b-2 border-accent" : "text-[var(--op-40)]"}`}
             >
               {f.path.split("/").pop()}
             </button>

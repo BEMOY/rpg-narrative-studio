@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { KeyRound } from "lucide-react";
-import { ThemeToggle } from "../components/ThemeToggle";
+import { ThemeMenu } from "../components/ThemeMenu";
 import { supabase } from "../lib/supabaseClient";
 import { isValidUsername, normalizeUsername, usernameToEmail } from "../lib/username";
 
@@ -77,7 +77,7 @@ export function AuthScreen() {
   return (
     <div className="h-full flex items-center justify-center relative">
       <div className="absolute top-4 right-4">
-        <ThemeToggle />
+        <ThemeMenu />
       </div>
       <div className="glass rounded-lg p-8 w-full max-w-sm">
         <div className="flex items-center gap-2 mb-1">

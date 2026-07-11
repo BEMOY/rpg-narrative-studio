@@ -102,6 +102,8 @@ export interface Entry {
 
   // location-only: attached map image (data URL), see docs/13_Asset_System.md
   mapImage?: string;
+  // location-only: structured map built in the in-app Map Editor (Phase 1)
+  map?: MapData;
 
   // generic key/value props (Codex "SCHEMA" panel) — free-form per-category fields that don't need a typed slot
   props: [string, string][];
@@ -142,4 +144,66 @@ export interface Project {
   entries: Entry[];
   rarities: RarityObject[];
   chapters: string[];
+}
+
+// --- Map Editor (Phase 1) — see docs/13_Asset_System.md / 12_Editors.md conventions ---
+// Structured, editable map data for location entries, distinct from the plain `mapImage`
+// snapshot above (which stays as a quick upload/paste fallback for a premade map picture).
+
+export interface MapTileValue {
+  color: string;
+  label?: string;
+}
+
+interface MapLayerBase {
+  id: string;
+  name: string;
+  visible: boolean;
+  locked: boolean;
+  opacity: number; // 0..1
+}
+
+export interface MapTileLayer extends MapLayerBase {
+  kind: "tile";
+  cells: Record<string, MapTileValue>; // key: "x:y"
+}
+
+export interface MapObjectInstance {
+  id: string;
+  entryId: string; // references another Project entry (NPC, item, chest, door...)
+  x: number;
+  y: number;
+  properties: [string, string][]; // instance-level overrides
+}
+
+export interface MapObjectLayer extends MapLayerBase {
+  kind: "object";
+  objects: MapObjectInstance[];
+}
+
+export interface MapZone {
+  id: string;
+  label: string;
+  tag: string; // free-form, e.g. "battle", "music", "teleport"
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  color: string;
+  notes?: string;
+}
+
+export interface MapZoneLayer extends MapLayerBase {
+  kind: "zone";
+  zones: MapZone[];
+}
+
+export type MapLayer = MapTileLayer | MapObjectLayer | MapZoneLayer;
+
+export interface MapData {
+  version: number;
+  gridSize: number; // px per cell at zoom = 1
+  width: number; // cells
+  height: number; // cells
+  layers: MapLayer[];
 }

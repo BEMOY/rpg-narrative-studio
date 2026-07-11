@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Plus, LogOut, Copy, KeyRound, FolderOpen, Pencil, Trash2 } from "lucide-react";
-import { ThemeToggle } from "../components/ThemeToggle";
+import { ThemeMenu } from "../components/ThemeMenu";
 import { supabase } from "../lib/supabaseClient";
 import {
   createInvite,
@@ -110,7 +110,7 @@ export function ProjectsHome({ onOpen }: { onOpen: (row: ProjectRow) => void }) 
           >
             <LogOut size={14} /> Выйти
           </button>
-          <ThemeToggle />
+          <ThemeMenu />
         </div>
 
         {showInvites && (
