@@ -22,10 +22,10 @@
 //  - `continueTo` (linear, no-choices link) is ALWAYS inlined/duplicated — there is no
 //    per-continuation action hook to jump dialogues in the real engine.
 //  - side:"default" omits the `side` key entirely; left/right/none are exported literally.
-//  - Quest conditions -> quest_status("<id>") ==/!= "<value>". Entry has/not_has ->
+//  - Quest conditions -> quest_state("<id>") based checks (not_started/active/done). Entry has/not_has ->
 //    item_has("<id>") / !item_has("<id>"). Flag conditions -> flag_get("<key>") ==/!= <value>.
 
-import type { Dialogue, DialogueChoice, DialogueColorStyle, DialogueCondition, DialogueLine, Entry } from "../types/database";
+import type { Dialogue, DialogueChoice, DialogueColorStyle, DialogueCondition, DialogueLine, Entry, QuestAction } from "../types/database";
 
 export function slugify(raw: string): string {
   const cleaned = raw
@@ -91,11 +91,41 @@ function renderCondition(cond: DialogueCondition | undefined): string | undefine
     return `function() { return flag_get(${gmlString(cond.key)}) ${op} ${gmlValue(cond.value ?? "")}; }`;
   }
   if (cond.kind === "quest") {
-    const op = cond.op === "neq" ? "!=" : "==";
-    return `function() { return quest_status(${gmlString(cond.key)}) ${op} ${gmlString(cond.value ?? "active")}; }`;
+    return renderQuestCondition(cond.key, cond.op === "neq" ? "neq" : "eq", cond.value ?? "active");
   }
   const call = `item_has(${gmlString(cond.key)})`;
   return `function() { return ${cond.op === "not_has" ? "!" + call : call}; }`;
+}
+
+// Quest conditions check the REAL, live quest_state() (updated by quest_start/quest_progress/
+// quest_check_complete) rather than the separate, simpler flag-based quest_status() helper —
+// picking the mechanism that stays in sync with the quest actions (start/advance/complete)
+// dialogue choices can trigger below, per the user's own confirmation.
+function renderQuestCondition(key: string, op: "eq" | "neq", value: string): string {
+  const idLit = gmlString(key);
+  const negate = op === "neq";
+  if (value === "not_started") {
+    const check = `quest_state(${idLit}) == undefined`;
+    return `function() { return ${negate ? `!(${check})` : check}; }`;
+  }
+  const status = value === "done" ? "completed" : "active";
+  const check = `_qs != undefined && _qs.status == ${gmlString(status)}`;
+  return `function() { var _qs = quest_state(${idLit}); return ${negate ? `!(${check})` : check}; }`;
+}
+
+// Direct quest_start/quest_progress/quest_mark_done calls a choice can trigger — these are
+// real, confirmed function names from scr_quests.gml, called directly rather than through any
+// flag-based convention (unlike goto_dialogue, which genuinely is flag-driven).
+function renderQuestActionLines(actions: QuestAction[] | undefined): string[] {
+  const lines: string[] = [];
+  for (const qa of actions ?? []) {
+    if (!qa.questId.trim()) continue;
+    const idLit = gmlString(qa.questId);
+    if (qa.kind === "start") lines.push(`quest_start(${idLit});`);
+    else if (qa.kind === "complete") lines.push(`quest_mark_done(${idLit});`);
+    else lines.push(`quest_progress(${idLit}, ${qa.objectiveIndex ?? 0}, ${qa.amount ?? 1});`);
+  }
+  return lines;
 }
 
 function renderLinePage(line: DialogueLine, entries: Entry[], depth: number): string {
@@ -153,6 +183,7 @@ export function compileDialogueToGML(dialogue: Dialogue, entries: Entry[]): stri
       if (!fs.key.trim()) continue;
       actionLines.push(`flag_set(${gmlString(fs.key)}, ${gmlValue(fs.value)});`);
     }
+    actionLines.push(...renderQuestActionLines(choice.questActions));
 
     const targetId = choice.targetNodeId;
     if (!targetId || !nodesById.has(targetId)) {
@@ -218,7 +249,7 @@ export function compileDialogueToGML(dialogue: Dialogue, entries: Entry[]): stri
     `// Перед вставкой в scr_dialogue_content проверьте:\n` +
     `//  1) ключи спикеров (speaker) совпадают с ключами в global.speakers (speaker_define) —\n` +
     `//     см. соседнюю вкладку «speakers-скрипт», если персонажи ещё не зарегистрированы;\n` +
-    `//  2) id квестов/объектов совпадают с тем, что принимают ваши quest_status()/item_has();\n` +
+    `//  2) id квестов совпадают с entry.id в Codex — условие проверяет quest_state(); id предметов — item_has();\n` +
     `//  3) flag_set("goto_dialogue", ...) в вашем проекте обрабатывается так же, как в вашем\n` +
     `//     собственном примере с "farewell" — если механизм другой, поправьте вручную.\n`;
 
@@ -245,6 +276,7 @@ export function compileDialogueToLines(dialogue: Dialogue, entries: Entry[]): st
       if (!fs.key.trim()) continue;
       actionLines.push(`flag_set(${gmlString(fs.key)}, ${gmlValue(fs.value)});`);
     }
+    actionLines.push(...renderQuestActionLines(choice.questActions));
 
     const targetId = choice.targetNodeId;
     if (!targetId || !nodesById.has(targetId)) {

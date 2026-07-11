@@ -18,6 +18,7 @@ export function createChoice(partial?: Partial<DialogueChoice>): DialogueChoice 
     id: nextId("choice"),
     text: "",
     flagSets: [],
+    questActions: [],
     ...partial,
   };
 }
@@ -50,7 +51,7 @@ export function normalizeDialogue(raw: Dialogue): Dialogue {
   const nodes = (raw.nodes ?? []).map((n) => ({
     ...n,
     lines: (n.lines ?? []).map((l) => ({ ...l, side: l.side ?? "default", noSkip: l.noSkip ?? false })),
-    choices: (n.choices ?? []).map((c) => ({ ...c, flagSets: c.flagSets ?? [] })),
+    choices: (n.choices ?? []).map((c) => ({ ...c, flagSets: c.flagSets ?? [], questActions: c.questActions ?? [] })),
   }));
   return {
     ...raw,

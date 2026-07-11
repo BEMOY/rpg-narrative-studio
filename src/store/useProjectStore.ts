@@ -20,7 +20,7 @@ interface ProjectState {
   activeCategory: Category | "all";
   galleryQuery: string;
   hiddenCategories: Category[];
-  workspaceView: "gallery" | "graph" | "dialogues";
+  workspaceView: "gallery" | "graph" | "dialogues" | "quests";
   activeDialogueId: string | null;
   saving: boolean;
 
@@ -31,6 +31,7 @@ interface ProjectState {
   showGallery: () => void;
   showGraph: () => void;
   showDialogues: () => void;
+  showQuests: () => void;
   openEntry: (id: string) => void;
   closeTab: (index: number) => void;
   setActiveTab: (index: number) => void;
@@ -110,6 +111,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   showGallery: () => set({ activeTabIndex: -1, workspaceView: "gallery" }),
   showGraph: () => set({ activeTabIndex: -1, workspaceView: "graph" }),
   showDialogues: () => set({ activeTabIndex: -1, workspaceView: "dialogues" }),
+  showQuests: () => set({ activeTabIndex: -1, workspaceView: "quests" }),
 
   openEntry: (id) => {
     const tabs = get().openTabs;

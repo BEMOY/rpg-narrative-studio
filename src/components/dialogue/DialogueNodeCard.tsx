@@ -6,8 +6,10 @@ import { SearchSelect } from "./SearchSelect";
 import { MarkupText } from "./MarkupText";
 import { PortalMenu } from "../common/PortalMenu";
 import { FlagValueInput } from "./FlagValueInput";
-import type { ColorStyleMode, Dialogue, DialogueChoice, DialogueLine, DialogueNode, DialogueSide } from "../../types/database";
+import type { ColorStyleMode, Dialogue, DialogueChoice, DialogueLine, DialogueNode, DialogueSide, QuestAction, QuestActionKind } from "../../types/database";
+import { isQuest } from "../../types/database";
 import { MARKUP_TAGS, FALLBACK_COLOR_GUESSES, mixHex } from "../../lib/dialogueMarkup";
+import { nextId } from "../../lib/mapDefaults";
 
 // Applies a markup tag around the current selection (or right before it, for "prefix" tags)
 // in a plain <textarea>. Shared between the generic tag-button row and the dedicated color
@@ -295,6 +297,80 @@ function LineBlock({
   );
 }
 
+const QUEST_ACTION_LABEL: Record<QuestActionKind, string> = { start: "Начать квест", advance: "Продвинуть цель", complete: "Завершить квест" };
+
+function QuestActionRow({
+  action,
+  onChange,
+  onRemove,
+}: {
+  action: QuestAction;
+  onChange: (p: Partial<QuestAction>) => void;
+  onRemove: () => void;
+}) {
+  const entries = useProjectStore((s) => s.project.entries);
+  const quests = entries.filter((e) => isQuest(e.category));
+  const quest = quests.find((q) => q.id === action.questId);
+  const objectives = quest?.objectives ?? [];
+
+  return (
+    <div className="rounded-md border border-[var(--op-7)] p-1.5 space-y-1 bg-[var(--op-4)]">
+      <div className="flex items-center gap-1">
+        <select
+          value={action.kind}
+          onChange={(e) => onChange({ kind: e.target.value as QuestActionKind })}
+          className="input text-[11px] py-1 w-32 shrink-0"
+        >
+          {(Object.keys(QUEST_ACTION_LABEL) as QuestActionKind[]).map((k) => (
+            <option key={k} value={k}>
+              {QUEST_ACTION_LABEL[k]}
+            </option>
+          ))}
+        </select>
+        <div className="flex-1 min-w-0">
+          <SearchSelect
+            value={action.questId || undefined}
+            onChange={(id) => onChange({ questId: id ?? "" })}
+            options={quests.map((q) => ({ id: q.id, label: q.name }))}
+            placeholder="выбрать квест…"
+            searchPlaceholder="Поиск квеста…"
+            clearLabel="— не выбрано —"
+          />
+        </div>
+        <button onClick={onRemove} className="opacity-40 hover:opacity-100 shrink-0">
+          <X size={11} />
+        </button>
+      </div>
+      {action.kind === "advance" && (
+        <div className="flex items-center gap-1">
+          {objectives.length > 0 ? (
+            <select
+              value={action.objectiveIndex ?? 0}
+              onChange={(e) => onChange({ objectiveIndex: Number(e.target.value) })}
+              className="input text-[11px] py-1 flex-1 min-w-0"
+            >
+              {objectives.map((o, i) => (
+                <option key={i} value={i}>
+                  {o.text || `Цель ${i + 1}`}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <div className="flex-1 text-[10px] text-[var(--op-35)] italic">{quest ? "у этого квеста нет подцелей" : "сначала выберите квест"}</div>
+          )}
+          <input
+            type="number"
+            value={action.amount ?? 1}
+            onChange={(e) => onChange({ amount: Number(e.target.value) || 1 })}
+            title="на сколько продвинуть"
+            className="input text-[11px] py-1 w-14 shrink-0"
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ChoiceRow({
   dialogue,
   node,
@@ -320,6 +396,12 @@ function ChoiceRow({
     patch({ flagSets: choice.flagSets.map((fs, idx) => (idx === i ? { ...fs, ...p } : fs)) });
   const removeFlagSet = (i: number) => patch({ flagSets: choice.flagSets.filter((_, idx) => idx !== i) });
 
+  const questActions = choice.questActions ?? [];
+  const addQuestAction = () => patch({ questActions: [...questActions, { id: nextId("qact"), kind: "start", questId: "" }] });
+  const updateQuestAction = (i: number, p: Partial<QuestAction>) =>
+    patch({ questActions: questActions.map((qa, idx) => (idx === i ? { ...qa, ...p } : qa)) });
+  const removeQuestAction = (i: number) => patch({ questActions: questActions.filter((_, idx) => idx !== i) });
+
   return (
     <div className="relative rounded-md border border-[var(--op-7)] p-2 pr-5 space-y-1.5 bg-[var(--op-3)]">
       <div className="flex items-center gap-1.5">
@@ -337,6 +419,15 @@ function ChoiceRow({
         ))}
         <button onClick={addFlagSet} className="w-full text-[10px] text-[var(--op-35)] hover:text-[var(--op-65)] py-1 rounded bg-[var(--op-5)]">
           + flag_set
+        </button>
+      </div>
+
+      <div className="space-y-1">
+        {questActions.map((qa, i) => (
+          <QuestActionRow key={qa.id} action={qa} onChange={(p) => updateQuestAction(i, p)} onRemove={() => removeQuestAction(i)} />
+        ))}
+        <button onClick={addQuestAction} className="w-full text-[10px] text-[var(--op-35)] hover:text-[var(--op-65)] py-1 rounded bg-[var(--op-5)]">
+          + действие с квестом
         </button>
       </div>
 

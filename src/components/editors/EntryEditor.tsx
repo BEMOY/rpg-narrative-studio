@@ -1,10 +1,11 @@
 import { Trash2, Plus, X, Upload, ImageOff, ChevronDown } from "lucide-react";
 import { useRef, useState } from "react";
-import type { DialogueSide, DialogueSpeakerData, Entry, EquipSlot, Relationship } from "../../types/database";
+import type { DialogueSide, DialogueSpeakerData, Entry, EquipSlot, Objective, QuestRewards, Relationship } from "../../types/database";
 import { canHaveStats, hasRelationship, isEquip, isQuest } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
 import { resizeImageFile } from "../../lib/image";
 import { usePasteImage } from "../../lib/usePasteImage";
+import { SearchSelect } from "../dialogue/SearchSelect";
 
 const SLOTS: EquipSlot[] = ["head", "body", "weapon", "offhand"];
 const RELATIONSHIPS: Relationship[] = ["friend", "neutral", "enemy"];
@@ -114,7 +115,7 @@ export function EntryEditor({ entry, onDone }: { entry: Entry; onDone: () => voi
         </Section>
       )}
 
-      {isQuest(entry.category) && <ObjectivesPanel entry={entry} />}
+      {isQuest(entry.category) && <QuestPanel entry={entry} />}
 
       {entry.category === "character" && <DialogueSpeakerSection entry={entry} />}
 
@@ -299,49 +300,153 @@ function TagsSection({ entry }: { entry: Entry }) {
   );
 }
 
-function ObjectivesPanel({ entry }: { entry: Entry }) {
+// Matches the real quest_define() shape exactly: type (main/side/story), objectives (each
+// with numeric current/max — a plain checkbox objective is just max:1) or none at all (a
+// "simple" quest completed via quest_mark_done), and an optional rewards struct.
+function QuestPanel({ entry }: { entry: Entry }) {
   const updateEntry = useProjectStore((s) => s.updateEntry);
+  const allEntries = useProjectStore((s) => s.project.entries);
   const objectives = entry.objectives ?? [];
+  const rewards = entry.rewards ?? {};
+  const itemOptions = allEntries.filter((e) => e.category === "item" || e.category === "equipment");
 
-  const set = (next: typeof objectives) => updateEntry(entry.id, { objectives: next });
+  const setObjectives = (next: Objective[]) => updateEntry(entry.id, { objectives: next });
+  const patchObjective = (i: number, p: Partial<Objective>) => setObjectives(objectives.map((o, idx) => (idx === i ? { ...o, ...p } : o)));
+  const removeObjective = (i: number) => setObjectives(objectives.filter((_, idx) => idx !== i));
+  const addObjective = () => setObjectives([...objectives, { text: "", done: false, current: 0, max: 1 }]);
+
+  const setRewards = (next: QuestRewards) => updateEntry(entry.id, { rewards: next });
+  const patchRewards = (p: Partial<QuestRewards>) => setRewards({ ...rewards, ...p });
+  const items = rewards.items ?? [];
+  const patchItem = (i: number, p: Partial<{ id: string; count: number }>) =>
+    patchRewards({ items: items.map((it, idx) => (idx === i ? { ...it, ...p } : it)) });
+  const removeItem = (i: number) => patchRewards({ items: items.filter((_, idx) => idx !== i) });
+  const addItem = () => patchRewards({ items: [...items, { id: itemOptions[0]?.id ?? "", count: 1 }] });
+
+  const defaultType = entry.category === "main_quest" ? "main" : "side";
+  const questType = entry.questType ?? defaultType;
 
   return (
-    <Section title="Objectives">
-      <div className="space-y-2">
-        {objectives.map((o, i) => (
-          <div key={i} className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={o.done}
-              onChange={(e) => {
-                const next = objectives.slice();
-                next[i] = { ...o, done: e.target.checked };
-                set(next);
-              }}
-            />
-            <input
-              className="input"
-              value={o.text}
-              onChange={(e) => {
-                const next = objectives.slice();
-                next[i] = { ...o, text: e.target.value };
-                set(next);
-              }}
-            />
-            <button
-              onClick={() => set(objectives.filter((_, j) => j !== i))}
-              className="opacity-40 hover:opacity-100 shrink-0"
-            >
-              <X size={14} />
-            </button>
-          </div>
-        ))}
-        <button
-          onClick={() => set([...objectives, { text: "", done: false }])}
-          className="flex items-center gap-1.5 text-xs text-[var(--op-50)] hover:text-[var(--op-80)]"
+    <Section title="Квест (quest_define)">
+      <Field label="Тип (type)">
+        <select
+          className="input"
+          value={questType}
+          onChange={(e) => updateEntry(entry.id, { questType: e.target.value as "main" | "side" | "story" })}
         >
-          <Plus size={12} /> Добавить objective
-        </button>
+          <option value="main">main</option>
+          <option value="side">side</option>
+          <option value="story">story</option>
+        </select>
+      </Field>
+
+      <div>
+        <div className="text-sm text-[var(--op-50)] mb-2 flex items-center gap-2">
+          Подцели
+          {objectives.length === 0 && (
+            <span className="text-xs text-[var(--op-30)]">— нет, простой квест (quest_mark_done)</span>
+          )}
+        </div>
+        <div className="space-y-1.5">
+          {objectives.map((o, i) => (
+            <div key={i} className="flex items-center gap-1.5 rounded-md border border-[var(--op-7)] p-2">
+              <input
+                className="input flex-1 min-w-0"
+                value={o.text}
+                placeholder="текст подцели"
+                onChange={(e) => patchObjective(i, { text: e.target.value })}
+              />
+              <input
+                type="number"
+                className="input w-14 shrink-0"
+                title="current"
+                value={o.current ?? (o.done ? 1 : 0)}
+                onChange={(e) => patchObjective(i, { current: Number(e.target.value) || 0 })}
+              />
+              <span className="text-[var(--op-30)] text-xs shrink-0">/</span>
+              <input
+                type="number"
+                className="input w-14 shrink-0"
+                title="max"
+                value={o.max ?? 1}
+                onChange={(e) => patchObjective(i, { max: Number(e.target.value) || 1 })}
+              />
+              <input
+                className="input w-32 shrink-0 mono"
+                value={o.objId ?? ""}
+                placeholder="objId (флаг obj_...)"
+                onChange={(e) => patchObjective(i, { objId: e.target.value || undefined })}
+              />
+              <button onClick={() => removeObjective(i)} className="opacity-40 hover:opacity-100 shrink-0">
+                <X size={14} />
+              </button>
+            </div>
+          ))}
+          <button onClick={addObjective} className="flex items-center gap-1.5 text-xs text-[var(--op-50)] hover:text-[var(--op-80)]">
+            <Plus size={12} /> Добавить подцель
+          </button>
+        </div>
+      </div>
+
+      <div>
+        <div className="text-sm text-[var(--op-50)] mb-2">Награды (rewards)</div>
+        <div className="grid grid-cols-3 gap-2 mb-2">
+          <Field label="Монеты">
+            <input
+              type="number"
+              className="input"
+              value={rewards.coins ?? ""}
+              placeholder="—"
+              onChange={(e) => patchRewards({ coins: e.target.value === "" ? undefined : Number(e.target.value) })}
+            />
+          </Field>
+          <Field label="XP">
+            <input
+              type="number"
+              className="input"
+              value={rewards.xp ?? ""}
+              placeholder="—"
+              onChange={(e) => patchRewards({ xp: e.target.value === "" ? undefined : Number(e.target.value) })}
+            />
+          </Field>
+          <Field label="Симпатия">
+            <input
+              type="number"
+              className="input"
+              value={rewards.affinity ?? ""}
+              placeholder="—"
+              onChange={(e) => patchRewards({ affinity: e.target.value === "" ? undefined : Number(e.target.value) })}
+            />
+          </Field>
+        </div>
+        <div className="space-y-1.5">
+          {items.map((it, i) => (
+            <div key={i} className="flex items-center gap-1.5">
+              <div className="flex-1 min-w-0">
+                <SearchSelect
+                  value={it.id || undefined}
+                  onChange={(id) => patchItem(i, { id: id ?? "" })}
+                  options={itemOptions.map((e) => ({ id: e.id, label: e.name }))}
+                  placeholder="выбрать предмет…"
+                  searchPlaceholder="Поиск предмета…"
+                  clearLabel="— не выбрано —"
+                />
+              </div>
+              <input
+                type="number"
+                className="input w-16 shrink-0"
+                value={it.count}
+                onChange={(e) => patchItem(i, { count: Number(e.target.value) || 1 })}
+              />
+              <button onClick={() => removeItem(i)} className="opacity-40 hover:opacity-100 shrink-0">
+                <X size={14} />
+              </button>
+            </div>
+          ))}
+          <button onClick={addItem} className="flex items-center gap-1.5 text-xs text-[var(--op-50)] hover:text-[var(--op-80)]">
+            <Plus size={12} /> Добавить предмет-награду
+          </button>
+        </div>
       </div>
     </Section>
   );

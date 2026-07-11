@@ -122,22 +122,50 @@ export function EntryDetail({ entry, onEdit }: { entry: Entry; onEdit: () => voi
       )}
 
       {isQuest(entry.category) && (
-        <Block title="Objectives">
+        <Block title={`Квест (${entry.questType ?? (entry.category === "main_quest" ? "main" : "side")})`}>
           <div className="space-y-1.5">
-            {(entry.objectives ?? []).length === 0 && <div className="text-sm text-[var(--op-30)]">Нет objectives.</div>}
-            {(entry.objectives ?? []).map((o, i) => (
-              <div key={i} className="flex items-center gap-2 text-sm">
-                <span
-                  className={`w-4 h-4 rounded-sm border grid place-items-center text-[10px] shrink-0 ${
-                    o.done ? "bg-emerald-500/30 border-emerald-500/40" : "border-[var(--op-20)]"
-                  }`}
-                >
-                  {o.done ? "✓" : ""}
-                </span>
-                <span className={o.done ? "text-[var(--op-40)] line-through" : "text-[var(--op-80)]"}>{o.text || "—"}</span>
-              </div>
-            ))}
+            {(entry.objectives ?? []).length === 0 && (
+              <div className="text-sm text-[var(--op-30)]">Простой квест — без подцелей (quest_mark_done).</div>
+            )}
+            {(entry.objectives ?? []).map((o, i) => {
+              const current = o.current ?? (o.done ? 1 : 0);
+              const max = o.max ?? 1;
+              const done = current >= max;
+              return (
+                <div key={i} className="flex items-center gap-2 text-sm">
+                  <span
+                    className={`w-4 h-4 rounded-sm border grid place-items-center text-[10px] shrink-0 ${
+                      done ? "bg-emerald-500/30 border-emerald-500/40" : "border-[var(--op-20)]"
+                    }`}
+                  >
+                    {done ? "✓" : ""}
+                  </span>
+                  <span className={done ? "text-[var(--op-40)] line-through" : "text-[var(--op-80)]"}>{o.text || "—"}</span>
+                  <span className="text-xs mono text-[var(--op-30)]">
+                    {current}/{max}
+                  </span>
+                </div>
+              );
+            })}
           </div>
+          {entry.rewards && (entry.rewards.coins || entry.rewards.xp || entry.rewards.affinity || entry.rewards.items?.length) ? (
+            <div className="flex flex-wrap gap-1.5 mt-3 pt-3 border-t border-[var(--op-7)]">
+              {entry.rewards.coins ? (
+                <span className="text-xs px-2 py-1 rounded-full bg-amber-500/15 text-amber-300">🪙 {entry.rewards.coins}</span>
+              ) : null}
+              {entry.rewards.xp ? (
+                <span className="text-xs px-2 py-1 rounded-full bg-sky-500/15 text-sky-300">✦ {entry.rewards.xp} XP</span>
+              ) : null}
+              {entry.rewards.affinity ? (
+                <span className="text-xs px-2 py-1 rounded-full bg-pink-500/15 text-pink-300">♥ {entry.rewards.affinity}</span>
+              ) : null}
+              {(entry.rewards.items ?? []).map((it, i) => (
+                <span key={i} className="text-xs px-2 py-1 rounded-full bg-[var(--op-8)] text-[var(--op-60)]">
+                  {it.count}× {it.id}
+                </span>
+              ))}
+            </div>
+          ) : null}
         </Block>
       )}
 

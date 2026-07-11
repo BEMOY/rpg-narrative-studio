@@ -78,10 +78,31 @@ export interface Stats {
   [key: string]: number | undefined;
 }
 
+// Matches the real engine's quest_define() objectives array exactly: every objective has a
+// numeric current/max (a simple "reach 1 of 1" checkbox is just max:1). `done` is kept only
+// for backward compatibility with older saved projects that only stored a boolean — new code
+// should read progress via objectiveProgress() in lib/questCompile.ts, which derives
+// current/max from `done` when they're missing. `objId` matches quest_progress()'s optional
+// per-objective flag id (sets flag "obj_<objId>" when that objective reaches max).
 export interface Objective {
   text: string;
   done: boolean;
-  objId?: string; // matches quest_progress()'s objective flag id (obj_<id>) — see docs/12_Editors.md
+  current?: number;
+  max?: number;
+  objId?: string;
+}
+
+export interface QuestRewardItem {
+  id: string; // references another Project entry (item/equipment)
+  count: number;
+}
+
+// Matches quest_define()'s optional `rewards` struct exactly: any subset of these fields.
+export interface QuestRewards {
+  coins?: number;
+  xp?: number;
+  affinity?: number;
+  items?: QuestRewardItem[];
 }
 
 // Base Object shape — see docs/05_Database.md
@@ -113,6 +134,11 @@ export interface Entry {
   stats?: Stats; // canHaveStats(category)
   relationship?: Relationship; // hasRelationship(category)
   objectives?: Objective[]; // isQuest(category)
+  // isQuest(category): overrides the exported quest_define() "type" — our Category only has
+  // main_quest/side_quest, but the real engine also has a third "story" type (see quest_define
+  // examples like "talk_elder"); defaults to main/side derived from category when unset.
+  questType?: "main" | "side" | "story";
+  rewards?: QuestRewards; // isQuest(category) — matches quest_define()'s optional rewards struct
   slot?: EquipSlot; // isEquip(category)
 
   // equip/item economy + export fields — see docs/14_Export_System.md Field Mapping: Items
@@ -325,11 +351,26 @@ export interface DialogueLine {
   noSkip: boolean;
 }
 
+// Direct quest-system calls a choice can trigger — confirmed against the real scr_quests.gml
+// (quest_start/quest_progress/quest_mark_done) rather than any flag-based convention, since
+// those are real, callable function names, not something that needs a magic flag like
+// goto_dialogue.
+export type QuestActionKind = "start" | "advance" | "complete";
+
+export interface QuestAction {
+  id: string;
+  kind: QuestActionKind;
+  questId: string;
+  objectiveIndex?: number; // "advance" only — which objective in quest_progress(id, index, amount)
+  amount?: number; // "advance" only — defaults to 1
+}
+
 export interface DialogueChoice {
   id: string;
   text: string;
   condition?: DialogueCondition;
   flagSets: DialogueFlagSet[];
+  questActions: QuestAction[];
   targetNodeId?: string;
 }
 
