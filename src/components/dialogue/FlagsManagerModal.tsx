@@ -1,17 +1,38 @@
 import { useState } from "react";
 import { X, Plus, Pencil, Trash2, Flag } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
+import type { DialogueFlagType } from "../../types/database";
+
+function TypeToggle({ type, onChange }: { type: DialogueFlagType; onChange: (t: DialogueFlagType) => void }) {
+  return (
+    <div className="flex items-center rounded-md bg-[var(--op-6)] p-0.5 shrink-0">
+      {(["bool", "number"] as DialogueFlagType[]).map((t) => (
+        <button
+          key={t}
+          onClick={() => onChange(t)}
+          className={`text-[10px] px-1.5 py-0.5 rounded ${type === t ? "bg-accent/70 text-[var(--op-95)]" : "text-[var(--op-40)] hover:text-[var(--op-70)]"}`}
+        >
+          {t === "bool" ? "Bool" : "Число"}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 export function FlagsManagerModal({ onClose }: { onClose: () => void }) {
   const flags = useProjectStore((s) => s.project.dialogueFlags);
+  const dialogueFlagTypes = useProjectStore((s) => s.project.dialogueFlagTypes);
   const addDialogueFlag = useProjectStore((s) => s.addDialogueFlag);
+  const setDialogueFlagType = useProjectStore((s) => s.setDialogueFlagType);
   const renameDialogueFlag = useProjectStore((s) => s.renameDialogueFlag);
   const removeDialogueFlag = useProjectStore((s) => s.removeDialogueFlag);
   const [draft, setDraft] = useState("");
+  const [draftType, setDraftType] = useState<DialogueFlagType>("bool");
 
   const add = () => {
-    if (draft.trim()) addDialogueFlag(draft.trim());
+    if (draft.trim()) addDialogueFlag(draft.trim(), draftType);
     setDraft("");
+    setDraftType("bool");
   };
 
   const rename = (name: string) => {
@@ -34,6 +55,7 @@ export function FlagsManagerModal({ onClose }: { onClose: () => void }) {
           {flags.map((f) => (
             <div key={f} className="flex items-center gap-2 px-2.5 py-1.5 rounded-md bg-[var(--op-5)] text-sm">
               <span className="mono text-[var(--op-80)] flex-1 truncate">{f}</span>
+              <TypeToggle type={dialogueFlagTypes[f] ?? "bool"} onChange={(t) => setDialogueFlagType(f, t)} />
               <button onClick={() => rename(f)} className="opacity-40 hover:opacity-100">
                 <Pencil size={12} />
               </button>
@@ -54,6 +76,7 @@ export function FlagsManagerModal({ onClose }: { onClose: () => void }) {
             placeholder="имя нового флага…"
             className="input flex-1 text-sm py-1.5"
           />
+          <TypeToggle type={draftType} onChange={setDraftType} />
           <button onClick={add} className="w-8 h-8 shrink-0 grid place-items-center rounded-md bg-accent/80 hover:bg-accent">
             <Plus size={14} />
           </button>

@@ -197,6 +197,7 @@ function FlagSetRow({
   onRemove: () => void;
 }) {
   const addDialogueFlag = useProjectStore((s) => s.addDialogueFlag);
+  const dialogueFlagTypes = useProjectStore((s) => s.project.dialogueFlagTypes);
   return (
     <div className="flex items-center gap-1">
       <input
@@ -207,7 +208,7 @@ function FlagSetRow({
         placeholder="флаг"
         className="input text-[11px] py-1 flex-1 min-w-0"
       />
-      <FlagValueInput value={fs.value} onChange={(v) => onChange({ value: v })} className="flex-1" />
+      <FlagValueInput value={fs.value} onChange={(v) => onChange({ value: v })} className="flex-1" flagType={dialogueFlagTypes[fs.key]} />
       <button onClick={onRemove} className="opacity-40 hover:opacity-100 shrink-0">
         <X size={11} />
       </button>
@@ -247,23 +248,17 @@ function LineBlock({
       </div>
 
       <div className="flex gap-1.5">
-        <input
-          value={line.speaker}
-          onChange={(e) => patch({ speaker: e.target.value })}
-          placeholder="спикер: имя (или привяжите персонажа справа)"
-          className="input text-xs py-1 flex-1 min-w-0"
-        />
-        <div className="w-36 shrink-0">
+        <div className="flex-1 min-w-0">
           <SearchSelect
             value={line.speakerEntryId}
             onChange={(id) => {
               const ent = characters.find((c) => c.id === id);
-              patch({ speakerEntryId: id, speaker: ent ? ent.name : line.speaker });
+              patch({ speakerEntryId: id, speaker: ent ? ent.name : "" });
             }}
             options={characters.map((c) => ({ id: c.id, label: c.name }))}
-            placeholder="персонаж…"
+            placeholder="персонаж… (пусто — рассказчик)"
             searchPlaceholder="Поиск персонажа…"
-            clearLabel="— не привязан —"
+            clearLabel="— без персонажа (рассказчик) —"
           />
         </div>
       </div>

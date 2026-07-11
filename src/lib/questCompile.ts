@@ -55,8 +55,17 @@ export function compileQuestsScript(entries: Entry[]): string {
   const blocks = quests.map((e) => {
     const id = slugify(e.id);
     const type = e.questType ?? (e.category === "main_quest" ? "main" : "side");
+    const deps = e.questDependencies ?? [];
+    // Dependencies are a Codex-only planning aid (see the Квесты roadmap tab) — there's no
+    // matching field in the real quest_define(), so they're surfaced here only as a comment,
+    // never as generated code.
+    const depComment =
+      deps.length > 0
+        ? `        // при завершении: ${deps.map((d) => `${d.kind === "unlocks" ? "открывает" : "блокирует"} "${slugify(d.questId)}"`).join(", ")}\n`
+        : "";
     return (
       `    quest_define(${gmlString(id)}, {\n` +
+      depComment +
       `        title:${gmlString(e.name)},\n` +
       `        desc:${gmlString(e.description)},\n` +
       `        type:${gmlString(type)},\n` +

@@ -39,9 +39,17 @@ export function PortalMenu({
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node) && anchorRef.current && !anchorRef.current.contains(e.target as Node)) {
-        onClose();
-      }
+      const target = e.target as Node;
+      if (menuRef.current && menuRef.current.contains(target)) return;
+      if (anchorRef.current && anchorRef.current.contains(target)) return;
+      // A click inside ANOTHER portal menu (e.g. a SearchSelect dropdown opened from within
+      // this menu) lands in a separate DOM subtree under document.body — not a descendant of
+      // menuRef — so without this check the outer menu would see it as an "outside" click and
+      // close itself (and, since it unmounts, the inner menu too) before the inner click's own
+      // onChange/pick() handler ever ran. Recognize any `.popover` (every PortalMenu's own
+      // wrapper class) as "still inside menu UI" so nested pickers work.
+      if (target instanceof Element && target.closest(".popover")) return;
+      onClose();
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();

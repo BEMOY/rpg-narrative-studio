@@ -27,6 +27,7 @@ export function ConditionEditor({
   const [open, setOpen] = useState(false);
   const btnRef = useRef<HTMLButtonElement>(null);
   const entries = useProjectStore((s) => s.project.entries);
+  const dialogueFlagTypes = useProjectStore((s) => s.project.dialogueFlagTypes);
 
   const draft: DialogueCondition = value ?? { kind: "flag", key: "", op: "eq", value: "" };
 
@@ -87,7 +88,7 @@ export function ConditionEditor({
                   <option value="eq">=</option>
                   <option value="neq">≠</option>
                 </select>
-                <FlagValueInput value={draft.value ?? ""} onChange={(v) => set({ value: v })} className="flex-1" />
+                <FlagValueInput value={draft.value ?? ""} onChange={(v) => set({ value: v })} className="flex-1" flagType={dialogueFlagTypes[draft.key]} />
               </div>
             </>
           )}

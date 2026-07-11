@@ -548,6 +548,14 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
 
   // ---- stage pointer handling ----
   const onStageMouseDown = (e: React.MouseEvent) => {
+    // Middle-mouse-button drag pans the canvas no matter which tool is active — matches the
+    // convention in most other creative apps (Photoshop, Figma, Blender…) — without forcing
+    // the user to switch away from whatever tool (paint/select/zone/etc.) they're using.
+    if (e.button === 1) {
+      e.preventDefault();
+      panDragRef.current = { startX: e.clientX, startY: e.clientY, panX: pan.x, panY: pan.y };
+      return;
+    }
     if (tool === "pan") {
       panDragRef.current = { startX: e.clientX, startY: e.clientY, panX: pan.x, panY: pan.y };
       return;
@@ -1391,7 +1399,7 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
 
                 if (isZone(layer)) {
                   return (
-                    <div key={layer.id} style={{ position: "absolute", inset: 0, opacity: layer.opacity }}>
+                    <div key={layer.id} style={{ position: "absolute", inset: 0, opacity: layer.opacity, pointerEvents: "none" }}>
                       {layer.zones.map((z) => (
                         <div
                           key={z.id}
@@ -1408,6 +1416,7 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
                         >
                           <div
                             onMouseDown={(e) => {
+                              if (e.button !== 0) return;
                               e.stopPropagation();
                               setActiveLayerId(layer.id);
                               setSelection({ kind: "zone", id: z.id });
@@ -1438,7 +1447,7 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
 
                 if (isObject(layer)) {
                   return (
-                    <div key={layer.id} style={{ position: "absolute", inset: 0, opacity: layer.opacity }}>
+                    <div key={layer.id} style={{ position: "absolute", inset: 0, opacity: layer.opacity, pointerEvents: "none" }}>
                       {layer.objects.map((o) => {
                         const linked = entries.find((e) => e.id === o.entryId);
                         const color = linked ? CAT_COLOR[linked.category] : "#888";
@@ -1446,6 +1455,7 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
                           <div
                             key={o.id}
                             onMouseDown={(e) => {
+                              if (e.button !== 0) return;
                               e.stopPropagation();
                               if (layer.locked) return;
                               setActiveLayerId(layer.id);
@@ -1474,6 +1484,7 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
                               overflow: "hidden",
                               cursor: layer.locked ? "default" : "grab",
                               boxShadow: "0 1px 4px rgba(0,0,0,0.4)",
+                              pointerEvents: layer.locked ? "none" : "auto",
                             }}
                             title={linked?.name ?? o.entryId}
                           >
@@ -1513,11 +1524,12 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
 
                 if (isImageLayer(layer)) {
                   return (
-                    <div key={layer.id} style={{ position: "absolute", inset: 0, opacity: layer.opacity }}>
+                    <div key={layer.id} style={{ position: "absolute", inset: 0, opacity: layer.opacity, pointerEvents: "none" }}>
                       {layer.images.map((img) => (
                         <div
                           key={img.id}
                           onMouseDown={(e) => {
+                            if (e.button !== 0) return;
                             e.stopPropagation();
                             if (layer.locked) return;
                             setActiveLayerId(layer.id);
@@ -1534,12 +1546,14 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
                             border: selection?.kind === "image" && selection.id === img.id ? "2px solid white" : "1px solid rgba(0,0,0,0.25)",
                             cursor: layer.locked ? "default" : "grab",
                             boxShadow: "0 1px 6px rgba(0,0,0,0.35)",
+                            pointerEvents: layer.locked ? "none" : "auto",
                           }}
                         >
                           <img src={img.src} alt="" draggable={false} style={{ width: "100%", height: "100%", objectFit: "contain", pointerEvents: "none" }} />
                           {!layer.locked && (
                             <div
                               onMouseDown={(e) => {
+                                if (e.button !== 0) return;
                                 e.stopPropagation();
                                 setActiveLayerId(layer.id);
                                 setSelection({ kind: "image", id: img.id });
@@ -1556,6 +1570,7 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
                                 background: "white",
                                 border: "1px solid rgba(0,0,0,0.4)",
                                 cursor: "nwse-resize",
+                                pointerEvents: "auto",
                               }}
                             />
                           )}

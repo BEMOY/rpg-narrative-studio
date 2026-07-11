@@ -15,8 +15,13 @@ import {
   Coins,
   Sparkles,
   Heart,
+  Lock,
+  LockOpen,
+  Ban,
+  CircleCheck,
 } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
+import { ResizablePanel } from "../common/ResizablePanel";
 import { CAT_COLOR, isQuest, type Entry } from "../../types/database";
 import { compileQuestsScript } from "../../lib/questCompile";
 
@@ -37,6 +42,7 @@ interface RoadmapEdge {
   from: string;
   to: string;
   note?: string;
+  styleKind?: "unlock" | "block"; // dependency edges get distinct coloring from the default grey
 }
 
 interface NodePos {
@@ -66,6 +72,53 @@ function NodeIcon({ n }: { n: RoadmapNode }) {
   if (n.kind === "dialogue") return <MessageSquare size={16} />;
   if (n.kind === "flag") return <Tag size={14} />;
   return n.color === CAT_COLOR.side_quest ? <Swords size={16} /> : <Flag size={16} />;
+}
+
+// ---- quest dependency simulation ("what if this quest were completed?") ----
+
+type QuestStatus = "completed" | "blocked" | "locked" | "available";
+
+const STATUS_LABEL: Record<QuestStatus, string> = {
+  completed: "пройден",
+  blocked: "заблокирован",
+  locked: "заперт",
+  available: "доступен",
+};
+
+// Dependencies are declared FROM the source quest's perspective ("on completing this quest,
+// quest X unlocks/blocks") — see QuestPanel in EntryEditor.tsx. To know quest B's own status we
+// need the reverse index: who points AT B, and with which kind.
+function computeQuestStatuses(quests: Entry[], simCompleted: Set<string>): Map<string, QuestStatus> {
+  const byId = new Set(quests.map((q) => q.id));
+  const unlockedBy = new Map<string, string[]>();
+  const blockedBy = new Map<string, string[]>();
+  for (const q of quests) {
+    for (const dep of q.questDependencies ?? []) {
+      if (!dep.questId || !byId.has(dep.questId)) continue;
+      const map = dep.kind === "unlocks" ? unlockedBy : blockedBy;
+      if (!map.has(dep.questId)) map.set(dep.questId, []);
+      map.get(dep.questId)!.push(q.id);
+    }
+  }
+  const statuses = new Map<string, QuestStatus>();
+  for (const q of quests) {
+    if (simCompleted.has(q.id)) {
+      statuses.set(q.id, "completed");
+      continue;
+    }
+    const blockers = blockedBy.get(q.id) ?? [];
+    if (blockers.some((id) => simCompleted.has(id))) {
+      statuses.set(q.id, "blocked");
+      continue;
+    }
+    const gates = unlockedBy.get(q.id) ?? [];
+    if (gates.length > 0 && !gates.every((id) => simCompleted.has(id))) {
+      statuses.set(q.id, "locked");
+      continue;
+    }
+    statuses.set(q.id, "available");
+  }
+  return statuses;
 }
 
 function useQuestRoadmap() {
@@ -109,6 +162,20 @@ function useQuestRoadmap() {
         addNode({ id: fid, kind: "flag", label: flagName, color: FLAG_COLOR });
         addEdge({ from: `q:${q.id}`, to: fid, note: "устанавливает" });
         flagNames.add(flagName);
+      }
+    }
+
+    // quest -> quest ("открывает"/"блокирует"), from the Codex-only questDependencies —
+    // declared from the completed quest's own perspective (see QuestPanel).
+    for (const q of quests) {
+      for (const dep of q.questDependencies ?? []) {
+        if (!dep.questId || !questIds.has(dep.questId)) continue;
+        addEdge({
+          from: `q:${q.id}`,
+          to: `q:${dep.questId}`,
+          note: dep.kind === "unlocks" ? "открывает" : "блокирует",
+          styleKind: dep.kind === "unlocks" ? "unlock" : "block",
+        });
       }
     }
 
@@ -163,6 +230,104 @@ function useQuestRoadmap() {
   }, [entries, dialogues]);
 }
 
+function QuestNodeCard({
+  entry,
+  label,
+  color,
+  status,
+  on,
+  onToggle,
+}: {
+  entry?: Entry;
+  label: string;
+  color: string;
+  status: QuestStatus;
+  on: boolean;
+  onToggle: () => void;
+}) {
+  const objectives = entry?.objectives ?? [];
+  const rewards = entry?.rewards;
+  const hasRewards = !!(rewards && (rewards.coins || rewards.xp || rewards.affinity || rewards.items?.length));
+  const statusIcon =
+    status === "completed" ? (
+      <CircleCheck size={12} />
+    ) : status === "blocked" ? (
+      <Ban size={12} />
+    ) : status === "locked" ? (
+      <Lock size={12} />
+    ) : (
+      <LockOpen size={12} />
+    );
+  const statusColor = status === "completed" ? "#7cc98a" : status === "blocked" ? "#e0716f" : status === "locked" ? "var(--op-40)" : color;
+
+  return (
+    <div
+      className="w-[178px] rounded-lg shadow-lg border-2 transition-all duration-300 overflow-hidden group-hover:scale-[1.03]"
+      style={{
+        background: "var(--popover-bg)",
+        borderColor: statusColor,
+        opacity: status === "locked" || status === "blocked" ? 0.7 : 1,
+        filter: status === "locked" ? "grayscale(0.6)" : "none",
+      }}
+    >
+      <div className="flex items-center gap-1.5 px-2 py-1.5 border-b border-[var(--op-10)]">
+        {entry?.category === "side_quest" ? (
+          <Swords size={13} style={{ color }} className="shrink-0" />
+        ) : (
+          <Flag size={13} style={{ color }} className="shrink-0" />
+        )}
+        <span className="text-[11px] font-medium text-[var(--op-85)] truncate flex-1">{label}</span>
+      </div>
+      <div className="px-2 py-1.5 space-y-1.5">
+        {objectives.length > 0 && (
+          <div className="text-[10px] text-[var(--op-40)]">
+            {objectives.length} {objectives.length === 1 ? "цель" : "целей"}
+          </div>
+        )}
+        {hasRewards && (
+          <div className="flex items-center gap-2 text-[10px] text-[var(--op-45)]">
+            {!!rewards?.coins && (
+              <span className="flex items-center gap-0.5">
+                <Coins size={10} /> {rewards.coins}
+              </span>
+            )}
+            {!!rewards?.xp && (
+              <span className="flex items-center gap-0.5">
+                <Sparkles size={10} /> {rewards.xp}
+              </span>
+            )}
+            {!!rewards?.affinity && (
+              <span className="flex items-center gap-0.5">
+                <Heart size={10} /> {rewards.affinity}
+              </span>
+            )}
+            {!!rewards?.items?.length && <span className="opacity-70">+{rewards.items.length} предм.</span>}
+          </div>
+        )}
+        <div className="flex items-center justify-between gap-1.5 pt-0.5">
+          <span className="flex items-center gap-1 text-[10px] transition-colors duration-300" style={{ color: statusColor }}>
+            {statusIcon} {STATUS_LABEL[status]}
+          </span>
+          <button
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggle();
+            }}
+            title="Симуляция: считать этот квест пройденным"
+            className="relative w-8 h-[16px] rounded-full transition-colors duration-300 shrink-0"
+            style={{ background: on ? "#7cc98a" : "var(--op-15)" }}
+          >
+            <span
+              className={`absolute top-[2px] w-[12px] h-[12px] rounded-full bg-white shadow transition-all duration-300 ${on ? "left-[14px]" : "left-[2px]"}`}
+            />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function RoadmapGraph({
   nodes,
   edges,
@@ -170,6 +335,10 @@ function RoadmapGraph({
   onOpenDialogue,
   hoveredId,
   setHoveredId,
+  entries,
+  statuses,
+  simCompleted,
+  onToggleCompleted,
 }: {
   nodes: RoadmapNode[];
   edges: RoadmapEdge[];
@@ -177,9 +346,14 @@ function RoadmapGraph({
   onOpenDialogue: (id: string) => void;
   hoveredId: string | null;
   setHoveredId: (id: string | null) => void;
+  entries: Entry[];
+  statuses: Map<string, QuestStatus>;
+  simCompleted: Set<string>;
+  onToggleCompleted: (questId: string) => void;
 }) {
   const posRef = useRef<Map<string, NodePos>>(new Map());
   const pinnedRef = useRef<Set<string>>(new Set());
+  const anchorRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   const draggingRef = useRef<{ id: string; startClientX: number; startClientY: number; startX: number; startY: number } | null>(null);
   const panDragRef = useRef<{ startClientX: number; startClientY: number; startPanX: number; startPanY: number } | null>(null);
   const [, bump] = useState(0);
@@ -281,9 +455,28 @@ function RoadmapGraph({
       for (const id of ids) {
         const p = pos.get(id);
         if (!p) continue;
-        if (pinnedRef.current.has(id) || draggingRef.current?.id === id) {
+        if (draggingRef.current?.id === id) {
           p.vx = 0;
           p.vy = 0;
+          continue;
+        }
+        if (pinnedRef.current.has(id)) {
+          // Pinned (previously dragged) nodes stay anchored near where they were dropped,
+          // but keep a gentle perpetual bob instead of freezing dead — matches GraphView.
+          const anchor = anchorRef.current.get(id) ?? p;
+          p.vx += (anchor.x - p.x) * 0.03;
+          p.vy += (anchor.y - p.y) * 0.03;
+          p.vx += (Math.random() - 0.5) * IDLE_JITTER;
+          p.vy += (Math.random() - 0.5) * IDLE_JITTER;
+          p.vx *= 0.82;
+          p.vy *= 0.82;
+          const speed = Math.hypot(p.vx, p.vy);
+          if (speed > MAX_VELOCITY) {
+            p.vx = (p.vx / speed) * MAX_VELOCITY;
+            p.vy = (p.vy / speed) * MAX_VELOCITY;
+          }
+          p.x = clamp(p.x + p.vx, 40, WIDTH - 40);
+          p.y = clamp(p.y + p.vy, 40, HEIGHT - 40);
           continue;
         }
         p.vx += (WIDTH / 2 - p.x) * 0.0006;
@@ -334,8 +527,11 @@ function RoadmapGraph({
     const onUp = () => {
       const d = draggingRef.current;
       if (d) {
-        if (moved) pinnedRef.current.add(d.id);
-        else if (n.kind === "quest" && n.entryId) onOpenQuest(n.entryId);
+        if (moved) {
+          pinnedRef.current.add(d.id);
+          const finalPos = posRef.current.get(d.id);
+          if (finalPos) anchorRef.current.set(d.id, { x: finalPos.x, y: finalPos.y });
+        } else if (n.kind === "quest" && n.entryId) onOpenQuest(n.entryId);
         else if (n.kind === "dialogue" && n.dialogueId) onOpenDialogue(n.dialogueId);
       }
       draggingRef.current = null;
@@ -390,6 +586,9 @@ function RoadmapGraph({
     }
     return s;
   }, [hoveredId, edges]);
+
+  const nodeKindById = useMemo(() => new Map(nodes.map((n) => [n.id, n.kind])), [nodes]);
+  const entryById = useMemo(() => new Map(entries.map((e) => [e.id, e])), [entries]);
 
   const pos = posRef.current;
 
@@ -449,16 +648,31 @@ function RoadmapGraph({
                 const dist = Math.sqrt(dx * dx + dy * dy) || 1;
                 const nx = dx / dist;
                 const ny = dy / dist;
-                const r = 26;
-                const x1 = a.x + nx * r;
-                const y1 = a.y + ny * r;
-                const x2 = b.x - nx * (r + 8);
-                const y2 = b.y - ny * (r + 8);
+                // Quest cards are much bigger than the small circular dialogue/flag nodes —
+                // trim the line further back so it meets the card's edge instead of cutting
+                // through its middle.
+                const rFrom = nodeKindById.get(e.from) === "quest" ? 78 : 26;
+                const rTo = nodeKindById.get(e.to) === "quest" ? 78 : 26;
+                const x1 = a.x + nx * rFrom;
+                const y1 = a.y + ny * rFrom;
+                const x2 = b.x - nx * (rTo + 8);
+                const y2 = b.y - ny * (rTo + 8);
                 const mx = (a.x + b.x) / 2;
                 const my = (a.y + b.y) / 2;
+                const stroke = e.styleKind === "unlock" ? "#7cc98a" : e.styleKind === "block" ? "#e0716f" : "var(--op-30)";
+                const dash = e.styleKind === "block" ? "5 3" : undefined;
                 return (
-                  <g key={i} opacity={dim ? 0.1 : 0.9}>
-                    <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="var(--op-30)" strokeWidth={1.4} markerEnd="url(#quest-graph-arrow)" />
+                  <g key={i} opacity={dim ? 0.1 : 0.9} className="transition-opacity duration-300">
+                    <line
+                      x1={x1}
+                      y1={y1}
+                      x2={x2}
+                      y2={y2}
+                      stroke={stroke}
+                      strokeWidth={e.styleKind ? 1.8 : 1.4}
+                      strokeDasharray={dash}
+                      markerEnd="url(#quest-graph-arrow)"
+                    />
                     {e.note && (
                       <g transform={`translate(${mx}, ${my})`}>
                         <rect
@@ -471,7 +685,7 @@ function RoadmapGraph({
                           stroke="var(--popover-border)"
                           strokeWidth={1}
                         />
-                        <text x={0} y={4} textAnchor="middle" fontSize={10} fill="var(--op-60)" className="mono">
+                        <text x={0} y={4} textAnchor="middle" fontSize={10} fill={e.styleKind ? stroke : "var(--op-60)"} className="mono">
                           {e.note}
                         </text>
                       </g>
@@ -485,6 +699,39 @@ function RoadmapGraph({
               const p = pos.get(n.id);
               if (!p) return null;
               const dim = connected && !connected.has(n.id);
+              const wrapperStyle: React.CSSProperties = {
+                position: "absolute",
+                left: p.x,
+                top: p.y,
+                transform: "translate(-50%, -50%)",
+                opacity: dim ? 0.25 : 1,
+              };
+
+              if (n.kind === "quest" && n.entryId) {
+                const entry = entryById.get(n.entryId);
+                const status = statuses.get(n.entryId) ?? "available";
+                const on = simCompleted.has(n.entryId);
+                return (
+                  <div
+                    key={n.id}
+                    onMouseDown={(ev) => onNodePointerDown(n, ev)}
+                    onMouseEnter={() => {
+                      if (draggingRef.current) return;
+                      setHoveredId(n.id);
+                    }}
+                    onMouseLeave={() => {
+                      if (draggingRef.current) return;
+                      setHoveredId(null);
+                    }}
+                    style={wrapperStyle}
+                    className="cursor-pointer select-none group transition-opacity duration-300"
+                    title={n.label}
+                  >
+                    <QuestNodeCard entry={entry} label={n.label} color={n.color} status={status} on={on} onToggle={() => onToggleCompleted(n.entryId!)} />
+                  </div>
+                );
+              }
+
               return (
                 <div
                   key={n.id}
@@ -497,7 +744,7 @@ function RoadmapGraph({
                     if (draggingRef.current) return;
                     setHoveredId(null);
                   }}
-                  style={{ position: "absolute", left: p.x, top: p.y, transform: "translate(-50%, -50%)", opacity: dim ? 0.25 : 1 }}
+                  style={wrapperStyle}
                   className="flex flex-col items-center gap-1 cursor-pointer select-none group"
                   title={n.label}
                 >
@@ -534,14 +781,17 @@ function QuestListRow({
   entry,
   onOpen,
   onHover,
+  status,
 }: {
   entry: Entry;
   onOpen: (id: string) => void;
   onHover: (hovering: boolean) => void;
+  status?: QuestStatus;
 }) {
   const objectives = entry.objectives ?? [];
   const rewards = entry.rewards;
   const hasRewards = !!(rewards && (rewards.coins || rewards.xp || rewards.affinity || rewards.items?.length));
+  const statusColor = status === "completed" ? "#7cc98a" : status === "blocked" ? "#e0716f" : status === "locked" ? "var(--op-40)" : undefined;
   return (
     <button
       onClick={() => onOpen(entry.id)}
@@ -556,6 +806,13 @@ function QuestListRow({
           <Flag size={14} style={{ color: CAT_COLOR[entry.category] }} className="shrink-0" />
         )}
         <span className="text-sm text-[var(--op-85)] truncate flex-1">{entry.name}</span>
+        {status && status !== "available" && (
+          <span
+            className="w-1.5 h-1.5 rounded-full shrink-0 transition-colors duration-300"
+            style={{ background: statusColor }}
+            title={STATUS_LABEL[status]}
+          />
+        )}
         <span className="text-[10px] mono text-[var(--op-35)] shrink-0">{questTypeLabel(entry)}</span>
       </div>
       {objectives.length > 0 && (
@@ -667,6 +924,18 @@ export function QuestsView() {
   const { nodes, edges, quests } = useQuestRoadmap();
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
+  // "What if this quest were completed?" — a purely local, ephemeral simulation (not tied to
+  // any real save data) so the writer can toggle quests done/undone and instantly see, via the
+  // unlocks/blocks edges, what that would open up or lock elsewhere in the quest web.
+  const [simCompleted, setSimCompleted] = useState<Set<string>>(new Set());
+  const toggleCompleted = (questId: string) =>
+    setSimCompleted((prev) => {
+      const next = new Set(prev);
+      if (next.has(questId)) next.delete(questId);
+      else next.add(questId);
+      return next;
+    });
+  const statuses = useMemo(() => computeQuestStatuses(quests, simCompleted), [quests, simCompleted]);
 
   const mainQuests = quests.filter((q) => q.category === "main_quest");
   const sideQuests = quests.filter((q) => q.category === "side_quest");
@@ -678,7 +947,8 @@ export function QuestsView() {
 
   return (
     <div className="h-full flex overflow-hidden">
-      <div className="w-[280px] shrink-0 h-full flex flex-col border-r border-[var(--op-10)] overflow-hidden">
+      <ResizablePanel panelKey="quests-list" side="left" defaultWidth={280} min={220} max={440}>
+      <div className="h-full flex flex-col border-r border-[var(--op-10)] overflow-hidden">
         <div className="flex items-center gap-2 px-4 py-4 border-b border-[var(--op-10)] shrink-0">
           <ScrollText size={18} className="text-[var(--op-70)]" />
           <span className="text-lg font-medium text-[#ece4d2]">Квесты</span>
@@ -703,6 +973,7 @@ export function QuestsView() {
                         entry={q}
                         onOpen={openEntry}
                         onHover={(h) => setHoveredId(h ? `q:${q.id}` : null)}
+                        status={statuses.get(q.id)}
                       />
                     ))}
                   </div>
@@ -718,6 +989,7 @@ export function QuestsView() {
                         entry={q}
                         onOpen={openEntry}
                         onHover={(h) => setHoveredId(h ? `q:${q.id}` : null)}
+                        status={statuses.get(q.id)}
                       />
                     ))}
                   </div>
@@ -735,12 +1007,15 @@ export function QuestsView() {
           </button>
         </div>
       </div>
+      </ResizablePanel>
 
       <div className="flex-1 min-w-0 h-full flex flex-col overflow-hidden">
         <div className="px-5 py-4 border-b border-[var(--op-10)] shrink-0">
           <div className="text-sm text-[var(--op-45)]">
             Карта влияния — как квесты, диалоги и флаги связаны друг с другом. Наведите на узел, чтобы подсветить связи;
-            кликните по квесту или диалогу, чтобы открыть его.
+            кликните по квесту или диалогу, чтобы открыть его. Переключатель на карточке квеста — симуляция «что если этот
+            квест пройден»: <span style={{ color: "#7cc98a" }}>зелёные</span> связи показывают, что откроется, а{" "}
+            <span style={{ color: "#e0716f" }}>красные</span> — что заблокируется.
           </div>
         </div>
         <div className="flex-1 min-h-0">
@@ -751,6 +1026,10 @@ export function QuestsView() {
             onOpenDialogue={openDialogue}
             hoveredId={hoveredId}
             setHoveredId={setHoveredId}
+            entries={entries}
+            statuses={statuses}
+            simCompleted={simCompleted}
+            onToggleCompleted={toggleCompleted}
           />
         </div>
       </div>

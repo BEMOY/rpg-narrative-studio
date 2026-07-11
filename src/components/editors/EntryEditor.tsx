@@ -1,11 +1,12 @@
 import { Trash2, Plus, X, Upload, ImageOff, ChevronDown } from "lucide-react";
 import { useRef, useState } from "react";
-import type { DialogueSide, DialogueSpeakerData, Entry, EquipSlot, Objective, QuestRewards, Relationship } from "../../types/database";
+import type { DialogueSide, DialogueSpeakerData, Entry, EquipSlot, Objective, QuestDependency, QuestDependencyKind, QuestRewards, Relationship } from "../../types/database";
 import { canHaveStats, hasRelationship, isEquip, isQuest } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
 import { resizeImageFile } from "../../lib/image";
 import { usePasteImage } from "../../lib/usePasteImage";
 import { SearchSelect } from "../dialogue/SearchSelect";
+import { nextId } from "../../lib/mapDefaults";
 
 const SLOTS: EquipSlot[] = ["head", "body", "weapon", "offhand"];
 const RELATIONSHIPS: Relationship[] = ["friend", "neutral", "enemy"];
@@ -326,6 +327,14 @@ function QuestPanel({ entry }: { entry: Entry }) {
   const defaultType = entry.category === "main_quest" ? "main" : "side";
   const questType = entry.questType ?? defaultType;
 
+  const dependencies = entry.questDependencies ?? [];
+  const otherQuests = allEntries.filter((e) => isQuest(e.category) && e.id !== entry.id);
+  const setDependencies = (next: QuestDependency[]) => updateEntry(entry.id, { questDependencies: next });
+  const addDependency = () => setDependencies([...dependencies, { id: nextId("qdep"), questId: otherQuests[0]?.id ?? "", kind: "unlocks" }]);
+  const patchDependency = (i: number, p: Partial<QuestDependency>) =>
+    setDependencies(dependencies.map((d, idx) => (idx === i ? { ...d, ...p } : d)));
+  const removeDependency = (i: number) => setDependencies(dependencies.filter((_, idx) => idx !== i));
+
   return (
     <Section title="Квест (quest_define)">
       <Field label="Тип (type)">
@@ -445,6 +454,46 @@ function QuestPanel({ entry }: { entry: Entry }) {
           ))}
           <button onClick={addItem} className="flex items-center gap-1.5 text-xs text-[var(--op-50)] hover:text-[var(--op-80)]">
             <Plus size={12} /> Добавить предмет-награду
+          </button>
+        </div>
+      </div>
+
+      <div>
+        <div className="text-sm text-[var(--op-50)] mb-2 flex items-center gap-2">
+          Зависимости
+          {dependencies.length === 0 && (
+            <span className="text-xs text-[var(--op-30)]">— нет (необязательно; только для карты «Квесты», не влияет на quests_init())</span>
+          )}
+        </div>
+        <div className="space-y-1.5">
+          {dependencies.map((d, i) => (
+            <div key={d.id} className="flex items-center gap-1.5 rounded-md border border-[var(--op-7)] p-2">
+              <span className="text-xs text-[var(--op-45)] shrink-0">При завершении этого квеста —</span>
+              <select
+                className="input w-32 shrink-0"
+                value={d.kind}
+                onChange={(e) => patchDependency(i, { kind: e.target.value as QuestDependencyKind })}
+              >
+                <option value="unlocks">открывается</option>
+                <option value="blocks">блокируется</option>
+              </select>
+              <div className="flex-1 min-w-0">
+                <SearchSelect
+                  value={d.questId || undefined}
+                  onChange={(id) => patchDependency(i, { questId: id ?? "" })}
+                  options={otherQuests.map((e) => ({ id: e.id, label: e.name }))}
+                  placeholder="выбрать квест…"
+                  searchPlaceholder="Поиск квеста…"
+                  clearLabel="— не выбрано —"
+                />
+              </div>
+              <button onClick={() => removeDependency(i)} className="opacity-40 hover:opacity-100 shrink-0">
+                <X size={14} />
+              </button>
+            </div>
+          ))}
+          <button onClick={addDependency} className="flex items-center gap-1.5 text-xs text-[var(--op-50)] hover:text-[var(--op-80)]">
+            <Plus size={12} /> Добавить зависимость
           </button>
         </div>
       </div>

@@ -82,6 +82,7 @@ export function GraphView() {
 
   const posRef = useRef<Map<string, NodePos>>(new Map());
   const pinnedRef = useRef<Set<string>>(new Set());
+  const anchorRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   const draggingRef = useRef<{ id: string; startClientX: number; startClientY: number; startX: number; startY: number } | null>(null);
   const panDragRef = useRef<{ startClientX: number; startClientY: number; startPanX: number; startPanY: number } | null>(null);
   const [, bump] = useState(0);
@@ -201,9 +202,31 @@ export function GraphView() {
       for (const id of ids) {
         const p = pos.get(id);
         if (!p) continue;
-        if (pinnedRef.current.has(id) || draggingRef.current?.id === id) {
+        if (draggingRef.current?.id === id) {
+          // Actively being dragged by the cursor right now — no bob, snap exactly to
+          // wherever onNodePointerDown's mousemove handler placed it.
           p.vx = 0;
           p.vy = 0;
+          continue;
+        }
+        if (pinnedRef.current.has(id)) {
+          // A pinned (previously dragged) node stays near the spot the user dropped it —
+          // pulled back toward that anchor — but keeps the same gentle perpetual bob as
+          // everything else, instead of going completely dead/frozen.
+          const anchor = anchorRef.current.get(id) ?? p;
+          p.vx += (anchor.x - p.x) * 0.03;
+          p.vy += (anchor.y - p.y) * 0.03;
+          p.vx += (Math.random() - 0.5) * IDLE_JITTER;
+          p.vy += (Math.random() - 0.5) * IDLE_JITTER;
+          p.vx *= 0.82;
+          p.vy *= 0.82;
+          const speed = Math.hypot(p.vx, p.vy);
+          if (speed > MAX_VELOCITY) {
+            p.vx = (p.vx / speed) * MAX_VELOCITY;
+            p.vy = (p.vy / speed) * MAX_VELOCITY;
+          }
+          p.x = clamp(p.x + p.vx, 40, WIDTH - 40);
+          p.y = clamp(p.y + p.vy, 40, HEIGHT - 40);
           continue;
         }
         p.vx += (WIDTH / 2 - p.x) * 0.0006;
@@ -263,8 +286,11 @@ export function GraphView() {
     const onUp = () => {
       const d = draggingRef.current;
       if (d) {
-        if (moved) pinnedRef.current.add(d.id);
-        else openEntry(d.id);
+        if (moved) {
+          pinnedRef.current.add(d.id);
+          const finalPos = posRef.current.get(d.id);
+          if (finalPos) anchorRef.current.set(d.id, { x: finalPos.x, y: finalPos.y });
+        } else openEntry(d.id);
       }
       draggingRef.current = null;
       window.removeEventListener("mousemove", onMove);
@@ -501,7 +527,7 @@ export function GraphView() {
                   title={e.description || e.name}
                 >
                   <div
-                    className="w-11 h-11 rounded-full grid place-items-center border-2 shadow-lg transition-transform group-hover:scale-110 pointer-events-none"
+                    className="w-11 h-11 rounded-full grid place-items-center border-2 shadow-lg transition-transform group-hover:scale-110 pointer-events-none overflow-hidden"
                     style={{ background: "var(--popover-bg)", borderColor: color, color }}
                   >
                     {e.image ? (

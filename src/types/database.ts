@@ -97,6 +97,18 @@ export interface QuestRewardItem {
   count: number;
 }
 
+// Codex-only planning aid — NOT part of the real engine's quest_define() shape (there's no
+// "dependency" concept in scr_quests.gml). Lets the writer sketch out "on completing THIS
+// quest, quest X becomes available / quest Y becomes locked" and see it laid out in the
+// Quests roadmap graph, with an interactive "what if this were completed" toggle per quest.
+export type QuestDependencyKind = "unlocks" | "blocks";
+
+export interface QuestDependency {
+  id: string;
+  questId: string; // the OTHER quest this relationship targets
+  kind: QuestDependencyKind; // completing THIS quest unlocks/blocks the target quest
+}
+
 // Matches quest_define()'s optional `rewards` struct exactly: any subset of these fields.
 export interface QuestRewards {
   coins?: number;
@@ -139,6 +151,7 @@ export interface Entry {
   // examples like "talk_elder"); defaults to main/side derived from category when unset.
   questType?: "main" | "side" | "story";
   rewards?: QuestRewards; // isQuest(category) — matches quest_define()'s optional rewards struct
+  questDependencies?: QuestDependency[]; // isQuest(category) — Codex-only, see QuestDependency
   slot?: EquipSlot; // isEquip(category)
 
   // equip/item economy + export fields — see docs/14_Export_System.md Field Mapping: Items
@@ -188,6 +201,8 @@ export interface RarityObject {
   style: ColorStyle;
 }
 
+export type DialogueFlagType = "bool" | "number";
+
 export interface Project {
   name: string;
   entries: Entry[];
@@ -196,6 +211,10 @@ export interface Project {
   dialogueFolders: DialogueFolder[];
   dialogues: Dialogue[];
   dialogueFlags: string[];
+  // Per-flag value type (bool vs number), keyed by flag name — missing entries default to
+  // "bool" (matches the common flag_set(name, true/false) convention). Lets flag-value pickers
+  // show a plain on/off switch or a number input instead of a generic true/false/number select.
+  dialogueFlagTypes: Record<string, DialogueFlagType>;
   colorStyles: DialogueColorStyle[];
 }
 
