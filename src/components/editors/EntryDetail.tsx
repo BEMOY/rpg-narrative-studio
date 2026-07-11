@@ -15,9 +15,10 @@ import {
   Package,
   Box,
   BookOpen,
+  Search,
 } from "lucide-react";
 import type { Category, Entry } from "../../types/database";
-import { CAT_COLOR, CAT_LABEL, isQuest, hasRelationship, canHaveStats } from "../../types/database";
+import { CAT_COLOR, CAT_LABEL, CAT_ORDER, isQuest, hasRelationship, canHaveStats } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
 import { resizeImageFile } from "../../lib/image";
 import { usePasteImage } from "../../lib/usePasteImage";
@@ -287,12 +288,35 @@ function RelationsBlock({ entry }: { entry: Entry }) {
   const allEntries = useProjectStore((s) => s.project.entries);
   const updateEntry = useProjectStore((s) => s.updateEntry);
   const [picking, setPicking] = useState(false);
+  const [pickQuery, setPickQuery] = useState("");
+  const [pickCats, setPickCats] = useState<Set<Category>>(new Set());
 
   const linked = entry.references
     .map((id) => allEntries.find((e) => e.id === id))
     .filter((e): e is Entry => Boolean(e));
 
   const candidates = allEntries.filter((e) => e.id !== entry.id && !entry.references.includes(e.id));
+  const filteredCandidates = candidates.filter((e) => {
+    if (pickCats.size > 0 && !pickCats.has(e.category)) return false;
+    const q = pickQuery.trim().toLowerCase();
+    if (!q) return true;
+    return e.name.toLowerCase().includes(q) || e.description.toLowerCase().includes(q) || (e.tags ?? []).some((t) => t.toLowerCase().includes(q));
+  });
+
+  const startPicking = () => {
+    setPickQuery("");
+    setPickCats(new Set());
+    setPicking(true);
+  };
+
+  const togglePickCat = (c: Category) => {
+    setPickCats((s) => {
+      const next = new Set(s);
+      if (next.has(c)) next.delete(c);
+      else next.add(c);
+      return next;
+    });
+  };
 
   const addRef = (id: string) => {
     if (!id) return;
@@ -338,25 +362,60 @@ function RelationsBlock({ entry }: { entry: Entry }) {
         ))}
 
         {picking ? (
-          <select
-            autoFocus
-            className="input"
-            defaultValue=""
-            onChange={(e) => addRef(e.target.value)}
-            onBlur={() => setPicking(false)}
-          >
-            <option value="" disabled>
-              Выбрать запись…
-            </option>
-            {candidates.map((e) => (
-              <option key={e.id} value={e.id}>
-                {CAT_LABEL[e.category]} — {e.name}
-              </option>
-            ))}
-          </select>
+          <div className="border border-[var(--op-10)] rounded-md p-2 space-y-2 bg-[var(--op-5)]">
+            <div className="flex items-center gap-2">
+              <Search size={13} className="text-[var(--op-40)] shrink-0" />
+              <input
+                autoFocus
+                value={pickQuery}
+                onChange={(e) => setPickQuery(e.target.value)}
+                placeholder="Поиск записи…"
+                className="flex-1 bg-transparent outline-none text-sm text-[var(--op-80)] placeholder:text-[var(--op-30)]"
+              />
+              <button onClick={() => setPicking(false)} className="opacity-40 hover:opacity-100 shrink-0">
+                <X size={13} />
+              </button>
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {CAT_ORDER.map((c) => {
+                const active = pickCats.has(c);
+                return (
+                  <button
+                    key={c}
+                    onClick={() => togglePickCat(c)}
+                    className={`text-[10px] px-2 py-1 rounded-full border transition-colors ${
+                      active ? "border-accent text-accent bg-accent/10" : "border-[var(--op-10)] text-[var(--op-40)] hover:text-[var(--op-70)]"
+                    }`}
+                  >
+                    {CAT_LABEL[c]}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="max-h-48 overflow-y-auto space-y-0.5">
+              {filteredCandidates.length === 0 ? (
+                <div className="text-xs text-[var(--op-30)] px-1 py-2">Ничего не найдено.</div>
+              ) : (
+                filteredCandidates.map((e) => {
+                  const Icon = CAT_ICON[e.category];
+                  return (
+                    <button
+                      key={e.id}
+                      onClick={() => addRef(e.id)}
+                      className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-[var(--op-7)] text-left text-sm"
+                    >
+                      <Icon size={13} style={{ color: CAT_COLOR[e.category] }} className="shrink-0" />
+                      <span className="text-[var(--op-80)] truncate flex-1">{e.name}</span>
+                      <span className="text-[10px] text-[var(--op-30)] shrink-0">{CAT_LABEL[e.category]}</span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
         ) : (
           <button
-            onClick={() => setPicking(true)}
+            onClick={startPicking}
             className="flex items-center gap-1.5 text-xs text-[var(--op-50)] hover:text-[var(--op-80)]"
           >
             <Plus size={12} /> Добавить связь

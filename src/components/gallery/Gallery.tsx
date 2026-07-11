@@ -1,8 +1,7 @@
-import { Search, Plus, User, MapPin, Flag, Swords, Shirt, Package, Box, BookOpen, LayoutGrid, CheckSquare, Square, ListChecks, Filter, Trash2, X } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { Search, Plus, User, MapPin, Flag, Swords, Shirt, Package, Box, BookOpen, LayoutGrid, CheckSquare, Square, ListChecks, Trash2, X } from "lucide-react";
+import { useMemo, useState } from "react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { MapThumbnail, mapHasContent } from "../mapeditor/MapThumbnail";
-import { PortalMenu } from "../common/PortalMenu";
 import {
   CAT_COLOR,
   CAT_LABEL,
@@ -137,19 +136,14 @@ export function Gallery() {
   const openEntry = useProjectStore((s) => s.openEntry);
   const createEntry = useProjectStore((s) => s.createEntry);
   const chapters = useProjectStore((s) => s.project.chapters);
-  const hiddenCategories = useProjectStore((s) => s.hiddenCategories);
-  const toggleCategoryVisibility = useProjectStore((s) => s.toggleCategoryVisibility);
   const deleteEntries = useProjectStore((s) => s.deleteEntries);
 
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [filterOpen, setFilterOpen] = useState(false);
-  const filterBtnRef = useRef<HTMLButtonElement>(null);
 
   const list = useMemo(() => {
     let l = entries;
     if (activeCategory !== "all") l = l.filter((e) => e.category === activeCategory);
-    if (hiddenCategories.length) l = l.filter((e) => !hiddenCategories.includes(e.category));
     if (query.trim()) {
       const q = query.toLowerCase();
       l = l.filter(
@@ -161,7 +155,7 @@ export function Gallery() {
       );
     }
     return l;
-  }, [entries, activeCategory, hiddenCategories, query]);
+  }, [entries, activeCategory, query]);
 
   // Group by chapter (story order), matching the author's own Codex — entries with no chapter
   // (or a chapter that no longer exists in the project) land in one trailing "без главы" group.
@@ -233,45 +227,6 @@ export function Gallery() {
             {selectMode ? <X size={14} /> : <ListChecks size={14} />}
             {selectMode ? "Отмена" : "Выбрать"}
           </button>
-          <button
-            ref={filterBtnRef}
-            onClick={() => setFilterOpen((v) => !v)}
-            title="Фильтр категорий"
-            className={`flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md transition-colors ${
-              hiddenCategories.length ? "bg-accent/25 text-[var(--op-90)]" : "glass hover:bg-[var(--op-10)]"
-            }`}
-          >
-            <Filter size={14} />
-            {hiddenCategories.length > 0 && <span className="text-xs mono">{CAT_ORDER.length - hiddenCategories.length}/{CAT_ORDER.length}</span>}
-          </button>
-          <PortalMenu anchorRef={filterBtnRef} open={filterOpen} onClose={() => setFilterOpen(false)}>
-            <div className="w-56 p-2">
-              <div className="flex items-center justify-between px-1.5 pb-1.5 mb-1 border-b border-[var(--op-10)]">
-                <span className="text-xs uppercase tracking-wider text-[var(--op-35)]">Категории</span>
-                <button
-                  onClick={() => CAT_ORDER.forEach((c) => hiddenCategories.includes(c) && toggleCategoryVisibility(c))}
-                  className="text-[10px] text-accent hover:underline"
-                >
-                  показать все
-                </button>
-              </div>
-              {CAT_ORDER.map((c) => {
-                const Icon = CAT_ICON[c];
-                const visible = !hiddenCategories.includes(c);
-                return (
-                  <button
-                    key={c}
-                    onClick={() => toggleCategoryVisibility(c)}
-                    className="w-full flex items-center gap-2.5 px-1.5 py-1.5 rounded-md hover:bg-[var(--op-7)] text-left text-sm"
-                  >
-                    {visible ? <CheckSquare size={14} className="text-accent shrink-0" /> : <Square size={14} className="text-[var(--op-30)] shrink-0" />}
-                    <Icon size={13} style={{ color: CAT_COLOR[c] }} className="shrink-0" />
-                    <span className={visible ? "text-[var(--op-80)]" : "text-[var(--op-35)]"}>{CAT_LABEL[c]}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </PortalMenu>
           <div className="glass rounded-md px-3 py-1.5 flex items-center gap-2 text-sm w-64">
             <Search size={14} className="text-[var(--op-40)]" />
             <input

@@ -49,6 +49,7 @@ const HEIGHT = 1700;
 const IDEAL_LEN = 190;
 const REPULSION = 26000;
 const MAX_SETTLE_FRAMES = 260;
+const IDLE_JITTER = 0.16;
 
 function clamp(v: number, lo: number, hi: number) {
   return Math.max(lo, Math.min(hi, v));
@@ -201,6 +202,12 @@ export function GraphView() {
         }
         p.vx += (WIDTH / 2 - p.x) * 0.0006;
         p.vy += (HEIGHT / 2 - p.y) * 0.0006;
+        // Gentle perpetual drift once the layout has mostly settled — like Obsidian's
+        // graph view, nodes never quite come to a dead stop, they softly bob in place.
+        if (frame > MAX_SETTLE_FRAMES) {
+          p.vx += (Math.random() - 0.5) * IDLE_JITTER;
+          p.vy += (Math.random() - 0.5) * IDLE_JITTER;
+        }
         p.vx *= 0.82;
         p.vy *= 0.82;
         p.x = clamp(p.x + p.vx, 40, WIDTH - 40);
@@ -208,7 +215,7 @@ export function GraphView() {
       }
       frame++;
       bump((n) => n + 1);
-      if (frame < MAX_SETTLE_FRAMES) raf = requestAnimationFrame(tick);
+      raf = requestAnimationFrame(tick);
     }
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
