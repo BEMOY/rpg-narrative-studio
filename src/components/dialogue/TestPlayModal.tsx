@@ -1,8 +1,10 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { X, Play, RotateCcw } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import type { Dialogue, DialogueCondition } from "../../types/database";
 import { evalCondition, type DialogueTestState } from "../../lib/dialogueEval";
+import { parseDialogueMarkup, resolveGmlColor } from "../../lib/dialogueMarkup";
+import { MarkupText } from "./MarkupText";
 
 // Collects every distinct entry-kind condition used anywhere in the dialogue so the tester
 // can manually flip "has / not_has" toggles for them — there's no real per-playthrough
@@ -16,18 +18,31 @@ function collectEntryConditions(dialogue: Dialogue): DialogueCondition[] {
   return Array.from(seen.values());
 }
 
+const BASE_MS_PER_CHAR = 26;
+
 export function TestPlayModal({ dialogue, onClose }: { dialogue: Dialogue; onClose: () => void }) {
   const entries = useProjectStore((s) => s.project.entries);
   const [nodeId, setNodeId] = useState(dialogue.startNodeId);
   const [lineIdx, setLineIdx] = useState(0);
   const [state, setState] = useState<DialogueTestState>({ flags: {}, entryFlags: {} });
   const [ended, setEnded] = useState(false);
+  const [revealCount, setRevealCount] = useState(0);
+  const [phase, setPhase] = useState<"typing" | "done">("done");
+  const [focusedChoice, setFocusedChoice] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setTimeout>>();
 
   const entryConds = useMemo(() => collectEntryConditions(dialogue), [dialogue]);
   const node = dialogue.nodes.find((n) => n.id === nodeId);
   const visibleLines = (node?.lines ?? []).filter((l) => evalCondition(l.condition, state, entries));
   const currentLine = visibleLines[lineIdx];
   const visibleChoices = (node?.choices ?? []).filter((c) => evalCondition(c.condition, state, entries));
+  const atLastLine = lineIdx >= visibleLines.length - 1;
+
+  const speakerEntry = currentLine?.speakerEntryId ? entries.find((e) => e.id === currentLine.speakerEntryId) : undefined;
+  const speakerData = speakerEntry?.dialogueSpeaker;
+  const displayName = speakerData?.displayName || speakerEntry?.name || currentLine?.speaker || "";
+  const nameColor = resolveGmlColor(speakerData?.color);
+  const showPortrait = !!currentLine && currentLine.side !== "none" && (!!displayName || !!currentLine.speaker);
 
   const restart = () => {
     setNodeId(dialogue.startNodeId);
@@ -47,7 +62,6 @@ export function TestPlayModal({ dialogue, onClose }: { dialogue: Dialogue; onClo
 
   const advanceLine = () => {
     if (lineIdx + 1 < visibleLines.length) setLineIdx(lineIdx + 1);
-    // else: stay put — the choices/continue block below takes over.
   };
 
   const pickChoice = (choiceId: string) => {
@@ -63,13 +77,91 @@ export function TestPlayModal({ dialogue, onClose }: { dialogue: Dialogue; onClo
     goToNode(choice.targetNodeId);
   };
 
-  const atLastLine = lineIdx >= visibleLines.length - 1;
+  // Typewriter reveal, mirroring obj_dialogue's "typing" state: per-glyph speed multipliers
+  // from [speed=N] and extra pauses from [pause=N] both apply; a speaker's own text_speed
+  // (from the "Диалог" tab on their Character entry, if linked) scales the overall pace.
+  useEffect(() => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    if (!currentLine) {
+      setRevealCount(0);
+      setPhase("done");
+      return;
+    }
+    const glyphs = parseDialogueMarkup(currentLine.text);
+    setRevealCount(0);
+    setPhase(glyphs.length > 0 ? "typing" : "done");
+    const speedFactor = speakerData?.textSpeed ? speakerData.textSpeed / 0.3 : 1;
+    let i = 0;
+    const step = () => {
+      i++;
+      setRevealCount(i);
+      if (i >= glyphs.length) {
+        setPhase("done");
+        return;
+      }
+      const g = glyphs[i - 1];
+      const delay = Math.max(4, (BASE_MS_PER_CHAR * speedFactor) / (g.speed || 1)) + g.pauseAfter * 16;
+      timerRef.current = setTimeout(step, delay);
+    };
+    if (glyphs.length > 0) timerRef.current = setTimeout(step, Math.max(4, BASE_MS_PER_CHAR * speedFactor));
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodeId, lineIdx, currentLine?.text]);
+
+  useEffect(() => setFocusedChoice(0), [nodeId, lineIdx]);
+
+  const choosing = !ended && !!node && atLastLine && phase === "done" && visibleChoices.length > 0;
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (choosing) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setFocusedChoice((f) => (f + 1) % visibleChoices.length);
+        } else if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setFocusedChoice((f) => (f - 1 + visibleChoices.length) % visibleChoices.length);
+        } else if (e.key === "Enter") {
+          e.preventDefault();
+          pickChoice(visibleChoices[focusedChoice]?.id);
+        }
+        return;
+      }
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        handleBoxClick();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  });
+
+  const handleBoxClick = () => {
+    if (ended || !node) return;
+    if (currentLine && phase === "typing") {
+      if (currentLine.noSkip) return;
+      if (timerRef.current) clearTimeout(timerRef.current);
+      setRevealCount(parseDialogueMarkup(currentLine.text).length);
+      setPhase("done");
+      return;
+    }
+    if (!atLastLine) {
+      advanceLine();
+      return;
+    }
+    if (visibleChoices.length === 0) {
+      goToNode(node.continueTo);
+    }
+  };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-3" onClick={onClose}>
-      <div className="popover rounded-xl w-full max-w-2xl h-[520px] flex overflow-hidden shadow-2xl" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-3" onClick={onClose}>
+      <div className="popover rounded-xl w-full max-w-3xl h-[600px] flex overflow-hidden shadow-2xl dlg-box-enter" onClick={(e) => e.stopPropagation()}>
         <div className="flex-1 flex flex-col overflow-hidden">
-          <div className="flex items-center gap-2 px-4 py-3 border-b border-[var(--op-10)] shrink-0">
+          <div className="flex items-center gap-2 px-4 py-2.5 border-b border-[var(--op-10)] shrink-0">
             <Play size={14} className="text-accent" />
             <span className="text-sm font-medium text-[var(--op-85)]">Тест — {dialogue.name}</span>
             <button onClick={restart} title="Начать заново" className="ml-auto opacity-50 hover:opacity-100">
@@ -80,33 +172,85 @@ export function TestPlayModal({ dialogue, onClose }: { dialogue: Dialogue; onClo
             </button>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-5 flex flex-col justify-end">
+          <div
+            className="flex-1 relative overflow-hidden flex items-end justify-center p-6"
+            style={{ background: "radial-gradient(120% 100% at 50% 0%, #23203a 0%, #14121e 55%, #0b0a11 100%)" }}
+          >
             {ended || !node ? (
-              <div className="text-center text-sm text-[var(--op-40)]">Диалог закончен.</div>
-            ) : currentLine ? (
-              <div className="space-y-1">
-                <div className="text-xs font-medium text-accent">{currentLine.speaker || "…"}</div>
-                <div className="text-sm text-[var(--op-85)] leading-relaxed whitespace-pre-wrap">{currentLine.text}</div>
-              </div>
+              <div className="text-center text-sm text-[var(--op-40)] mb-16">Диалог закончен.</div>
             ) : (
-              <div className="text-xs text-[var(--op-30)]">В этой ноде нет видимых реплик — переходим дальше.</div>
+              <div className="w-full max-w-xl select-none">
+                {showPortrait && (
+                  <div className={`flex items-end gap-3 ${currentLine?.side === "right" ? "flex-row-reverse" : ""}`}>
+                    <div
+                      key={speakerEntry?.id ?? currentLine?.speaker}
+                      className={`dlg-portrait-enter w-16 h-16 rounded-lg shrink-0 grid place-items-center text-2xl font-bold shadow-lg overflow-hidden ${
+                        phase === "typing" ? "dlg-fx-wave" : ""
+                      }`}
+                      style={{
+                        background: `linear-gradient(160deg, ${nameColor}40, ${nameColor}10)`,
+                        border: `2px solid ${nameColor}90`,
+                        color: nameColor,
+                      }}
+                    >
+                      {speakerEntry?.image ? (
+                        <img src={speakerEntry.image} alt="" className="w-full h-full object-cover" />
+                      ) : (
+                        (displayName || "?").slice(0, 1).toUpperCase()
+                      )}
+                    </div>
+                  </div>
+                )}
+                <div className="rounded-xl border border-[var(--op-15)] bg-[#0d0c14]/95 shadow-2xl overflow-hidden -mt-px">
+                  {showPortrait && displayName && (
+                    <div className="px-4 pt-3">
+                      <span
+                        className="text-xs font-bold px-2.5 py-1 rounded-md inline-block"
+                        style={{ color: nameColor, background: nameColor + "1a", border: `1px solid ${nameColor}40` }}
+                      >
+                        {displayName}
+                      </span>
+                    </div>
+                  )}
+                  <div
+                    onClick={handleBoxClick}
+                    className={`px-4 py-3 min-h-[76px] text-sm leading-relaxed text-[var(--op-90)] ${
+                      currentLine ? "cursor-pointer" : ""
+                    }`}
+                  >
+                    {currentLine ? (
+                      <>
+                        <MarkupText text={currentLine.text} revealCount={revealCount} />
+                        {phase === "done" && <span className="dlg-caret ml-1 inline-block text-[var(--op-40)]">▾</span>}
+                      </>
+                    ) : (
+                      <span className="text-[var(--op-30)] text-xs">В этой ноде нет видимых реплик — переходим дальше.</span>
+                    )}
+                  </div>
+                </div>
+              </div>
             )}
           </div>
 
           <div className="border-t border-[var(--op-10)] p-3 shrink-0 space-y-1.5">
             {!ended && node && !atLastLine && currentLine && (
-              <button onClick={advanceLine} className="w-full text-sm py-2 rounded-md bg-accent/80 hover:bg-accent">
-                Далее
+              <button onClick={advanceLine} disabled={phase === "typing"} className="w-full text-sm py-2 rounded-md bg-accent/80 hover:bg-accent disabled:opacity-40">
+                {phase === "typing" ? "Печатает…" : "Далее"}
               </button>
             )}
-            {!ended && node && atLastLine && visibleChoices.length > 0 && (
+            {!ended && node && atLastLine && visibleChoices.length > 0 && phase === "done" && (
               <div className="space-y-1.5">
-                {visibleChoices.map((c) => (
+                {visibleChoices.map((c, i) => (
                   <button
                     key={c.id}
                     onClick={() => pickChoice(c.id)}
-                    className="w-full text-left text-sm px-3 py-2 rounded-md bg-[var(--op-6)] hover:bg-[var(--op-10)] text-[var(--op-80)]"
+                    onMouseEnter={() => setFocusedChoice(i)}
+                    className={`dlg-choice-enter w-full text-left text-sm px-3 py-2 rounded-md flex items-center gap-2 transition-colors ${
+                      i === focusedChoice ? "bg-accent/25 text-[var(--op-95)]" : "bg-[var(--op-6)] hover:bg-[var(--op-10)] text-[var(--op-80)]"
+                    }`}
+                    style={{ animationDelay: `${i * 40}ms` }}
                   >
+                    <span className={`text-accent ${i === focusedChoice ? "opacity-100" : "opacity-0"}`}>▶</span>
                     {c.text || "…"}
                   </button>
                 ))}
@@ -115,10 +259,10 @@ export function TestPlayModal({ dialogue, onClose }: { dialogue: Dialogue; onClo
             {!ended && node && atLastLine && visibleChoices.length === 0 && (
               <button
                 onClick={() => goToNode(node.continueTo)}
-                disabled={!node.continueTo}
+                disabled={!node.continueTo || phase === "typing"}
                 className="w-full text-sm py-2 rounded-md bg-accent/80 hover:bg-accent disabled:opacity-40"
               >
-                {node.continueTo ? "Далее" : "Конец диалога"}
+                {phase === "typing" ? "Печатает…" : node.continueTo ? "Далее" : "Конец диалога"}
               </button>
             )}
             {ended && (

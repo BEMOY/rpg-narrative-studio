@@ -1144,7 +1144,7 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
               )}
             </div>
 
-            <div className="p-3 border-b border-[var(--op-10)]">
+            <div className="p-3 border-b border-[var(--op-10)] shrink-0">
               <div className="flex items-center justify-between mb-2 relative">
                 <div className="text-xs uppercase tracking-wider text-[var(--op-35)]">Слои</div>
                 <button
@@ -1316,7 +1316,7 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
                   className="bg-transparent outline-none text-[var(--op-80)] placeholder:text-[var(--op-30)] w-full"
                 />
               </div>
-              <div className="flex-1 overflow-y-auto space-y-0.5">
+              <div className="flex-1 min-h-0 overflow-y-auto space-y-0.5">
                 {filteredEntries.map((e) => (
                   <div
                     key={e.id}

@@ -33,9 +33,15 @@ export function ResizablePanel({
 
   const CollapseIcon = side === "left" ? ChevronLeft : ChevronRight;
   const handle = (
-    <div className="relative w-1 shrink-0 h-full group/handle">
-      <div onMouseDown={startResize} className="absolute inset-y-0 -left-1 -right-1 cursor-col-resize z-10" />
-      <div className="absolute inset-y-0 left-0 right-0 bg-transparent group-hover/handle:bg-accent/40 transition-colors pointer-events-none" />
+    <div className="relative w-2.5 shrink-0 h-full group/handle">
+      <div onMouseDown={startResize} className="absolute inset-y-0 -left-1.5 -right-1.5 cursor-col-resize z-10" />
+      {/* Always-visible grip line so the draggable edge is discoverable, not just on hover */}
+      <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-px bg-[var(--op-15)] group-hover/handle:bg-accent/70 group-hover/handle:w-0.5 transition-colors pointer-events-none" />
+      <div className="absolute top-1/2 -translate-y-1/2 left-1/2 -translate-x-1/2 flex flex-col gap-0.5 pointer-events-none opacity-60 group-hover/handle:opacity-0 transition-opacity">
+        <span className="w-0.5 h-0.5 rounded-full bg-[var(--op-30)]" />
+        <span className="w-0.5 h-0.5 rounded-full bg-[var(--op-30)]" />
+        <span className="w-0.5 h-0.5 rounded-full bg-[var(--op-30)]" />
+      </div>
       <button
         onClick={() => setCollapsed(true)}
         title="Свернуть панель"

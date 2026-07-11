@@ -121,6 +121,28 @@ export interface Entry {
   quest?: boolean; // "quest item" flag, not to be confused with category main_quest/side_quest
   overlay?: string;
   rarityId?: string;
+
+  // character-only: mirrors the real engine's speaker_define(key, {...}) shape (see
+  // scr_dialogue_data / speakers_init in the user's project) so a GML speakers script can be
+  // generated straight from Character entries. Every field is optional — the exporter fills in
+  // sensible placeholders (display_name -> entry name, color -> c_white, blip -> -1, side ->
+  // left, text_speed -> 0.3, box -> spr_dlg_box) for anything left blank.
+  dialogueSpeaker?: DialogueSpeakerData;
+}
+
+export interface DialogueSpeakerPortrait {
+  emotion: string; // e.g. "neutral" / "happy" / "angry" — matches the keys in speaker_define's portraits struct
+  sprite: string; // GML sprite asset name, e.g. spr_port_test_neutral
+}
+
+export interface DialogueSpeakerData {
+  displayName?: string;
+  portraits: DialogueSpeakerPortrait[];
+  color?: string; // GML color constant or hex, e.g. c_white
+  blip?: string; // sound asset name, or "-1" for none
+  side?: DialogueSide;
+  textSpeed?: number;
+  box?: string; // sprite asset name for this speaker's dialogue-box skin override
 }
 
 export type ColorStyleKind = "solid" | "gradient" | "gradient_anim" | "rainbow" | "pulse";
@@ -308,10 +330,4 @@ export interface Dialogue {
   nodes: DialogueNode[];
 }
 
-export const MARKUP_TAGS: { tag: string; label: string }[] = [
-  { tag: "[wave]", label: "[wave]" },
-  { tag: "[shake]", label: "[shake]" },
-  { tag: "[c=...]", label: "[c=…]" },
-  { tag: "[pause]", label: "[pause]" },
-  { tag: "[speed]", label: "[speed]" },
-];
+// MARKUP_TAGS moved to src/lib/dialogueMarkup.ts (now alongside the parser/renderer it drives).

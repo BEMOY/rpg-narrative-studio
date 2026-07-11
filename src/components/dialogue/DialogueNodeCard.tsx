@@ -2,25 +2,49 @@ import { useRef } from "react";
 import { Star, Trash2, Plus, X, GripHorizontal } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { ConditionEditor } from "./ConditionEditor";
+import { SearchSelect } from "./SearchSelect";
+import { MarkupText } from "./MarkupText";
 import type { Dialogue, DialogueChoice, DialogueLine, DialogueNode, DialogueSide } from "../../types/database";
-import { MARKUP_TAGS } from "../../types/database";
+import { MARKUP_TAGS } from "../../lib/dialogueMarkup";
 
 function LineTextEditor({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const ref = useRef<HTMLTextAreaElement>(null);
 
-  const insertTag = (tag: string) => {
+  // Applying an effect: select a range of text first, then click the effect's name — for
+  // "paired" tags (wave/shake/c=...) the selection gets wrapped in [tag]...[/tag]; for
+  // point-in-time codes (speed/pause, which aren't ranges in the engine) the code is just
+  // inserted at the caret/selection start. Falls back to inserting an empty pair at the
+  // caret if nothing is selected, so the tags are still reachable via typing between them.
+  const applyTag = (def: (typeof MARKUP_TAGS)[number]) => {
     const el = ref.current;
-    if (!el) {
-      onChange(value + tag);
-      return;
+    const start = el?.selectionStart ?? value.length;
+    const end = el?.selectionEnd ?? value.length;
+
+    let arg: string | undefined;
+    if (def.promptForValue) {
+      const entered = prompt(def.promptLabel ?? `Значение для ${def.label}`, def.defaultValue ?? "");
+      if (entered === null) return; // cancelled
+      arg = entered.trim();
     }
-    const start = el.selectionStart ?? value.length;
-    const end = el.selectionEnd ?? value.length;
-    const next = value.slice(0, start) + tag + value.slice(end);
+    const openTag = arg ? `[${def.id}=${arg}]` : `[${def.id}]`;
+
+    let next: string;
+    let caretStart: number;
+    let caretEnd: number;
+    if (def.paired) {
+      const closeTag = `[/${def.id}]`;
+      const selected = value.slice(start, end);
+      next = value.slice(0, start) + openTag + selected + closeTag + value.slice(end);
+      caretStart = start + openTag.length;
+      caretEnd = caretStart + selected.length;
+    } else {
+      next = value.slice(0, start) + openTag + value.slice(end);
+      caretStart = caretEnd = start + openTag.length;
+    }
     onChange(next);
     requestAnimationFrame(() => {
-      el.focus();
-      el.setSelectionRange(start + tag.length, start + tag.length);
+      el?.focus();
+      el?.setSelectionRange(caretStart, caretEnd);
     });
   };
 
@@ -29,11 +53,11 @@ function LineTextEditor({ value, onChange }: { value: string; onChange: (v: stri
       <div className="flex flex-wrap gap-1 mb-1">
         {MARKUP_TAGS.map((t) => (
           <button
-            key={t.tag}
+            key={t.id}
             type="button"
-            onClick={() => insertTag(t.tag)}
+            onClick={() => applyTag(t)}
             className="text-[9px] px-1.5 py-0.5 rounded bg-[var(--op-6)] text-[var(--op-40)] hover:text-[var(--op-70)] hover:bg-[var(--op-10)] mono"
-            title={`Вставить ${t.tag}`}
+            title={t.paired ? `Выделите текст и нажмите, чтобы обернуть в ${t.label}` : `Вставить ${t.label} в курсор`}
           >
             {t.label}
           </button>
@@ -47,6 +71,11 @@ function LineTextEditor({ value, onChange }: { value: string; onChange: (v: stri
         placeholder="Текст реплики…"
         className="input text-xs w-full resize-y min-h-[52px]"
       />
+      {value.trim() && (
+        <div className="mt-1 px-2 py-1.5 rounded bg-black/25 text-[11px] leading-relaxed">
+          <MarkupText text={value} />
+        </div>
+      )}
     </div>
   );
 }
@@ -119,26 +148,22 @@ function LineBlock({
         <input
           value={line.speaker}
           onChange={(e) => patch({ speaker: e.target.value })}
-          placeholder="спикер: имя или выбор персонажа"
+          placeholder="спикер: имя (или привяжите персонажа справа)"
           className="input text-xs py-1 flex-1 min-w-0"
         />
-        <select
-          value={line.speakerEntryId ?? ""}
-          onChange={(e) => {
-            const id = e.target.value || undefined;
-            const ent = characters.find((c) => c.id === id);
-            patch({ speakerEntryId: id, speaker: ent ? ent.name : line.speaker });
-          }}
-          className="input text-xs py-1 w-8 shrink-0"
-          title="Привязать к персонажу"
-        >
-          <option value="">—</option>
-          {characters.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name}
-            </option>
-          ))}
-        </select>
+        <div className="w-36 shrink-0">
+          <SearchSelect
+            value={line.speakerEntryId}
+            onChange={(id) => {
+              const ent = characters.find((c) => c.id === id);
+              patch({ speakerEntryId: id, speaker: ent ? ent.name : line.speaker });
+            }}
+            options={characters.map((c) => ({ id: c.id, label: c.name }))}
+            placeholder="персонаж…"
+            searchPlaceholder="Поиск персонажа…"
+            clearLabel="— не привязан —"
+          />
+        </div>
       </div>
 
       <div className="flex gap-1.5">
@@ -219,10 +244,12 @@ function ChoiceRow({
         <div className="flex items-center gap-1.5 text-[11px] text-teal-300">
           <span
             ref={(el) => registerAnchor(`choice:${choice.id}`, el)}
-            className="w-2.5 h-2.5 rounded-full bg-teal-400 shrink-0 cursor-crosshair"
+            className="p-2 -m-2 shrink-0 cursor-crosshair grid place-items-center hover:bg-teal-400/10 rounded-full transition-colors"
             onMouseDown={(e) => onLinkDragStart(`choice:${choice.id}`, e)}
             title="Перетяните на другую ноду, чтобы изменить связь"
-          />
+          >
+            <span className="block w-2.5 h-2.5 rounded-full bg-teal-400" />
+          </span>
           → ветка {targetNode.lines[0]?.speaker || targetNode.id}
           <button onClick={() => setChoiceTarget(dialogue.id, node.id, choice.id, undefined)} className="opacity-50 hover:opacity-100 ml-auto">
             <X size={11} />
@@ -232,10 +259,12 @@ function ChoiceRow({
         <div className="flex items-center gap-1.5 text-[10px] text-[var(--op-35)]">
           <span
             ref={(el) => registerAnchor(`choice:${choice.id}`, el)}
-            className="w-2.5 h-2.5 rounded-full border border-dashed border-teal-400/60 shrink-0 cursor-crosshair"
+            className="p-2 -m-2 shrink-0 cursor-crosshair grid place-items-center hover:bg-teal-400/10 rounded-full transition-colors"
             onMouseDown={(e) => onLinkDragStart(`choice:${choice.id}`, e)}
             title="Перетяните на другую ноду"
-          />
+          >
+            <span className="block w-2.5 h-2.5 rounded-full border border-dashed border-teal-400/60" />
+          </span>
           перетяните кружок на другую ноду — ветка
         </div>
       )}
@@ -247,6 +276,7 @@ export function DialogueNodeCard({
   node,
   dialogue,
   isStart,
+  isDropTarget = false,
   onMakeStart,
   onDragHandleDown,
   registerAnchor,
@@ -255,6 +285,7 @@ export function DialogueNodeCard({
   node: DialogueNode;
   dialogue: Dialogue;
   isStart: boolean;
+  isDropTarget?: boolean;
   onMakeStart: () => void;
   onDragHandleDown: (e: React.MouseEvent) => void;
   registerAnchor: (key: string, el: HTMLElement | null) => void;
@@ -268,7 +299,9 @@ export function DialogueNodeCard({
 
   return (
     <div
-      className={`popover rounded-lg relative ${isStart ? "ring-1 ring-accent" : ""}`}
+      className={`popover rounded-lg relative transition-shadow ${isStart ? "ring-1 ring-accent" : ""} ${
+        isDropTarget ? "ring-2 ring-teal-400 shadow-[0_0_0_4px_rgba(45,212,191,0.15)]" : ""
+      }`}
       onMouseDown={(e) => e.stopPropagation()}
     >
       <span
@@ -334,9 +367,11 @@ export function DialogueNodeCard({
             <div className="flex items-center gap-1.5 text-[11px] text-amber-300 bg-amber-500/10 rounded-md px-2 py-1.5">
               <span
                 ref={(el) => registerAnchor(`cont:${node.id}`, el)}
-                className="w-2.5 h-2.5 rounded-full bg-amber-400 shrink-0 cursor-crosshair"
+                className="p-2 -m-2 shrink-0 cursor-crosshair grid place-items-center hover:bg-amber-400/10 rounded-full transition-colors"
                 onMouseDown={(e) => onLinkDragStart(`cont:${node.id}`, e)}
-              />
+              >
+                <span className="block w-2.5 h-2.5 rounded-full bg-amber-400" />
+              </span>
               продолжение → {continueTarget.id}
               <button onClick={() => setNodeContinuation(dialogue.id, node.id, undefined)} className="opacity-50 hover:opacity-100 ml-auto">
                 <X size={11} />

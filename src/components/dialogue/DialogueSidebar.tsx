@@ -1,8 +1,7 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { ChevronDown, ChevronRight, Folder, FolderPlus, MessageSquarePlus, MessageSquareText, MoreVertical, ArrowDownToLine } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { PortalMenu } from "../common/PortalMenu";
-import { useRef } from "react";
 import type { DialogueFolder, Dialogue } from "../../types/database";
 
 interface TreeFolder {
@@ -21,9 +20,23 @@ function buildTree(folders: DialogueFolder[], dialogues: Dialogue[], parentId: s
     }));
 }
 
+// Drag payload format shared by folder rows and dialogue rows.
+type DragPayload = { kind: "folder" | "dialogue"; id: string };
+const DND_MIME = "application/x-rns-dialogue-item";
+
+function readDragPayload(e: React.DragEvent): DragPayload | null {
+  try {
+    const raw = e.dataTransfer.getData(DND_MIME);
+    return raw ? (JSON.parse(raw) as DragPayload) : null;
+  } catch {
+    return null;
+  }
+}
+
 function FolderRow({ node, depth }: { node: TreeFolder; depth: number }) {
   const [open, setOpen] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
   const btnRef = useRef<HTMLButtonElement>(null);
   const activeDialogueId = useProjectStore((s) => s.activeDialogueId);
   const setActiveDialogue = useProjectStore((s) => s.setActiveDialogue);
@@ -31,6 +44,8 @@ function FolderRow({ node, depth }: { node: TreeFolder; depth: number }) {
   const createDialogueFolder = useProjectStore((s) => s.createDialogueFolder);
   const renameDialogueFolder = useProjectStore((s) => s.renameDialogueFolder);
   const deleteDialogueFolder = useProjectStore((s) => s.deleteDialogueFolder);
+  const moveDialogueFolder = useProjectStore((s) => s.moveDialogueFolder);
+  const moveDialogueToFolder = useProjectStore((s) => s.moveDialogueToFolder);
 
   const addSubfolder = () => {
     const name = prompt("Название папки:", "Новая папка");
@@ -52,9 +67,39 @@ function FolderRow({ node, depth }: { node: TreeFolder; depth: number }) {
     setMenuOpen(false);
   };
 
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOver(false);
+    const payload = readDragPayload(e);
+    if (!payload) return;
+    if (payload.kind === "folder") {
+      if (payload.id !== node.folder.id) moveDialogueFolder(payload.id, node.folder.id);
+    } else {
+      moveDialogueToFolder(payload.id, node.folder.id);
+    }
+  };
+
   return (
     <div>
-      <div className="group flex items-center gap-1 px-1.5 py-1 rounded-md hover:bg-[var(--op-5)]" style={{ paddingLeft: 6 + depth * 14 }}>
+      <div
+        draggable
+        onDragStart={(e) => {
+          e.dataTransfer.effectAllowed = "move";
+          e.dataTransfer.setData(DND_MIME, JSON.stringify({ kind: "folder", id: node.folder.id } satisfies DragPayload));
+        }}
+        onDragOver={(e) => {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          if (!dragOver) setDragOver(true);
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={onDrop}
+        className={`group flex items-center gap-1 px-1.5 py-1 rounded-md hover:bg-[var(--op-5)] ${
+          dragOver ? "bg-accent/15 ring-1 ring-accent/50" : ""
+        }`}
+        style={{ paddingLeft: 6 + depth * 14 }}
+      >
         <button onClick={() => setOpen((v) => !v)} className="text-[var(--op-40)] shrink-0">
           {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         </button>
@@ -121,6 +166,11 @@ function DialogueRow({ dialogue, depth, active, onOpen }: { dialogue: Dialogue; 
 
   return (
     <div
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData(DND_MIME, JSON.stringify({ kind: "dialogue", id: dialogue.id } satisfies DragPayload));
+      }}
       onClick={onOpen}
       className={`group flex items-center gap-1 px-1.5 py-1 rounded-md cursor-pointer ${active ? "bg-accent/20 text-[var(--op-90)]" : "hover:bg-[var(--op-5)] text-[var(--op-70)]"}`}
       style={{ paddingLeft: 6 + depth * 14 }}
@@ -161,6 +211,9 @@ export function DialogueSidebar() {
   const setActiveDialogue = useProjectStore((s) => s.setActiveDialogue);
   const createDialogue = useProjectStore((s) => s.createDialogue);
   const createDialogueFolder = useProjectStore((s) => s.createDialogueFolder);
+  const moveDialogueFolder = useProjectStore((s) => s.moveDialogueFolder);
+  const moveDialogueToFolder = useProjectStore((s) => s.moveDialogueToFolder);
+  const [rootDragOver, setRootDragOver] = useState(false);
 
   const tree = buildTree(folders, dialogues, null);
   const rootDialogues = dialogues.filter((d) => d.folderId === null);
@@ -172,6 +225,15 @@ export function DialogueSidebar() {
   const addDialogue = () => {
     const name = prompt("Название диалога:", "Новый диалог");
     if (name) createDialogue(name, null);
+  };
+
+  const onRootDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setRootDragOver(false);
+    const payload = readDragPayload(e);
+    if (!payload) return;
+    if (payload.kind === "folder") moveDialogueFolder(payload.id, null);
+    else moveDialogueToFolder(payload.id, null);
   };
 
   return (
@@ -193,7 +255,18 @@ export function DialogueSidebar() {
           </button>
         </div>
       </div>
-      <div className="flex-1 overflow-y-auto p-1.5">
+      <div
+        className={`flex-1 overflow-y-auto p-1.5 ${rootDragOver ? "bg-accent/5" : ""}`}
+        onDragOver={(e) => {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          if (!rootDragOver) setRootDragOver(true);
+        }}
+        onDragLeave={(e) => {
+          if (e.currentTarget === e.target) setRootDragOver(false);
+        }}
+        onDrop={onRootDrop}
+      >
         {tree.map((node) => (
           <FolderRow key={node.folder.id} node={node} depth={0} />
         ))}
@@ -202,6 +275,9 @@ export function DialogueSidebar() {
         ))}
         {folders.length === 0 && dialogues.length === 0 && (
           <div className="text-xs text-[var(--op-30)] px-2 py-4 text-center">Пока нет диалогов — создайте первый.</div>
+        )}
+        {(folders.length > 0 || dialogues.length > 0) && (
+          <div className="text-[10px] text-[var(--op-25)] px-2 pt-2 text-center">Перетаскивайте папки и диалоги, чтобы менять вложенность.</div>
         )}
       </div>
     </div>

@@ -47,6 +47,7 @@ interface ProjectState {
   createDialogueFolder: (name: string, parentId: string | null) => void;
   renameDialogueFolder: (id: string, name: string) => void;
   deleteDialogueFolder: (id: string) => void;
+  moveDialogueFolder: (id: string, newParentId: string | null) => void;
   createDialogue: (name: string, folderId: string | null) => string;
   renameDialogue: (id: string, name: string) => void;
   deleteDialogue: (id: string) => void;
@@ -244,6 +245,27 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
           ...s.project,
           dialogueFolders: s.project.dialogueFolders.filter((f) => f.id !== id).map((f) => (f.parentId === id ? { ...f, parentId } : f)),
           dialogues: s.project.dialogues.map((d) => (d.folderId === id ? { ...d, folderId: parentId } : d)),
+        },
+      };
+    });
+    triggerAutosavePulse(set);
+  },
+
+  moveDialogueFolder: (id, newParentId) => {
+    set((s) => {
+      if (id === newParentId) return s;
+      // Prevent creating a cycle: newParentId can't be `id` itself or any of its own descendants.
+      const isDescendant = (candidateId: string | null): boolean => {
+        if (candidateId === null) return false;
+        if (candidateId === id) return true;
+        const f = s.project.dialogueFolders.find((x) => x.id === candidateId);
+        return f ? isDescendant(f.parentId) : false;
+      };
+      if (newParentId !== null && isDescendant(newParentId)) return s;
+      return {
+        project: {
+          ...s.project,
+          dialogueFolders: s.project.dialogueFolders.map((f) => (f.id === id ? { ...f, parentId: newParentId } : f)),
         },
       };
     });

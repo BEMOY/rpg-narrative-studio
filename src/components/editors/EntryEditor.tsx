@@ -1,6 +1,6 @@
 import { Trash2, Plus, X, Upload, ImageOff, ChevronDown } from "lucide-react";
 import { useRef, useState } from "react";
-import type { Entry, EquipSlot, Relationship } from "../../types/database";
+import type { DialogueSide, DialogueSpeakerData, Entry, EquipSlot, Relationship } from "../../types/database";
 import { canHaveStats, hasRelationship, isEquip, isQuest } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
 import { resizeImageFile } from "../../lib/image";
@@ -115,6 +115,8 @@ export function EntryEditor({ entry, onDone }: { entry: Entry; onDone: () => voi
       )}
 
       {isQuest(entry.category) && <ObjectivesPanel entry={entry} />}
+
+      {entry.category === "character" && <DialogueSpeakerSection entry={entry} />}
 
       <PropsPanel entry={entry} />
 
@@ -341,6 +343,120 @@ function ObjectivesPanel({ entry }: { entry: Entry }) {
           <Plus size={12} /> Добавить objective
         </button>
       </div>
+    </Section>
+  );
+}
+
+const SIDE_OPTIONS: DialogueSide[] = ["left", "default", "right", "none"];
+const SUGGESTED_EMOTIONS = ["neutral", "happy", "angry"];
+
+// Mirrors speaker_define(key, {...}) from the user's own scr_dialogue_data / speakers_init —
+// everything here is optional, the GML exporter fills in the same placeholders shown below
+// (display_name -> entry name, color -> c_white, blip -> -1, side -> left, text_speed -> 0.3,
+// box -> spr_dlg_box) for anything left blank, so this section never blocks dialogue export.
+function DialogueSpeakerSection({ entry }: { entry: Entry }) {
+  const updateEntry = useProjectStore((s) => s.updateEntry);
+  const data: DialogueSpeakerData = entry.dialogueSpeaker ?? { portraits: [] };
+
+  const patch = (p: Partial<DialogueSpeakerData>) => updateEntry(entry.id, { dialogueSpeaker: { ...data, ...p } });
+
+  const addPortrait = (emotion = "") => patch({ portraits: [...data.portraits, { emotion, sprite: "" }] });
+  const updatePortrait = (i: number, p: Partial<{ emotion: string; sprite: string }>) =>
+    patch({ portraits: data.portraits.map((row, idx) => (idx === i ? { ...row, ...p } : row)) });
+  const removePortrait = (i: number) => patch({ portraits: data.portraits.filter((_, idx) => idx !== i) });
+
+  const missingSuggested = SUGGESTED_EMOTIONS.filter((e) => !data.portraits.some((p) => p.emotion === e));
+
+  return (
+    <Section title="Диалог (speaker_define)" defaultOpen={false}>
+      <Field label="Отображаемое имя">
+        <input
+          className="input"
+          value={data.displayName ?? ""}
+          onChange={(e) => patch({ displayName: e.target.value })}
+          placeholder={entry.name || "display_name"}
+        />
+      </Field>
+
+      <div>
+        <div className="grid grid-cols-[160px_1fr] gap-3">
+          <label className="text-sm text-[var(--op-50)] pt-1.5">Портреты (эмоции)</label>
+          <div className="space-y-1.5">
+            {data.portraits.map((p, i) => (
+              <div key={i} className="flex items-center gap-1.5">
+                <input
+                  className="input flex-1"
+                  value={p.emotion}
+                  onChange={(e) => updatePortrait(i, { emotion: e.target.value })}
+                  placeholder="эмоция (neutral, happy…)"
+                />
+                <input
+                  className="input flex-1"
+                  value={p.sprite}
+                  onChange={(e) => updatePortrait(i, { sprite: e.target.value })}
+                  placeholder="спрайт (spr_port_x_neutral)"
+                />
+                <button onClick={() => removePortrait(i)} className="opacity-40 hover:opacity-100 shrink-0">
+                  <X size={14} />
+                </button>
+              </div>
+            ))}
+            <div className="flex flex-wrap gap-1.5">
+              {missingSuggested.map((e) => (
+                <button
+                  key={e}
+                  onClick={() => addPortrait(e)}
+                  className="text-xs px-2 py-1 rounded-md bg-[var(--op-6)] text-[var(--op-45)] hover:text-[var(--op-80)] hover:bg-[var(--op-10)]"
+                >
+                  + {e}
+                </button>
+              ))}
+              <button
+                onClick={() => addPortrait()}
+                className="flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-[var(--op-6)] text-[var(--op-45)] hover:text-[var(--op-80)] hover:bg-[var(--op-10)]"
+              >
+                <Plus size={11} /> своя эмоция
+              </button>
+            </div>
+            {data.portraits.length === 0 && (
+              <div className="text-[10px] text-[var(--op-30)]">
+                Ничего не указано — при экспорте портреты просто не попадут в speaker_define (без плейсхолдеров, их нельзя
+                угадать).
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <Field label="Цвет текста">
+        <input className="input mono" value={data.color ?? ""} onChange={(e) => patch({ color: e.target.value })} placeholder="c_white" />
+      </Field>
+      <Field label="Звук (blip)">
+        <input className="input mono" value={data.blip ?? ""} onChange={(e) => patch({ blip: e.target.value })} placeholder="-1 (без звука)" />
+      </Field>
+      <Field label="Сторона по умолчанию">
+        <select className="input" value={data.side ?? ""} onChange={(e) => patch({ side: (e.target.value || undefined) as DialogueSide | undefined })}>
+          <option value="">— как в диалоге (по умолчанию left) —</option>
+          {SIDE_OPTIONS.map((s) => (
+            <option key={s} value={s}>
+              {s}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <Field label="Скорость текста">
+        <input
+          type="number"
+          step={0.05}
+          className="input"
+          value={data.textSpeed ?? ""}
+          onChange={(e) => patch({ textSpeed: e.target.value === "" ? undefined : Number(e.target.value) })}
+          placeholder="0.3"
+        />
+      </Field>
+      <Field label="Скин окна (box)">
+        <input className="input mono" value={data.box ?? ""} onChange={(e) => patch({ box: e.target.value })} placeholder="spr_dlg_box" />
+      </Field>
     </Section>
   );
 }

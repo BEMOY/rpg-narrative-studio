@@ -137,3 +137,65 @@ body {
     background: var(--op-15);
   }
 }
+
+/* --- Dialogue text-effect markup (mirrors the engine's dlg_parse tags) --- */
+@keyframes dlg-wave-kf {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-0.16em); }
+}
+.dlg-fx-wave {
+  animation: dlg-wave-kf 1.1s ease-in-out infinite;
+  animation-delay: calc(var(--dlg-i, 0) * 80ms);
+}
+
+@keyframes dlg-shake-kf {
+  0% { transform: translate(0, 0); }
+  20% { transform: translate(calc(var(--dlg-shake-amt, 3) * 0.05em), calc(var(--dlg-shake-amt, 3) * -0.05em)); }
+  40% { transform: translate(calc(var(--dlg-shake-amt, 3) * -0.05em), calc(var(--dlg-shake-amt, 3) * 0.05em)); }
+  60% { transform: translate(calc(var(--dlg-shake-amt, 3) * 0.04em), calc(var(--dlg-shake-amt, 3) * 0.04em)); }
+  80% { transform: translate(calc(var(--dlg-shake-amt, 3) * -0.04em), calc(var(--dlg-shake-amt, 3) * -0.03em)); }
+  100% { transform: translate(0, 0); }
+}
+.dlg-fx-shake {
+  animation: dlg-shake-kf 0.35s linear infinite;
+}
+
+@keyframes dlg-rainbow-kf {
+  0% { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
+}
+.dlg-fx-rainbow {
+  background-image: linear-gradient(90deg, #ff5f6d, #ffc371, #47e0a1, #5b8def, #c56cf0, #ff5f6d);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: dlg-rainbow-kf 2s linear infinite;
+}
+
+/* Game-like dialogue test box */
+@keyframes dlg-box-in {
+  0% { opacity: 0; transform: translateY(10px) scale(0.98); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+.dlg-box-enter { animation: dlg-box-in 0.18s ease-out; }
+
+@keyframes dlg-portrait-in {
+  0% { opacity: 0; transform: translateX(-12px); }
+  100% { opacity: 1; transform: translateX(0); }
+}
+.dlg-portrait-enter { animation: dlg-portrait-in 0.22s ease-out; }
+
+@keyframes dlg-caret-blink {
+  0%, 45% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+.dlg-caret {
+  animation: dlg-caret-blink 0.9s steps(1) infinite;
+}
+
+@keyframes dlg-choice-in {
+  0% { opacity: 0; transform: translateY(4px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+.dlg-choice-enter { animation: dlg-choice-in 0.15s ease-out backwards; }

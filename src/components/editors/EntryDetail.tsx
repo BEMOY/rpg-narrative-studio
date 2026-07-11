@@ -154,6 +154,33 @@ export function EntryDetail({ entry, onEdit }: { entry: Entry; onEdit: () => voi
         </Block>
       )}
 
+      {entry.category === "character" && entry.dialogueSpeaker && (
+        <Block title="Диалог (speaker_define)">
+          <div className="grid grid-cols-2 gap-3 text-sm">
+            <div>
+              <div className="text-[var(--op-40)] text-xs">Имя в диалоге</div>
+              <div className="text-[var(--op-85)]">{entry.dialogueSpeaker.displayName || entry.name}</div>
+            </div>
+            <div>
+              <div className="text-[var(--op-40)] text-xs">Сторона</div>
+              <div className="text-[var(--op-85)]">{entry.dialogueSpeaker.side ?? "left"}</div>
+            </div>
+            {entry.dialogueSpeaker.portraits.length > 0 && (
+              <div className="col-span-2">
+                <div className="text-[var(--op-40)] text-xs mb-1">Портреты</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {entry.dialogueSpeaker.portraits.map((p, i) => (
+                    <span key={i} className="text-xs px-2 py-1 rounded-full bg-[var(--op-8)] text-[var(--op-60)] mono">
+                      {p.emotion || "?"}: {p.sprite || "—"}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </Block>
+      )}
+
       {entry.category === "location" && <LocationMapBlock entry={entry} />}
 
       <RelationsBlock entry={entry} />

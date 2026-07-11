@@ -46,6 +46,7 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
   const livePos = useRef<Map<string, { x: number; y: number }>>(new Map());
   const panDragRef = useRef<{ startClientX: number; startClientY: number; startPanX: number; startPanY: number } | null>(null);
   const [linkDrag, setLinkDrag] = useState<{ from: AnchorKey; x: number; y: number } | null>(null);
+  const [dragOverNodeId, setDragOverNodeId] = useState<string | null>(null);
 
   const registerAnchor = (key: AnchorKey, el: HTMLElement | null) => {
     if (el) anchorEls.current.set(key, el);
@@ -148,11 +149,15 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
     const move = (ev: MouseEvent) => {
       const rect = stage.getBoundingClientRect();
       setLinkDrag({ from, x: (ev.clientX - rect.left) / zoom, y: (ev.clientY - rect.top) / zoom });
+      const hovered = document.elementFromPoint(ev.clientX, ev.clientY);
+      const hoveredNodeEl = hovered && (hovered as HTMLElement).closest<HTMLElement>("[data-dialogue-node-id]");
+      setDragOverNodeId(hoveredNodeEl?.dataset.dialogueNodeId ?? null);
     };
     const up = (ev: MouseEvent) => {
       window.removeEventListener("mousemove", move);
       window.removeEventListener("mouseup", up);
       setLinkDrag(null);
+      setDragOverNodeId(null);
       const target = document.elementFromPoint(ev.clientX, ev.clientY);
       const nodeEl = target && (target as HTMLElement).closest<HTMLElement>("[data-dialogue-node-id]");
       const targetNodeId = nodeEl?.dataset.dialogueNodeId;
@@ -251,7 +256,7 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
                 }}
                 className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs text-[var(--op-80)] hover:bg-[var(--op-7)]"
               >
-                <FileCode size={13} /> Экспорт GML
+                <FileCode size={13} /> Экспорт GML (register / lines / speakers)
               </button>
             </div>
           </PortalMenu>
@@ -344,6 +349,7 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
                   node={n}
                   dialogue={dialogue}
                   isStart={dialogue.startNodeId === n.id}
+                  isDropTarget={!!linkDrag && dragOverNodeId === n.id}
                   onMakeStart={() => setDialogueStartNode(dialogue.id, n.id)}
                   onDragHandleDown={(e) => onNodeDragStart(n.id, e)}
                   registerAnchor={registerAnchor}

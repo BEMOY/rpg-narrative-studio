@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { Filter, X } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { PortalMenu } from "../common/PortalMenu";
+import { SearchSelect } from "./SearchSelect";
 import { isQuest, type DialogueCondition } from "../../types/database";
 
 const QUEST_STATUS_LABEL: Record<string, string> = { not_started: "не начат", active: "активен", done: "выполнен" };
@@ -97,16 +98,14 @@ export function ConditionEditor({
 
           {draft.kind === "quest" && (
             <>
-              <select value={draft.key} onChange={(e) => set({ key: e.target.value })} className="input text-xs py-1 w-full">
-                <option value="">выбрать квест…</option>
-                {entries
-                  .filter((e) => isQuest(e.category))
-                  .map((e) => (
-                    <option key={e.id} value={e.id}>
-                      {e.name}
-                    </option>
-                  ))}
-              </select>
+              <SearchSelect
+                value={draft.key || undefined}
+                onChange={(id) => set({ key: id ?? "" })}
+                options={entries.filter((e) => isQuest(e.category)).map((e) => ({ id: e.id, label: e.name }))}
+                placeholder="выбрать квест…"
+                searchPlaceholder="Поиск квеста…"
+                clearLabel="— не выбрано —"
+              />
               <select value={draft.value ?? "active"} onChange={(e) => set({ value: e.target.value })} className="input text-xs py-1 w-full">
                 <option value="not_started">не начат</option>
                 <option value="active">активен</option>
@@ -117,14 +116,14 @@ export function ConditionEditor({
 
           {draft.kind === "entry" && (
             <>
-              <select value={draft.key} onChange={(e) => set({ key: e.target.value })} className="input text-xs py-1 w-full">
-                <option value="">выбрать объект…</option>
-                {entries.map((e) => (
-                  <option key={e.id} value={e.id}>
-                    {e.name}
-                  </option>
-                ))}
-              </select>
+              <SearchSelect
+                value={draft.key || undefined}
+                onChange={(id) => set({ key: id ?? "" })}
+                options={entries.map((e) => ({ id: e.id, label: e.name }))}
+                placeholder="выбрать объект…"
+                searchPlaceholder="Поиск объекта…"
+                clearLabel="— не выбрано —"
+              />
               <select value={draft.op} onChange={(e) => set({ op: e.target.value as "has" | "not_has" })} className="input text-xs py-1 w-full">
                 <option value="has">есть у игрока / выполнено</option>
                 <option value="not_has">нет у игрока / не выполнено</option>
