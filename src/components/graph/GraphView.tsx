@@ -117,6 +117,21 @@ export function GraphView() {
     let raf = 0;
     const ids = visibleEntries.map((e) => e.id);
 
+    // Nodes with no relations at all shouldn't be forced into the connected web —
+    // they just float freely, drifting together with other unconnected nodes that
+    // share their category (locations near locations, characters near characters…).
+    const degree = new Map<string, number>();
+    for (const e of edges) {
+      degree.set(e.from, (degree.get(e.from) ?? 0) + 1);
+      degree.set(e.to, (degree.get(e.to) ?? 0) + 1);
+    }
+    const isolatedByCategory = new Map<string, string[]>();
+    for (const e of visibleEntries) {
+      if ((degree.get(e.id) ?? 0) > 0) continue;
+      if (!isolatedByCategory.has(e.category)) isolatedByCategory.set(e.category, []);
+      isolatedByCategory.get(e.category)!.push(e.id);
+    }
+
     function tick() {
       const pos = posRef.current;
       for (let i = 0; i < ids.length; i++) {
@@ -154,6 +169,28 @@ export function GraphView() {
         b.vx -= fx;
         b.vy -= fy;
       }
+      for (const [, isoIds] of isolatedByCategory) {
+        if (isoIds.length < 2) continue;
+        let cx = 0;
+        let cy = 0;
+        let n = 0;
+        for (const id of isoIds) {
+          const p = pos.get(id);
+          if (!p) continue;
+          cx += p.x;
+          cy += p.y;
+          n++;
+        }
+        if (n < 2) continue;
+        cx /= n;
+        cy /= n;
+        for (const id of isoIds) {
+          const p = pos.get(id);
+          if (!p) continue;
+          p.vx += (cx - p.x) * 0.0025;
+          p.vy += (cy - p.y) * 0.0025;
+        }
+      }
       for (const id of ids) {
         const p = pos.get(id);
         if (!p) continue;
@@ -178,24 +215,37 @@ export function GraphView() {
   }, [visibleEntries, edges]);
 
   // ---- node drag ----
+  // A drag that ends up back near where it started should still open the entry (that's
+  // a click); a drag that actually moved the node should NOT open it and should pin the
+  // node in its new spot. We can't rely on the browser's own click event here since it
+  // fires after mouseup regardless of how far the pointer travelled in between.
   const onNodePointerDown = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
+    e.preventDefault();
     const p = posRef.current.get(id);
     if (!p) return;
     draggingRef.current = { id, startClientX: e.clientX, startClientY: e.clientY, startX: p.x, startY: p.y };
+    let moved = false;
     const onMove = (ev: MouseEvent) => {
       const d = draggingRef.current;
       if (!d) return;
+      const dxScreen = ev.clientX - d.startClientX;
+      const dyScreen = ev.clientY - d.startClientY;
+      if (Math.abs(dxScreen) > 4 || Math.abs(dyScreen) > 4) moved = true;
       const pos = posRef.current.get(d.id);
       if (!pos) return;
-      pos.x = d.startX + (ev.clientX - d.startClientX) / zoom;
-      pos.y = d.startY + (ev.clientY - d.startClientY) / zoom;
+      pos.x = d.startX + dxScreen / zoom;
+      pos.y = d.startY + dyScreen / zoom;
       pos.vx = 0;
       pos.vy = 0;
       bump((n) => n + 1);
     };
     const onUp = () => {
-      if (draggingRef.current) pinnedRef.current.add(draggingRef.current.id);
+      const d = draggingRef.current;
+      if (d) {
+        if (moved) pinnedRef.current.add(d.id);
+        else openEntry(d.id);
+      }
       draggingRef.current = null;
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
@@ -222,7 +272,19 @@ export function GraphView() {
   };
 
   const onWheel = (e: React.WheelEvent) => {
-    setZoom((z) => clamp(z + (e.deltaY > 0 ? -0.08 : 0.08), 0.15, 2.5));
+    const rect = viewportRef.current?.getBoundingClientRect();
+    const newZoom = clamp(zoom + (e.deltaY > 0 ? -0.08 : 0.08), 0.15, 2.5);
+    if (!rect || newZoom === zoom) {
+      setZoom(newZoom);
+      return;
+    }
+    // Keep the point currently under the cursor fixed on screen while zooming,
+    // instead of zooming from the stage's origin.
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+    const ratio = newZoom / zoom;
+    setPan((p) => ({ x: mouseX - (mouseX - p.x) * ratio, y: mouseY - (mouseY - p.y) * ratio }));
+    setZoom(newZoom);
   };
 
   const resetView = () => {
@@ -398,10 +460,6 @@ export function GraphView() {
                   onMouseDown={(ev) => onNodePointerDown(e.id, ev)}
                   onMouseEnter={() => setHoveredId(e.id)}
                   onMouseLeave={() => setHoveredId((cur) => (cur === e.id ? null : cur))}
-                  onClick={(ev) => {
-                    ev.stopPropagation();
-                    openEntry(e.id);
-                  }}
                   style={{
                     position: "absolute",
                     left: p.x,
@@ -413,11 +471,18 @@ export function GraphView() {
                   title={e.description || e.name}
                 >
                   <div
-                    className="w-11 h-11 rounded-full grid place-items-center border-2 shadow-lg transition-transform group-hover:scale-110"
+                    className="w-11 h-11 rounded-full grid place-items-center border-2 shadow-lg transition-transform group-hover:scale-110 pointer-events-none"
                     style={{ background: "var(--popover-bg)", borderColor: color, color }}
                   >
                     {e.image ? (
-                      <img src={e.image} alt="" className="w-full h-full rounded-full object-cover" style={{ imageRendering: "pixelated" }} />
+                      <img
+                        src={e.image}
+                        alt=""
+                        draggable={false}
+                        onDragStart={(ev) => ev.preventDefault()}
+                        className="w-full h-full rounded-full object-cover pointer-events-none"
+                        style={{ imageRendering: "pixelated" }}
+                      />
                     ) : (
                       <Icon size={18} />
                     )}
