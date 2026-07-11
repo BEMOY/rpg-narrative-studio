@@ -136,6 +136,21 @@ body {
     border-radius: 999px;
     background: var(--op-15);
   }
+
+  /* Number inputs: the native OS-drawn up/down spinner arrows don't match the app's dark
+     theme and, in narrow fields, visually crowd or overlap the digits themselves. Hiding them
+     keeps every number field a clean, theme-consistent box with content that never spills past
+     its own edges — values can still be typed directly, or nudged with the Up/Down arrow keys
+     while the field is focused. */
+  input[type="number"] {
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
+  input[type="number"]::-webkit-outer-spin-button,
+  input[type="number"]::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
 }
 
 /* --- Dialogue text-effect markup (mirrors the engine's dlg_parse tags) --- */

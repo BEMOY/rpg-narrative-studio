@@ -357,13 +357,23 @@ function QuestNodeCard({
               return (
                 <button
                   key={i}
+                  disabled={toggleDisabled}
                   onMouseDown={(e) => e.stopPropagation()}
                   onClick={(e) => {
                     e.stopPropagation();
+                    if (toggleDisabled) return;
                     onToggleObjective(i);
                   }}
-                  title={done ? "Снять галочку с подцели" : "Отметить подцель выполненной"}
-                  className="w-full flex items-center gap-1 text-[10px] text-left hover:opacity-80"
+                  title={
+                    toggleDisabled
+                      ? status === "locked"
+                        ? "Заперт — сначала выполните квест(ы)-предпосылки"
+                        : "Заблокирован завершённым квестом"
+                      : done
+                      ? "Снять галочку с подцели"
+                      : "Отметить подцель выполненной"
+                  }
+                  className={`w-full flex items-center gap-1 text-[10px] text-left ${toggleDisabled ? "cursor-not-allowed opacity-60" : "hover:opacity-80"}`}
                   style={{ color: done ? "#7cc98a" : "var(--op-45)" }}
                 >
                   {done ? <CircleCheck size={10} className="shrink-0" /> : <span className="w-2.5 h-2.5 rounded-full border border-current shrink-0" />}
@@ -519,27 +529,11 @@ function RoadmapGraph({
     let raf = 0;
     const ids = nodes.map((n) => n.id);
 
-    // Deterministic per-node phase/frequency for the idle bob — using Math.random() per FRAME
-    // (as before) produced independent, uncorrelated impulses every tick, which reads as
-    // trembling/jittering rather than a gentle sway. A fixed sine wave per node is perfectly
-    // smooth and, being derived from the id itself, stays stable across effect re-runs instead
-    // of resetting to a new random seed every time.
-    function hashSeed(id: string): number {
-      let h = 0;
-      for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
-      return h;
-    }
-    const jitterSeed = new Map<string, { phaseX: number; phaseY: number; freqX: number; freqY: number }>();
-    for (const id of ids) {
-      const h = hashSeed(id);
-      jitterSeed.set(id, {
-        phaseX: ((h % 1000) / 1000) * Math.PI * 2,
-        phaseY: (((h >>> 8) % 1000) / 1000) * Math.PI * 2,
-        freqX: 0.006 + (h % 5) * 0.0015,
-        freqY: 0.006 + ((h >>> 4) % 5) * 0.0015,
-      });
-    }
-
+    // Nodes no longer sway forever — a passively damped spring/repulsion system with no
+    // continuous energy source settles to a dead stop on its own. The only motion after the
+    // initial layout settle comes from a brief, decaying "throw" velocity applied the moment a
+    // node is released after being dragged (see onNodePointerDown's onUp) — untouched nodes
+    // never get that kick and simply stay put once equilibrium is reached.
     const degree = new Map<string, number>();
     for (const e of edges) {
       degree.set(e.from, (degree.get(e.from) ?? 0) + 1);
@@ -624,17 +618,15 @@ function RoadmapGraph({
           const anchor = anchorRef.current.get(id) ?? p;
           p.vx += (anchor.x - p.x) * 0.03;
           p.vy += (anchor.y - p.y) * 0.03;
-          const pinnedSeed = jitterSeed.get(id);
-          if (pinnedSeed) {
-            p.vx += Math.sin(frame * pinnedSeed.freqX + pinnedSeed.phaseX) * IDLE_JITTER * 0.5;
-            p.vy += Math.sin(frame * pinnedSeed.freqY + pinnedSeed.phaseY) * IDLE_JITTER * 0.5;
-          }
-          p.vx *= 0.9;
-          p.vy *= 0.9;
+          p.vx *= 0.88;
+          p.vy *= 0.88;
           const speed = Math.hypot(p.vx, p.vy);
           if (speed > MAX_VELOCITY) {
             p.vx = (p.vx / speed) * MAX_VELOCITY;
             p.vy = (p.vy / speed) * MAX_VELOCITY;
+          } else if (speed < 0.03) {
+            p.vx = 0;
+            p.vy = 0;
           }
           p.x = clamp(p.x + p.vx, 40, WIDTH - 40);
           p.y = clamp(p.y + p.vy, 40, HEIGHT - 40);
@@ -649,19 +641,15 @@ function RoadmapGraph({
           p.vx += (WIDTH / 2 - p.x) * 0.0006;
         }
         p.vy += (HEIGHT / 2 - p.y) * 0.0006;
-        if (frame > MAX_SETTLE_FRAMES) {
-          const seed = jitterSeed.get(id);
-          if (seed) {
-            p.vx += Math.sin(frame * seed.freqX + seed.phaseX) * IDLE_JITTER * 0.5;
-            p.vy += Math.sin(frame * seed.freqY + seed.phaseY) * IDLE_JITTER * 0.5;
-          }
-        }
         p.vx *= 0.9;
         p.vy *= 0.9;
         const speed = Math.hypot(p.vx, p.vy);
         if (speed > MAX_VELOCITY) {
           p.vx = (p.vx / speed) * MAX_VELOCITY;
           p.vy = (p.vy / speed) * MAX_VELOCITY;
+        } else if (speed < 0.03) {
+          p.vx = 0;
+          p.vy = 0;
         }
         p.x = clamp(p.x + p.vx, 40, WIDTH - 40);
         p.y = clamp(p.y + p.vy, 40, HEIGHT - 40);
@@ -681,6 +669,14 @@ function RoadmapGraph({
     if (!p) return;
     draggingRef.current = { id: n.id, startClientX: e.clientX, startClientY: e.clientY, startX: p.x, startY: p.y };
     let moved = false;
+    // Track the most recent movement's speed so that, on release, the node can be given a
+    // brief "throw" — a small decaying velocity kick — instead of either freezing dead or
+    // swaying forever. Untouched nodes never pass through here, so they never get this kick.
+    let lastMoveAt = performance.now();
+    let lastMoveX = e.clientX;
+    let lastMoveY = e.clientY;
+    let throwVx = 0;
+    let throwVy = 0;
     const onMove = (ev: MouseEvent) => {
       const d = draggingRef.current;
       if (!d) return;
@@ -693,6 +689,13 @@ function RoadmapGraph({
       pos.y = d.startY + dyScreen / zoom;
       pos.vx = 0;
       pos.vy = 0;
+      const now = performance.now();
+      const dt = Math.max(1, now - lastMoveAt);
+      throwVx = ((ev.clientX - lastMoveX) / zoom / dt) * 16;
+      throwVy = ((ev.clientY - lastMoveY) / zoom / dt) * 16;
+      lastMoveAt = now;
+      lastMoveX = ev.clientX;
+      lastMoveY = ev.clientY;
       bump((v) => v + 1);
     };
     const onUp = () => {
@@ -701,7 +704,17 @@ function RoadmapGraph({
         if (moved) {
           pinnedRef.current.add(d.id);
           const finalPos = posRef.current.get(d.id);
-          if (finalPos) anchorRef.current.set(d.id, { x: finalPos.x, y: finalPos.y });
+          if (finalPos) {
+            anchorRef.current.set(d.id, { x: finalPos.x, y: finalPos.y });
+            // Cap the kick so a fast flick doesn't send the node rocketing off — just enough
+            // residual motion to read as a soft, brief float before the anchor spring and
+            // damping bring it to a full stop.
+            const kickSpeed = Math.hypot(throwVx, throwVy);
+            const maxKick = 6;
+            const scale = kickSpeed > maxKick ? maxKick / kickSpeed : 1;
+            finalPos.vx = throwVx * scale * 0.5;
+            finalPos.vy = throwVy * scale * 0.5;
+          }
         } else if (n.kind === "quest" && n.entryId) onOpenQuest(n.entryId);
         else if (n.kind === "dialogue" && n.dialogueId) onOpenDialogue(n.dialogueId);
       }
@@ -811,6 +824,18 @@ function RoadmapGraph({
                 <marker id="quest-graph-arrow-green" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
                   <path d="M0,0 L8,4 L0,8 Z" fill="#7cc98a" />
                 </marker>
+                <marker id="quest-graph-arrow-red" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+                  <path d="M0,0 L8,4 L0,8 Z" fill="#e0716f" />
+                </marker>
+                {/* Active "blocks" dependency (source quest completed, so the target is now
+                    actually blocked): a red barber-pole / spiral hazard stripe instead of a
+                    plain line — reads unambiguously as "danger, this path is shut". */}
+                <pattern id="quest-block-stripe" width="20" height="20" patternUnits="userSpaceOnUse">
+                  <rect width="20" height="20" fill="#2a1414" />
+                  <path d="M-5,20 L5,0 L15,0 L5,20 Z" fill="#e0716f" />
+                  <path d="M15,20 L25,0 L35,0 L25,20 Z" fill="#e0716f" />
+                  <animateTransform attributeName="patternTransform" type="translate" from="0 0" to="20 0" dur="0.8s" repeatCount="indefinite" />
+                </pattern>
                 {/* Marching-ants flow for dependency edges whose source quest is now (simulated)
                     complete — a static line can't read as "this connection is now live", so it
                     animates instead. */}
@@ -843,22 +868,33 @@ function RoadmapGraph({
 
                 // Dependency edges (unlocks/blocks) reflect the SOURCE quest's own completion —
                 // pending (source not yet done): a static striped line in the source quest's own
-                // card color ("under the quest's border color"); once the source is completed:
-                // a solid green line that visibly flows toward the target.
+                // card color ("under the quest's border color"). Once the source is completed:
+                // an "unlocks" edge turns solid green and flows toward the target; a "blocks"
+                // edge instead turns into a red hazard-stripe line (in the blocked quest's own
+                // status color) since the target is now genuinely shut off, not opened up.
                 let stroke = "var(--op-30)";
                 let dash: string | undefined;
                 let flowing = false;
+                let blocking = false;
+                let labelColor = "var(--op-60)";
                 if (e.styleKind) {
                   const sourceNode = nodeById.get(e.from);
+                  const targetNode = nodeById.get(e.to);
                   const sourceStatus = sourceNode?.entryId ? statuses.get(sourceNode.entryId) : undefined;
                   const sourceDone = sourceStatus === "completed";
-                  if (sourceDone) {
+                  if (e.styleKind === "block" && sourceDone) {
+                    blocking = true;
+                    stroke = "url(#quest-block-stripe)";
+                    labelColor = targetNode ? statusColor("blocked", targetNode.color) : "#e0716f";
+                  } else if (sourceDone) {
                     stroke = "#7cc98a";
                     dash = "7 5";
                     flowing = true;
+                    labelColor = stroke;
                   } else {
                     stroke = sourceNode ? statusColor(sourceStatus ?? "available", sourceNode.color) : "#cda559";
                     dash = "3 4";
+                    labelColor = stroke;
                   }
                 }
                 return (
@@ -869,12 +905,12 @@ function RoadmapGraph({
                       x2={x2}
                       y2={y2}
                       stroke={stroke}
-                      strokeWidth={e.styleKind ? 2 : 1.4}
-                      strokeDasharray={dash}
-                      strokeLinecap={e.styleKind ? "round" : undefined}
+                      strokeWidth={blocking ? 5 : e.styleKind ? 2 : 1.4}
+                      strokeDasharray={blocking ? undefined : dash}
+                      strokeLinecap={e.styleKind && !blocking ? "round" : undefined}
                       className={flowing ? "quest-dep-flow" : undefined}
                       style={{ transition: "stroke 0.3s ease" }}
-                      markerEnd={flowing ? "url(#quest-graph-arrow-green)" : "url(#quest-graph-arrow)"}
+                      markerEnd={flowing ? "url(#quest-graph-arrow-green)" : blocking ? "url(#quest-graph-arrow-red)" : "url(#quest-graph-arrow)"}
                     />
                     {e.note && (
                       <g transform={`translate(${mx}, ${my})`}>
@@ -888,7 +924,7 @@ function RoadmapGraph({
                           stroke="var(--popover-border)"
                           strokeWidth={1}
                         />
-                        <text x={0} y={4} textAnchor="middle" fontSize={10} fill={e.styleKind ? stroke : "var(--op-60)"} className="mono">
+                        <text x={0} y={4} textAnchor="middle" fontSize={10} fill={e.styleKind ? labelColor : "var(--op-60)"} className="mono">
                           {e.note}
                         </text>
                       </g>
@@ -1191,10 +1227,12 @@ export function QuestsView() {
         <div className="flex items-center gap-2 px-4 py-4 border-b border-[var(--op-10)] shrink-0">
           <ScrollText size={18} className="text-[var(--op-70)]" />
           <span className="text-lg font-medium text-[#ece4d2]">Квесты</span>
+          <Flag size={12} className="text-[var(--op-45)] shrink-0" />
+          <span className="text-xs text-[var(--op-45)]">Флаги</span>
           <button
             onClick={() => setFlagsOpen(true)}
-            title="Флаги диалогов"
-            className="w-7 h-7 grid place-items-center rounded-md glass hover:bg-[var(--op-10)] text-[var(--op-60)]"
+            title="Открыть менеджер флагов диалогов"
+            className="w-6 h-6 shrink-0 grid place-items-center rounded-md glass hover:bg-[var(--op-10)] text-[var(--op-60)]"
           >
             <ToggleLeft size={13} />
           </button>
@@ -1202,7 +1240,7 @@ export function QuestsView() {
             {quests.length}
           </span>
         </div>
-        <div className="flex-1 overflow-y-auto p-2 space-y-3">
+        <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-3">
           {quests.length === 0 ? (
             <div className="p-4 text-sm text-[var(--op-35)] text-center">
               Нет квестов. Создайте запись категории «Основные квесты» или «Побочные квесты» в Галерее.
