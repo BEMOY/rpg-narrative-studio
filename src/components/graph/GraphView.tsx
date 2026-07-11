@@ -50,6 +50,8 @@ const IDEAL_LEN = 190;
 const REPULSION = 26000;
 const MAX_SETTLE_FRAMES = 260;
 const IDLE_JITTER = 0.16;
+const MIN_REPULSE_DIST = 60;
+const MAX_VELOCITY = 18;
 
 function clamp(v: number, lo: number, hi: number) {
   return Math.max(lo, Math.min(hi, v));
@@ -146,9 +148,13 @@ export function GraphView() {
           if (!b) continue;
           const dx = a.x - b.x;
           const dy = a.y - b.y;
-          const distSq = dx * dx + dy * dy || 0.01;
-          const dist = Math.sqrt(distSq);
-          const force = REPULSION / distSq;
+          // Fast dragging can momentarily place a node almost on top of a neighbor
+          // between animation frames — without a floor here, distSq shrinks toward
+          // zero and the repulsion force spikes toward infinity, flinging every
+          // nearby node away for a frame (visible as a "flicker"). Clamping the
+          // effective distance keeps the force bounded no matter how close nodes get.
+          const dist = Math.max(Math.sqrt(dx * dx + dy * dy), MIN_REPULSE_DIST);
+          const force = REPULSION / (dist * dist);
           fx += (dx / dist) * force;
           fy += (dy / dist) * force;
         }
@@ -210,6 +216,13 @@ export function GraphView() {
         }
         p.vx *= 0.82;
         p.vy *= 0.82;
+        // Belt-and-suspenders: even with the distance floor above, cap top speed so a
+        // single bad frame can never send a node shooting across the whole canvas.
+        const speed = Math.hypot(p.vx, p.vy);
+        if (speed > MAX_VELOCITY) {
+          p.vx = (p.vx / speed) * MAX_VELOCITY;
+          p.vy = (p.vy / speed) * MAX_VELOCITY;
+        }
         p.x = clamp(p.x + p.vx, 40, WIDTH - 40);
         p.y = clamp(p.y + p.vy, 40, HEIGHT - 40);
       }

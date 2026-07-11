@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { Plus, LogOut, Copy, KeyRound, FolderOpen, Pencil, Trash2, ShieldCheck, ChevronDown, ChevronRight } from "lucide-react";
+import { Plus, LogOut, Copy, KeyRound, FolderOpen, Pencil, Trash2, ShieldCheck, ChevronDown, ChevronRight, MessageSquare } from "lucide-react";
 import { ThemeMenu } from "../components/ThemeMenu";
+import { AdminInboxPanel } from "../components/reports/AdminInboxPanel";
 import { supabase } from "../lib/supabaseClient";
 import {
   createInvite,
@@ -16,6 +17,7 @@ import {
   type ProfileRow,
   type ProjectRow,
 } from "../cloud/projects";
+import { countNeedsReply, listAllReportThreads } from "../cloud/reports";
 import type { RarityObject } from "../types/database";
 
 const DEFAULT_RARITIES: RarityObject[] = [
@@ -35,9 +37,19 @@ export function ProjectsHome({ onOpen }: { onOpen: (row: ProjectRow) => void }) 
   const [myProfile, setMyProfile] = useState<ProfileRow | null>(null);
   const [adminGroups, setAdminGroups] = useState<AdminProjectGroup[] | null>(null);
   const [adminOpen, setAdminOpen] = useState(false);
+  const [inboxOpen, setInboxOpen] = useState(false);
+  const [needsReplyCount, setNeedsReplyCount] = useState(0);
 
   const refresh = async () => {
     setProjects(await listProjects());
+  };
+
+  const refreshInboxBadge = async () => {
+    try {
+      setNeedsReplyCount(countNeedsReply(await listAllReportThreads()));
+    } catch {
+      // non-critical — badge just stays at its last known value
+    }
   };
 
   useEffect(() => {
@@ -50,6 +62,10 @@ export function ProjectsHome({ onOpen }: { onOpen: (row: ProjectRow) => void }) 
       .then(setMyProfile)
       .catch(() => setMyProfile(null));
   }, []);
+
+  useEffect(() => {
+    if (myProfile?.is_admin) refreshInboxBadge();
+  }, [myProfile]);
 
   const toggleAdmin = async () => {
     setAdminOpen((v) => !v);
@@ -134,6 +150,20 @@ export function ProjectsHome({ onOpen }: { onOpen: (row: ProjectRow) => void }) 
               <KeyRound size={14} /> Пригласить друга
             </button>
           )}
+          {myProfile?.is_admin && (
+            <button
+              onClick={() => setInboxOpen(true)}
+              title="Репорты пользователей"
+              className="relative w-8 h-8 grid place-items-center rounded-md hover:bg-[var(--op-10)] text-[var(--op-50)] hover:text-[var(--op-90)] transition-colors"
+            >
+              <MessageSquare size={15} />
+              {needsReplyCount > 0 && (
+                <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-accent text-[10px] font-medium grid place-items-center text-white">
+                  {needsReplyCount}
+                </span>
+              )}
+            </button>
+          )}
           <button
             onClick={() => supabase.auth.signOut()}
             className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md glass hover:bg-[var(--op-10)]"
@@ -142,6 +172,14 @@ export function ProjectsHome({ onOpen }: { onOpen: (row: ProjectRow) => void }) 
           </button>
           <ThemeMenu />
         </div>
+        {inboxOpen && (
+          <AdminInboxPanel
+            onClose={() => {
+              setInboxOpen(false);
+              refreshInboxBadge();
+            }}
+          />
+        )}
 
         {showInvites && (
           <div className="glass rounded-lg p-4 mb-6">

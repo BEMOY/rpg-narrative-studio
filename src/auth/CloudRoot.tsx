@@ -6,6 +6,7 @@ import { ProjectsHome } from "./ProjectsHome";
 import App from "../App";
 import { useProjectStore } from "../store/useProjectStore";
 import type { ProjectRow } from "../cloud/projects";
+import { BugReportWidget } from "../components/reports/BugReportWidget";
 
 export function CloudRoot() {
   const [session, setSession] = useState<Session | null | undefined>(undefined); // undefined = still checking
@@ -25,8 +26,18 @@ export function CloudRoot() {
   if (!session) return <AuthScreen />;
 
   if (!projectId) {
-    return <ProjectsHome onOpen={(row: ProjectRow) => loadProject(row.id, row.data)} />;
+    return (
+      <>
+        <ProjectsHome onOpen={(row: ProjectRow) => loadProject(row.id, row.data)} />
+        <BugReportWidget />
+      </>
+    );
   }
 
-  return <App />;
+  return (
+    <>
+      <App />
+      <BugReportWidget />
+    </>
+  );
 }
