@@ -487,6 +487,11 @@ function RoadmapGraph({
   const anchorRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   const draggingRef = useRef<{ id: string; startClientX: number; startClientY: number; startX: number; startY: number } | null>(null);
   const panDragRef = useRef<{ startClientX: number; startClientY: number; startPanX: number; startPanY: number } | null>(null);
+  // A short celebratory shake, keyed by node id and counting down in frames — triggered only
+  // by the "пройден" toggle actually switching on (see the statuses-watching effect below),
+  // never by dragging.
+  const shakeRef = useRef<Map<string, number>>(new Map());
+  const prevStatusRef = useRef<Map<string, QuestStatus>>(new Map());
   const [, bump] = useState(0);
   const [zoom, setZoom] = useState(0.65);
   const [pan, setPan] = useState({ x: 30, y: 20 });
@@ -523,6 +528,22 @@ function RoadmapGraph({
       }
     });
   }, [nodes, nodeIds, columnXById]);
+
+  // Celebratory shake when a quest's "пройден" status actually flips ON — whether via the
+  // manual simulation toggle or automatically because every objective just got checked off.
+  // Compares against the previous render's statuses rather than living inside the animation
+  // loop, since `statuses` is a prop that changes independently of the physics effect below;
+  // `shakeRef` is the shared hand-off point the tick() loop reads from every frame.
+  useEffect(() => {
+    const prev = prevStatusRef.current;
+    for (const [id, status] of statuses) {
+      const wasCompleted = prev.get(id) === "completed";
+      if (status === "completed" && !wasCompleted && prev.has(id)) {
+        shakeRef.current.set(`q:${id}`, 22);
+      }
+    }
+    prevStatusRef.current = new Map(statuses);
+  }, [statuses]);
 
   useEffect(() => {
     let frame = 0;
@@ -612,6 +633,19 @@ function RoadmapGraph({
           p.vy = 0;
           continue;
         }
+        // Completion shake — a short, quick buzz (distinct from the old idle sway, which no
+        // longer exists) applied only for a couple dozen frames right after a quest's
+        // "пройден" toggle flips on. Feeds into the same velocity/damping pipeline below so it
+        // decays away exactly like the drag-release float does.
+        const shakeLeft = shakeRef.current.get(id);
+        if (shakeLeft && shakeLeft > 0) {
+          const amp = (shakeLeft / 22) * 6;
+          p.vx += Math.sin(frame * 2.3) * amp;
+          p.vy += Math.cos(frame * 2.7) * amp;
+          const next = shakeLeft - 1;
+          if (next <= 0) shakeRef.current.delete(id);
+          else shakeRef.current.set(id, next);
+        }
         if (pinnedRef.current.has(id)) {
           // Pinned (previously dragged) nodes stay anchored near where they were dropped,
           // but keep a gentle perpetual bob instead of freezing dead — matches GraphView.
@@ -669,14 +703,13 @@ function RoadmapGraph({
     if (!p) return;
     draggingRef.current = { id: n.id, startClientX: e.clientX, startClientY: e.clientY, startX: p.x, startY: p.y };
     let moved = false;
-    // Track the most recent movement's speed so that, on release, the node can be given a
-    // brief "throw" — a small decaying velocity kick — instead of either freezing dead or
-    // swaying forever. Untouched nodes never pass through here, so they never get this kick.
-    let lastMoveAt = performance.now();
-    let lastMoveX = e.clientX;
-    let lastMoveY = e.clientY;
-    let throwVx = 0;
-    let throwVy = 0;
+    // On release, the node gets a brief decaying float instead of either freezing dead or
+    // swaying forever — but it's computed as the AVERAGE velocity over the whole drag
+    // (distance moved / time held), not the instantaneous per-mousemove delta. Per-event
+    // deltas are noisy (mousemove fires irregularly, so dividing by a tiny dt spikes the
+    // estimate) and reads as a jittery shake on release; a single time-averaged value glides
+    // smoothly instead.
+    const dragStartAt = performance.now();
     const onMove = (ev: MouseEvent) => {
       const d = draggingRef.current;
       if (!d) return;
@@ -689,16 +722,9 @@ function RoadmapGraph({
       pos.y = d.startY + dyScreen / zoom;
       pos.vx = 0;
       pos.vy = 0;
-      const now = performance.now();
-      const dt = Math.max(1, now - lastMoveAt);
-      throwVx = ((ev.clientX - lastMoveX) / zoom / dt) * 16;
-      throwVy = ((ev.clientY - lastMoveY) / zoom / dt) * 16;
-      lastMoveAt = now;
-      lastMoveX = ev.clientX;
-      lastMoveY = ev.clientY;
       bump((v) => v + 1);
     };
-    const onUp = () => {
+    const onUp = (ev: MouseEvent) => {
       const d = draggingRef.current;
       if (d) {
         if (moved) {
@@ -706,14 +732,16 @@ function RoadmapGraph({
           const finalPos = posRef.current.get(d.id);
           if (finalPos) {
             anchorRef.current.set(d.id, { x: finalPos.x, y: finalPos.y });
-            // Cap the kick so a fast flick doesn't send the node rocketing off — just enough
-            // residual motion to read as a soft, brief float before the anchor spring and
-            // damping bring it to a full stop.
-            const kickSpeed = Math.hypot(throwVx, throwVy);
-            const maxKick = 6;
+            // Small, gentle residual float — a fraction of the drag's average speed, capped
+            // so a fast flick still only produces a soft drift, never a fling.
+            const dt = Math.max(16, performance.now() - dragStartAt);
+            const avgVx = ((ev.clientX - d.startClientX) / zoom / dt) * 16;
+            const avgVy = ((ev.clientY - d.startClientY) / zoom / dt) * 16;
+            const kickSpeed = Math.hypot(avgVx, avgVy);
+            const maxKick = 2.5;
             const scale = kickSpeed > maxKick ? maxKick / kickSpeed : 1;
-            finalPos.vx = throwVx * scale * 0.5;
-            finalPos.vy = throwVy * scale * 0.5;
+            finalPos.vx = avgVx * scale * 0.35;
+            finalPos.vy = avgVy * scale * 0.35;
           }
         } else if (n.kind === "quest" && n.entryId) onOpenQuest(n.entryId);
         else if (n.kind === "dialogue" && n.dialogueId) onOpenDialogue(n.dialogueId);
@@ -827,22 +855,6 @@ function RoadmapGraph({
                 <marker id="quest-graph-arrow-red" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
                   <path d="M0,0 L8,4 L0,8 Z" fill="#e0716f" />
                 </marker>
-                {/* Active "blocks" dependency (source quest completed, so the target is now
-                    actually blocked): a red barber-pole / spiral hazard stripe instead of a
-                    plain line — reads unambiguously as "danger, this path is shut". */}
-                <pattern id="quest-block-stripe" width="20" height="20" patternUnits="userSpaceOnUse">
-                  <rect width="20" height="20" fill="#2a1414" />
-                  <path d="M-5,20 L5,0 L15,0 L5,20 Z" fill="#e0716f" />
-                  <path d="M15,20 L25,0 L35,0 L25,20 Z" fill="#e0716f" />
-                  <animateTransform attributeName="patternTransform" type="translate" from="0 0" to="20 0" dur="0.8s" repeatCount="indefinite" />
-                </pattern>
-                {/* Marching-ants flow for dependency edges whose source quest is now (simulated)
-                    complete — a static line can't read as "this connection is now live", so it
-                    animates instead. */}
-                <style>{`
-                  @keyframes quest-dep-flow { to { stroke-dashoffset: -24; } }
-                  .quest-dep-flow { animation: quest-dep-flow 0.7s linear infinite; }
-                `}</style>
               </defs>
               {edges.map((e, i) => {
                 const a = pos.get(e.from);
@@ -866,51 +878,62 @@ function RoadmapGraph({
                 const mx = (a.x + b.x) / 2;
                 const my = (a.y + b.y) / 2;
 
-                // Dependency edges (unlocks/blocks) reflect the SOURCE quest's own completion —
-                // pending (source not yet done): a static striped line in the source quest's own
-                // card color ("under the quest's border color"). Once the source is completed:
-                // an "unlocks" edge turns solid green and flows toward the target; a "blocks"
-                // edge instead turns into a red hazard-stripe line (in the blocked quest's own
-                // status color) since the target is now genuinely shut off, not opened up.
-                let stroke = "var(--op-30)";
-                let dash: string | undefined;
-                let flowing = false;
-                let blocking = false;
+                // Dependency edges (unlocks/blocks) all share the same visual STYLE — a diagonal
+                // barber-pole hazard stripe — the colors are what tell them apart: pending
+                // (source quest not yet done) sits static in the source quest's own card color;
+                // once the source completes, an "unlocks" edge turns green and starts flowing,
+                // while a "blocks" edge turns red (the now-blocked target's status color) and
+                // also flows — motion reads as "this is live now", stillness as "not yet".
+                let patternId: string | null = null;
+                let patternColor = "var(--op-30)";
+                let animated = false;
                 let labelColor = "var(--op-60)";
                 if (e.styleKind) {
                   const sourceNode = nodeById.get(e.from);
                   const targetNode = nodeById.get(e.to);
                   const sourceStatus = sourceNode?.entryId ? statuses.get(sourceNode.entryId) : undefined;
                   const sourceDone = sourceStatus === "completed";
+                  patternId = `quest-dep-stripe-${i}`;
                   if (e.styleKind === "block" && sourceDone) {
-                    blocking = true;
-                    stroke = "url(#quest-block-stripe)";
-                    labelColor = targetNode ? statusColor("blocked", targetNode.color) : "#e0716f";
+                    patternColor = targetNode ? statusColor("blocked", targetNode.color) : "#e0716f";
+                    animated = true;
                   } else if (sourceDone) {
-                    stroke = "#7cc98a";
-                    dash = "7 5";
-                    flowing = true;
-                    labelColor = stroke;
+                    patternColor = "#7cc98a";
+                    animated = true;
                   } else {
-                    stroke = sourceNode ? statusColor(sourceStatus ?? "available", sourceNode.color) : "#cda559";
-                    dash = "3 4";
-                    labelColor = stroke;
+                    patternColor = sourceNode ? statusColor(sourceStatus ?? "available", sourceNode.color) : "#cda559";
+                    animated = false;
                   }
+                  labelColor = patternColor;
                 }
                 return (
                   <g key={i} opacity={dim ? 0.1 : 0.9} className="transition-opacity duration-300">
+                    {e.styleKind && patternId && (
+                      <pattern id={patternId} width="20" height="20" patternUnits="userSpaceOnUse" style={{ color: patternColor }}>
+                        <rect width="20" height="20" fill="#221515" />
+                        <path d="M-5,20 L5,0 L15,0 L5,20 Z" fill="currentColor" />
+                        <path d="M15,20 L25,0 L35,0 L25,20 Z" fill="currentColor" />
+                        {animated && (
+                          <animateTransform attributeName="patternTransform" type="translate" from="0 0" to="20 0" dur="0.8s" repeatCount="indefinite" />
+                        )}
+                      </pattern>
+                    )}
                     <line
                       x1={x1}
                       y1={y1}
                       x2={x2}
                       y2={y2}
-                      stroke={stroke}
-                      strokeWidth={blocking ? 5 : e.styleKind ? 2 : 1.4}
-                      strokeDasharray={blocking ? undefined : dash}
-                      strokeLinecap={e.styleKind && !blocking ? "round" : undefined}
-                      className={flowing ? "quest-dep-flow" : undefined}
+                      stroke={e.styleKind && patternId ? `url(#${patternId})` : "var(--op-30)"}
+                      strokeWidth={e.styleKind ? 5 : 1.4}
+                      strokeLinecap={e.styleKind ? "round" : undefined}
                       style={{ transition: "stroke 0.3s ease" }}
-                      markerEnd={flowing ? "url(#quest-graph-arrow-green)" : blocking ? "url(#quest-graph-arrow-red)" : "url(#quest-graph-arrow)"}
+                      markerEnd={
+                        e.styleKind === "block" && animated
+                          ? "url(#quest-graph-arrow-red)"
+                          : animated
+                          ? "url(#quest-graph-arrow-green)"
+                          : "url(#quest-graph-arrow)"
+                      }
                     />
                     {e.note && (
                       <g transform={`translate(${mx}, ${my})`}>

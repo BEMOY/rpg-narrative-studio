@@ -350,6 +350,36 @@ function RelationsBlock({ entry }: { entry: Entry }) {
     .map((id) => allEntries.find((e) => e.id === id))
     .filter((e): e is Entry => Boolean(e));
 
+  // Quest dependencies are declared over on the quest's own editor (QuestPanel's "Зависимости"
+  // section), not through the generic reference-picker below — but they ARE a real connection
+  // between two Codex entries, so they belong in this list too. Surfaced from both directions:
+  // dependencies THIS quest declares (outgoing), and dependencies OTHER quests declare that
+  // point back at this one (incoming) — otherwise a quest with dependencies looked like it had
+  // "no connections" at all.
+  type DepRow = { key: string; other: Entry; label: string };
+  const dependencyRows: DepRow[] = isQuest(entry.category)
+    ? [
+        ...(entry.questDependencies ?? [])
+          .map((dep) => {
+            const target = allEntries.find((e) => e.id === dep.questId);
+            if (!target) return null;
+            return { key: `out-${dep.id}`, other: target, label: dep.kind === "unlocks" ? "открывает" : "блокирует" };
+          })
+          .filter((r): r is DepRow => r !== null),
+        ...allEntries
+          .filter((e) => isQuest(e.category) && e.id !== entry.id)
+          .flatMap((src) =>
+            (src.questDependencies ?? [])
+              .filter((dep) => dep.questId === entry.id)
+              .map((dep) => ({
+                key: `in-${dep.id}`,
+                other: src,
+                label: dep.kind === "unlocks" ? "открывается благодаря" : "блокируется, если завершён",
+              }))
+          ),
+      ]
+    : [];
+
   const candidates = allEntries.filter((e) => e.id !== entry.id && !entry.references.includes(e.id));
   const filteredCandidates = candidates.filter((e) => {
     if (pickCats.size > 0 && !pickCats.has(e.category)) return false;
@@ -396,7 +426,19 @@ function RelationsBlock({ entry }: { entry: Entry }) {
   return (
     <Block title="Связи">
       <div className="space-y-1.5">
-        {linked.length === 0 && !picking && <div className="text-sm text-[var(--op-30)]">Пока нет связей.</div>}
+        {linked.length === 0 && dependencyRows.length === 0 && !picking && (
+          <div className="text-sm text-[var(--op-30)]">Пока нет связей.</div>
+        )}
+        {dependencyRows.map((r) => (
+          <div key={r.key} className="bg-[var(--op-5)] rounded-md px-3 py-1.5">
+            <div className="flex items-center gap-2 text-sm">
+              <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: CAT_COLOR[r.other.category] }} />
+              <span className="text-[var(--op-80)] truncate">{r.other.name}</span>
+              <span className="text-[var(--op-30)] text-xs">{CAT_LABEL[r.other.category]}</span>
+              <span className="text-[10px] text-[var(--op-40)] mono shrink-0 ml-auto">{r.label}</span>
+            </div>
+          </div>
+        ))}
         {linked.map((e) => (
           <div key={e.id} className="bg-[var(--op-5)] rounded-md px-3 py-1.5">
             <div className="flex items-center gap-2 text-sm">
