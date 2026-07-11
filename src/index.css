@@ -153,6 +153,15 @@ body {
   }
 }
 
+/* Sharp pop-in for the "quest just got blocked" red-X flash in the Quests roadmap
+   (QuestsView.tsx) — overshoots slightly then settles, so it reads as a sudden "denied" jolt
+   rather than a gentle fade-in. The fade back out is handled separately via an opacity
+   transition, not this keyframe. */
+@keyframes quest-block-pop {
+  from { transform: scale(1.7); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
 /* --- Dialogue text-effect markup (mirrors the engine's dlg_parse tags) --- */
 @keyframes dlg-wave-kf {
   0%, 100% { transform: translateY(0); }

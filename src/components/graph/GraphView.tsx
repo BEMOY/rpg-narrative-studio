@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { PortalMenu } from "../common/PortalMenu";
-import { CAT_COLOR, CAT_LABEL, CAT_ORDER, type Category } from "../../types/database";
+import { CAT_COLOR, CAT_LABEL, CAT_ORDER, isQuest, type Category } from "../../types/database";
 
 const CAT_ICON: Record<Category, React.ComponentType<any>> = {
   character: User,
@@ -75,6 +75,16 @@ export function GraphView() {
       for (const refId of e.references ?? []) {
         if (!visibleIds.has(refId) || refId === e.id) continue;
         list.push({ from: e.id, to: refId, note: e.referenceNotes?.[refId] });
+      }
+      // Quest dependencies (declared in the quest's own "Зависимости" editor, see QuestPanel)
+      // are a real connection between two Codex entries too — without this, a quest with
+      // dependencies showed up here as if it had no relations at all, even though the Quests
+      // roadmap already draws these same links.
+      if (isQuest(e.category)) {
+        for (const dep of e.questDependencies ?? []) {
+          if (!dep.questId || !visibleIds.has(dep.questId) || dep.questId === e.id) continue;
+          list.push({ from: e.id, to: dep.questId, note: dep.kind === "unlocks" ? "открывает" : "блокирует" });
+        }
       }
     }
     return list;

@@ -492,6 +492,9 @@ function RoadmapGraph({
   // never by dragging.
   const shakeRef = useRef<Map<string, number>>(new Map());
   const prevStatusRef = useRef<Map<string, QuestStatus>>(new Map());
+  // Real React state (not a ref) since this drives an actual CSS opacity transition for the
+  // "blocked" red-X pop, rather than feeding the imperative physics loop.
+  const [blockFlash, setBlockFlash] = useState<Map<string, "in" | "out">>(new Map());
   const [, bump] = useState(0);
   const [zoom, setZoom] = useState(0.65);
   const [pan, setPan] = useState({ x: 30, y: 20 });
@@ -529,17 +532,36 @@ function RoadmapGraph({
     });
   }, [nodes, nodeIds, columnXById]);
 
-  // Celebratory shake when a quest's "пройден" status actually flips ON — whether via the
-  // manual simulation toggle or automatically because every objective just got checked off.
-  // Compares against the previous render's statuses rather than living inside the animation
-  // loop, since `statuses` is a prop that changes independently of the physics effect below;
-  // `shakeRef` is the shared hand-off point the tick() loop reads from every frame.
+  // Shake feedback on any meaningful status flip — completed turning on OR off, and a quest
+  // freshly becoming blocked by someone else's completion. Compares against the previous
+  // render's statuses rather than living inside the animation loop, since `statuses` is a prop
+  // that changes independently of the physics effect below; `shakeRef` is the shared hand-off
+  // point the tick() loop reads from every frame. A fresh "blocked" transition additionally
+  // pops up a red X over the card for a moment (see blockFlash state + render below).
   useEffect(() => {
     const prev = prevStatusRef.current;
     for (const [id, status] of statuses) {
-      const wasCompleted = prev.get(id) === "completed";
-      if (status === "completed" && !wasCompleted && prev.has(id)) {
+      const prevStatus = prev.get(id);
+      if (!prev.has(id)) continue; // skip the very first computation (initial load, no real "transition" yet)
+      const completedChanged = (status === "completed") !== (prevStatus === "completed");
+      const freshlyBlocked = status === "blocked" && prevStatus !== "blocked";
+      if (completedChanged || freshlyBlocked) {
         shakeRef.current.set(`q:${id}`, 22);
+      }
+      if (freshlyBlocked) {
+        const key = `q:${id}`;
+        setBlockFlash((m) => new Map(m).set(key, "in"));
+        setTimeout(() => setBlockFlash((m) => (m.has(key) ? new Map(m).set(key, "out") : m)), 700);
+        setTimeout(
+          () =>
+            setBlockFlash((m) => {
+              if (!m.has(key)) return m;
+              const next = new Map(m);
+              next.delete(key);
+              return next;
+            }),
+          1300
+        );
       }
     }
     prevStatusRef.current = new Map(statuses);
@@ -1003,6 +1025,25 @@ function RoadmapGraph({
                       onToggleObjective={(i) => onToggleObjective(n.entryId!, i)}
                       entryById={entryById}
                     />
+                    {blockFlash.has(n.id) && (
+                      <div
+                        className={`absolute inset-0 grid place-items-center pointer-events-none transition-opacity duration-500 ${
+                          blockFlash.get(n.id) === "out" ? "opacity-0" : "opacity-100"
+                        }`}
+                      >
+                        <div
+                          className="w-10 h-10 rounded-full grid place-items-center border-2"
+                          style={{
+                            background: "rgba(224, 113, 111, 0.18)",
+                            borderColor: "#e0716f",
+                            boxShadow: "0 0 16px rgba(224, 113, 111, 0.35)",
+                            animation: blockFlash.get(n.id) === "in" ? "quest-block-pop 0.28s cubic-bezier(0.34, 1.56, 0.64, 1)" : undefined,
+                          }}
+                        >
+                          <X size={20} strokeWidth={3} style={{ color: "#e0716f" }} />
+                        </div>
+                      </div>
+                    )}
                   </div>
                 );
               }
