@@ -1,6 +1,7 @@
 import { Search, Plus, User, MapPin, Flag, Swords, Shirt, Package, Box, BookOpen, LayoutGrid } from "lucide-react";
 import { useMemo } from "react";
 import { useProjectStore } from "../../store/useProjectStore";
+import { MapThumbnail, mapHasContent } from "../mapeditor/MapThumbnail";
 import {
   CAT_COLOR,
   CAT_LABEL,
@@ -66,6 +67,9 @@ function subtitle(entry: Entry): string {
 function Card({ entry, onOpen }: { entry: Entry; onOpen: () => void }) {
   const color = CAT_COLOR[entry.category];
   const Icon = CAT_ICON[entry.category];
+  const allEntries = useProjectStore((s) => s.project.entries);
+  const showMapThumb = entry.category === "location" && !entry.image && mapHasContent(entry.map);
+
   return (
     <button
       onClick={onOpen}
@@ -74,6 +78,10 @@ function Card({ entry, onOpen }: { entry: Entry; onOpen: () => void }) {
       <div className="relative h-28 shrink-0">
         {entry.image ? (
           <img src={entry.image} alt="" className="w-full h-full object-cover" />
+        ) : showMapThumb ? (
+          <MapThumbnail map={entry.map!} entries={allEntries} />
+        ) : entry.mapImage ? (
+          <img src={entry.mapImage} alt="" className="w-full h-full object-cover" />
         ) : (
           <div
             className="w-full h-full grid place-items-center"

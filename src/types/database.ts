@@ -198,7 +198,18 @@ export interface MapZoneLayer extends MapLayerBase {
   zones: MapZone[];
 }
 
-export type MapLayer = MapTileLayer | MapObjectLayer | MapZoneLayer;
+// Freehand raster layer — not snapped to the cell grid, drawn pixel-by-pixel with the pen tool.
+export interface MapFreehandLayer extends MapLayerBase {
+  kind: "freehand";
+  bitmap: string | null; // data URL (PNG), full canvas size (width*gridSize x height*gridSize at creation time)
+}
+
+export type MapLayer = MapTileLayer | MapObjectLayer | MapZoneLayer | MapFreehandLayer;
+
+export interface MapPaletteColor {
+  color: string;
+  label: string;
+}
 
 export interface MapData {
   version: number;
@@ -206,4 +217,5 @@ export interface MapData {
   width: number; // cells
   height: number; // cells
   layers: MapLayer[];
+  palette: MapPaletteColor[];
 }

@@ -22,6 +22,7 @@ import { useProjectStore } from "../../store/useProjectStore";
 import { resizeImageFile } from "../../lib/image";
 import { usePasteImage } from "../../lib/usePasteImage";
 import { MapEditorModal } from "../mapeditor/MapEditorModal";
+import { MapThumbnail, mapHasContent } from "../mapeditor/MapThumbnail";
 
 const CAT_ICON: Record<Category, React.ComponentType<any>> = {
   character: User,
@@ -39,6 +40,7 @@ const REL_LABEL: Record<string, string> = { friend: "Друг", neutral: "Ней
 export function EntryDetail({ entry, onEdit }: { entry: Entry; onEdit: () => void }) {
   const showGallery = useProjectStore((s) => s.showGallery);
   const deleteEntry = useProjectStore((s) => s.deleteEntry);
+  const allEntries = useProjectStore((s) => s.project.entries);
   const color = CAT_COLOR[entry.category];
   const Icon = CAT_ICON[entry.category];
 
@@ -59,6 +61,10 @@ export function EntryDetail({ entry, onEdit }: { entry: Entry; onEdit: () => voi
         <div className="relative h-52">
           {entry.image ? (
             <img src={entry.image} alt="" className="w-full h-full object-cover" />
+          ) : entry.category === "location" && mapHasContent(entry.map) ? (
+            <MapThumbnail map={entry.map!} entries={allEntries} />
+          ) : entry.mapImage ? (
+            <img src={entry.mapImage} alt="" className="w-full h-full object-cover" />
           ) : (
             <div
               className="w-full h-full grid place-items-center"

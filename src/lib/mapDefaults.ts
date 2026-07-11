@@ -1,4 +1,4 @@
-import type { MapData, MapObjectLayer, MapTileLayer, MapZoneLayer } from "../types/database";
+import type { MapData, MapFreehandLayer, MapObjectLayer, MapPaletteColor, MapTileLayer, MapZoneLayer } from "../types/database";
 
 export function cellKey(x: number, y: number): string {
   return `${x}:${y}`;
@@ -49,10 +49,11 @@ export function createDefaultMap(): MapData {
     width: 24,
     height: 16,
     layers: [ground, objects, zones],
+    palette: DEFAULT_PALETTE.map((p) => ({ ...p })),
   };
 }
 
-export const TILE_PALETTE: { color: string; label: string }[] = [
+export const DEFAULT_PALETTE: MapPaletteColor[] = [
   { color: "#6b7280", label: "Пол" },
   { color: "#3f3f46", label: "Стена" },
   { color: "#4d7c0f", label: "Трава" },
@@ -62,6 +63,20 @@ export const TILE_PALETTE: { color: string; label: string }[] = [
   { color: "#facc15", label: "Песок" },
   { color: "#78350f", label: "Дверной проём" },
 ];
+
+// Fills in fields that didn't exist yet when an older map was saved (e.g. before the
+// custom palette or freehand layers were added) — never let older saved data crash the editor.
+export function normalizeMap(raw: MapData): MapData {
+  return {
+    ...raw,
+    palette: raw.palette && raw.palette.length > 0 ? raw.palette : DEFAULT_PALETTE.map((p) => ({ ...p })),
+    layers: raw.layers.map((l) => (l.kind === "tile" ? { ...l, cells: l.cells ?? {} } : l)),
+  };
+}
+
+export function createFreehandLayer(): MapFreehandLayer {
+  return { id: nextId("layer"), kind: "freehand", name: "Рисование", visible: true, locked: false, opacity: 1, bitmap: null };
+}
 
 export const ZONE_TAGS: { tag: string; label: string; color: string }[] = [
   { tag: "trigger", label: "Триггер", color: "#8b7bff" },
