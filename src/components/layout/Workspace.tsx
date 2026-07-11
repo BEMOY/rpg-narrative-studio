@@ -1,8 +1,9 @@
-import { X, LayoutGrid, Waypoints } from "lucide-react";
+import { X, LayoutGrid, Waypoints, MessagesSquare } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { EntryPanel } from "../editors/EntryPanel";
 import { Gallery } from "../gallery/Gallery";
 import { GraphView } from "../graph/GraphView";
+import { DialoguesView } from "../dialogue/DialoguesView";
 import { CAT_COLOR } from "../../types/database";
 
 export function Workspace() {
@@ -11,6 +12,7 @@ export function Workspace() {
   const setActiveTab = useProjectStore((s) => s.setActiveTab);
   const showGallery = useProjectStore((s) => s.showGallery);
   const showGraph = useProjectStore((s) => s.showGraph);
+  const showDialogues = useProjectStore((s) => s.showDialogues);
   const workspaceView = useProjectStore((s) => s.workspaceView);
   const closeTab = useProjectStore((s) => s.closeTab);
   const entries = useProjectStore((s) => s.project.entries);
@@ -39,6 +41,15 @@ export function Workspace() {
           <Waypoints size={12} />
           Граф связей
         </div>
+        <div
+          onClick={showDialogues}
+          className={`flex items-center gap-2 px-3 text-sm cursor-pointer border-r border-[var(--op-10)] shrink-0 ${
+            activeIndex === -1 && workspaceView === "dialogues" ? "bg-[var(--op-6)] text-[var(--op-90)]" : "text-[var(--op-40)] hover:text-[var(--op-70)]"
+          }`}
+        >
+          <MessagesSquare size={12} />
+          Диалоги
+        </div>
         {tabs.map((tab, i) => {
           const entry = entries.find((e) => e.id === tab.id);
           return (
@@ -66,7 +77,15 @@ export function Workspace() {
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        {activeEntry ? <EntryPanel entry={activeEntry} /> : workspaceView === "graph" ? <GraphView /> : <Gallery />}
+        {activeEntry ? (
+          <EntryPanel entry={activeEntry} />
+        ) : workspaceView === "graph" ? (
+          <GraphView />
+        ) : workspaceView === "dialogues" ? (
+          <DialoguesView />
+        ) : (
+          <Gallery />
+        )}
       </div>
     </div>
   );

@@ -83,7 +83,15 @@ export function ProjectsHome({ onOpen }: { onOpen: (row: ProjectRow) => void }) 
     if (!name) return;
     setCreating(true);
     try {
-      const row = await createProject(name, { name, entries: [], rarities: DEFAULT_RARITIES, chapters: [] });
+      const row = await createProject(name, {
+        name,
+        entries: [],
+        rarities: DEFAULT_RARITIES,
+        chapters: [],
+        dialogueFolders: [],
+        dialogues: [],
+        dialogueFlags: [],
+      });
       onOpen(row);
     } catch (e: any) {
       alert(e?.message ?? String(e));

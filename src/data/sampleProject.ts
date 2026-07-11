@@ -218,4 +218,7 @@ export const sampleProject: Project = {
   entries,
   rarities,
   chapters: ["Пролог"],
+  dialogueFolders: [],
+  dialogues: [],
+  dialogueFlags: [],
 };

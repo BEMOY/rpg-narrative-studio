@@ -145,6 +145,9 @@ export interface Project {
   entries: Entry[];
   rarities: RarityObject[];
   chapters: string[];
+  dialogueFolders: DialogueFolder[];
+  dialogues: Dialogue[];
+  dialogueFlags: string[];
 }
 
 // --- Map Editor (Phase 1) — see docs/13_Asset_System.md / 12_Editors.md conventions ---
@@ -236,3 +239,79 @@ export interface MapData {
   layers: MapLayer[];
   palette: MapPaletteColor[];
 }
+
+// --- Dialogue system — ported from the user's Codex tool's graph-based dialogue editor ---
+// Dialogues live in their own folder tree (independent of the Entry categories above), each
+// one a small directed graph of nodes. A node holds one or more sequential reply lines and,
+// optionally, a set of player choices; choices carry their own branch target and can gate
+// themselves on a condition and/or set flags when picked. A node with no choices instead has
+// a single "continuation" link (linear, drag-to-connect) to the next node.
+
+export interface DialogueFolder {
+  id: string;
+  name: string;
+  parentId: string | null; // null = root
+}
+
+export type DialogueSide = "left" | "default" | "right";
+
+// v1 condition model: pick a kind, then a key (flag name / quest entry id / any entry id)
+// and an operator. "flag" compares a flag's stored value; "quest" compares a quest entry's
+// derived status; "entry" checks whether that entry is referenced/owned (has/not_has) —
+// deliberately loose since the underlying "owns item" / "met character" bookkeeping is up
+// to the game, this only records intent for the writer.
+export interface DialogueCondition {
+  kind: "flag" | "quest" | "entry";
+  key: string;
+  op: "eq" | "neq" | "has" | "not_has";
+  value?: string;
+}
+
+export interface DialogueFlagSet {
+  key: string;
+  value: string;
+}
+
+export interface DialogueLine {
+  id: string;
+  speaker: string;
+  speakerEntryId?: string; // optional link to a Character entry, so name/side/emotion can follow it
+  side: DialogueSide;
+  emotion?: string;
+  text: string;
+  condition?: DialogueCondition;
+  noSkip: boolean;
+}
+
+export interface DialogueChoice {
+  id: string;
+  text: string;
+  condition?: DialogueCondition;
+  flagSets: DialogueFlagSet[];
+  targetNodeId?: string;
+}
+
+export interface DialogueNode {
+  id: string;
+  x: number;
+  y: number;
+  lines: DialogueLine[];
+  choices: DialogueChoice[];
+  continueTo?: string; // only meaningful/used when choices.length === 0
+}
+
+export interface Dialogue {
+  id: string;
+  name: string;
+  folderId: string | null;
+  startNodeId: string;
+  nodes: DialogueNode[];
+}
+
+export const MARKUP_TAGS: { tag: string; label: string }[] = [
+  { tag: "[wave]", label: "[wave]" },
+  { tag: "[shake]", label: "[shake]" },
+  { tag: "[c=...]", label: "[c=…]" },
+  { tag: "[pause]", label: "[pause]" },
+  { tag: "[speed]", label: "[speed]" },
+];
