@@ -31,6 +31,7 @@ interface ProjectState {
   updateEntry: (id: string, patch: Partial<Entry>) => void;
   updateStat: (id: string, key: string, value: number | undefined) => void;
   deleteEntry: (id: string) => void;
+  addChapter: (name: string) => void;
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -45,7 +46,16 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   galleryQuery: "",
   saving: false,
 
-  loadProject: (id, data) => set({ projectId: id, project: data, openTabs: [], activeTabIndex: -1, activeCategory: "all" }),
+  loadProject: (id, data) => {
+    // Backward compatibility: projects saved before a field existed on the model come back
+    // from Supabase without it — never let older cloud data crash newer UI.
+    const safe: Project = {
+      ...data,
+      chapters: data.chapters ?? [],
+      entries: data.entries.map((e) => ({ ...e, tags: e.tags ?? [], references: e.references ?? [] })),
+    };
+    set({ projectId: id, project: safe, openTabs: [], activeTabIndex: -1, activeCategory: "all" });
+  },
   closeProject: () => {
     if (cloudTimer) clearTimeout(cloudTimer);
     set({ projectId: null, project: sampleProject, openTabs: [], activeTabIndex: -1, activeCategory: "all" });
@@ -133,6 +143,13 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       project: { ...s.project, entries: s.project.entries.filter((e) => e.id !== id) },
       openTabs: s.openTabs.filter((t) => t.id !== id),
     }));
+    triggerAutosavePulse(set);
+  },
+
+  addChapter: (name) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    set((s) => (s.project.chapters.includes(trimmed) ? s : { project: { ...s.project, chapters: [...s.project.chapters, trimmed] } }));
     triggerAutosavePulse(set);
   },
 }));

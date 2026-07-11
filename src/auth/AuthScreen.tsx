@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { KeyRound } from "lucide-react";
+import { ThemeToggle } from "../components/ThemeToggle";
 import { supabase } from "../lib/supabaseClient";
 import { isValidUsername, normalizeUsername, usernameToEmail } from "../lib/username";
 
@@ -74,13 +75,16 @@ export function AuthScreen() {
   };
 
   return (
-    <div className="h-full flex items-center justify-center">
+    <div className="h-full flex items-center justify-center relative">
+      <div className="absolute top-4 right-4">
+        <ThemeToggle />
+      </div>
       <div className="glass rounded-lg p-8 w-full max-w-sm">
         <div className="flex items-center gap-2 mb-1">
           <KeyRound size={18} className="text-accent" />
           <div className="text-lg font-semibold">RPG Narrative Studio</div>
         </div>
-        <div className="text-sm text-white/40 mb-6">{mode === "signin" ? "Войти в свой аккаунт" : "Регистрация по коду приглашения"}</div>
+        <div className="text-sm text-[var(--op-40)] mb-6">{mode === "signin" ? "Войти в свой аккаунт" : "Регистрация по коду приглашения"}</div>
 
         <form onSubmit={submit} className="space-y-3">
           <input
@@ -130,7 +134,7 @@ export function AuthScreen() {
             setError(null);
             setInfo(null);
           }}
-          className="w-full text-center text-xs text-white/40 hover:text-white/70 mt-4"
+          className="w-full text-center text-xs text-[var(--op-40)] hover:text-[var(--op-70)] mt-4"
         >
           {mode === "signin" ? "Нет аккаунта? Есть код приглашения — зарегистрироваться" : "Уже есть аккаунт? Войти"}
         </button>

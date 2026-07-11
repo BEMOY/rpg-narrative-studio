@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Plus, LogOut, Copy, KeyRound, FolderOpen, Pencil, Trash2 } from "lucide-react";
+import { ThemeToggle } from "../components/ThemeToggle";
 import { supabase } from "../lib/supabaseClient";
 import {
   createInvite,
@@ -45,7 +46,7 @@ export function ProjectsHome({ onOpen }: { onOpen: (row: ProjectRow) => void }) 
     if (!name) return;
     setCreating(true);
     try {
-      const row = await createProject(name, { name, entries: [], rarities: DEFAULT_RARITIES });
+      const row = await createProject(name, { name, entries: [], rarities: DEFAULT_RARITIES, chapters: [] });
       onOpen(row);
     } catch (e: any) {
       alert(e?.message ?? String(e));
@@ -98,33 +99,34 @@ export function ProjectsHome({ onOpen }: { onOpen: (row: ProjectRow) => void }) 
       <div className="max-w-4xl mx-auto">
         <div className="flex items-center gap-3 mb-8">
           <div className="text-xl font-semibold">Ваши проекты</div>
-          <div className="text-xs text-white/30">@{username}</div>
+          <div className="text-xs text-[var(--op-30)]">@{username}</div>
           <div className="flex-1" />
-          <button onClick={openInvites} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md glass hover:bg-white/10">
+          <button onClick={openInvites} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md glass hover:bg-[var(--op-10)]">
             <KeyRound size={14} /> Пригласить друга
           </button>
           <button
             onClick={() => supabase.auth.signOut()}
-            className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md glass hover:bg-white/10"
+            className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md glass hover:bg-[var(--op-10)]"
           >
             <LogOut size={14} /> Выйти
           </button>
+          <ThemeToggle />
         </div>
 
         {showInvites && (
           <div className="glass rounded-lg p-4 mb-6">
             <div className="flex items-center justify-between mb-3">
-              <div className="text-sm text-white/60">Коды приглашений — дайте другу, он вводит его при регистрации.</div>
+              <div className="text-sm text-[var(--op-60)]">Коды приглашений — дайте другу, он вводит его при регистрации.</div>
               <button onClick={genInvite} className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md bg-accent/80 hover:bg-accent">
                 <Plus size={12} /> Новый код
               </button>
             </div>
             <div className="space-y-1.5">
-              {invites.length === 0 && <div className="text-xs text-white/30">Пока нет кодов.</div>}
+              {invites.length === 0 && <div className="text-xs text-[var(--op-30)]">Пока нет кодов.</div>}
               {invites.map((inv) => (
                 <div key={inv.code} className="flex items-center gap-2 text-xs mono">
-                  <span className={inv.used_by ? "text-white/30 line-through" : "text-white/80"}>{inv.code}</span>
-                  <span className="text-white/30">{inv.used_by ? "использован" : "свободен"}</span>
+                  <span className={inv.used_by ? "text-[var(--op-30)] line-through" : "text-[var(--op-80)]"}>{inv.code}</span>
+                  <span className="text-[var(--op-30)]">{inv.used_by ? "использован" : "свободен"}</span>
                   {!inv.used_by && (
                     <button onClick={() => navigator.clipboard?.writeText(inv.code)} className="opacity-40 hover:opacity-100">
                       <Copy size={11} />
@@ -137,41 +139,41 @@ export function ProjectsHome({ onOpen }: { onOpen: (row: ProjectRow) => void }) 
         )}
 
         <div className="grid gap-3.5" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))" }}>
-          {projects === null && <div className="text-white/30 text-sm">Загрузка…</div>}
+          {projects === null && <div className="text-[var(--op-30)] text-sm">Загрузка…</div>}
           {projects?.map((p) => (
             <div
               key={p.id}
               onClick={() => onOpen(p)}
               role="button"
               tabIndex={0}
-              className="group relative glass rounded-lg p-5 text-left hover:-translate-y-0.5 hover:border-white/20 transition-transform cursor-pointer"
+              className="group relative glass rounded-lg p-5 text-left hover:-translate-y-0.5 hover:border-[var(--op-20)] transition-transform cursor-pointer"
             >
               <div className="absolute top-3 right-3 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                 <button
                   onClick={(e) => rename(p, e)}
-                  className="p-1.5 rounded-md bg-black/40 backdrop-blur-sm text-white/50 hover:text-white/90 hover:bg-black/60"
+                  className="p-1.5 rounded-md bg-black/40 backdrop-blur-sm text-[var(--op-50)] hover:text-[var(--op-90)] hover:bg-black/60"
                   title="Переименовать"
                 >
                   <Pencil size={12} />
                 </button>
                 <button
                   onClick={(e) => remove(p, e)}
-                  className="p-1.5 rounded-md bg-black/40 backdrop-blur-sm text-white/50 hover:text-red-300 hover:bg-black/60"
+                  className="p-1.5 rounded-md bg-black/40 backdrop-blur-sm text-[var(--op-50)] hover:text-red-300 hover:bg-black/60"
                   title="Удалить"
                 >
                   <Trash2 size={12} />
                 </button>
               </div>
               <FolderOpen size={20} className="text-accent mb-3" />
-              <div className="text-sm font-medium text-white/90 truncate pr-10">{p.name}</div>
-              <div className="text-xs text-white/40 mt-1">{(p.data?.entries?.length ?? 0)} объектов</div>
-              <div className="text-[11px] text-white/25 mt-2">обновлён {new Date(p.updated_at).toLocaleString()}</div>
+              <div className="text-sm font-medium text-[var(--op-90)] truncate pr-10">{p.name}</div>
+              <div className="text-xs text-[var(--op-40)] mt-1">{(p.data?.entries?.length ?? 0)} объектов</div>
+              <div className="text-[11px] text-[var(--op-25)] mt-2">обновлён {new Date(p.updated_at).toLocaleString()}</div>
             </div>
           ))}
           <button
             onClick={newProject}
             disabled={creating}
-            className="rounded-lg border border-dashed border-white/15 p-5 flex flex-col items-center justify-center gap-2 text-white/40 hover:text-white/80 hover:border-white/30 transition-colors min-h-[140px]"
+            className="rounded-lg border border-dashed border-[var(--op-15)] p-5 flex flex-col items-center justify-center gap-2 text-[var(--op-40)] hover:text-[var(--op-80)] hover:border-[var(--op-30)] transition-colors min-h-[140px]"
           >
             <Plus size={20} />
             <span className="text-sm">{creating ? "Создаю…" : "Новый проект"}</span>

@@ -40,8 +40,8 @@ function Badge({ entry }: { entry: Entry }) {
       st === "done"
         ? "bg-emerald-500/20 text-emerald-300"
         : st === "active"
-        ? "bg-accent/25 text-white"
-        : "bg-white/10 text-white/50";
+        ? "bg-accent/25 text-[var(--op-90)]"
+        : "bg-[var(--op-10)] text-[var(--op-50)]";
     return <span className={`absolute top-2 right-2 text-[10px] px-2 py-0.5 rounded-full ${cls}`}>{STATUS_LABEL[st]}</span>;
   }
   if (hasRelationship(entry.category) && entry.relationship && entry.relationship !== "neutral") {
@@ -49,7 +49,7 @@ function Badge({ entry }: { entry: Entry }) {
     return <span className={`absolute top-2 right-2 text-[10px] px-2 py-0.5 rounded-full ${cls}`}>{REL_LABEL[entry.relationship]}</span>;
   }
   if (entry.category === "equipment" && entry.slot) {
-    return <span className="absolute top-2 right-2 text-[10px] px-2 py-0.5 rounded-full bg-white/10 text-white/60">{entry.slot}</span>;
+    return <span className="absolute top-2 right-2 text-[10px] px-2 py-0.5 rounded-full bg-[var(--op-10)] text-[var(--op-60)]">{entry.slot}</span>;
   }
   return null;
 }
@@ -69,7 +69,7 @@ function Card({ entry, onOpen }: { entry: Entry; onOpen: () => void }) {
   return (
     <button
       onClick={onOpen}
-      className="glass rounded-lg overflow-hidden text-left flex flex-col hover:-translate-y-0.5 hover:border-white/20 transition-transform relative group"
+      className="glass rounded-lg overflow-hidden text-left flex flex-col hover:-translate-y-0.5 hover:border-[var(--op-20)] transition-transform relative group"
     >
       <div className="relative h-28 shrink-0">
         {entry.image ? (
@@ -92,8 +92,8 @@ function Card({ entry, onOpen }: { entry: Entry; onOpen: () => void }) {
         <Badge entry={entry} />
       </div>
       <div className="p-3">
-        <div className="text-sm font-medium text-white/90 truncate">{entry.name}</div>
-        <div className="text-xs text-white/40 truncate mt-0.5">{subtitle(entry)}</div>
+        <div className="text-sm font-medium text-[var(--op-90)] truncate">{entry.name}</div>
+        <div className="text-xs text-[var(--op-40)] truncate mt-0.5">{subtitle(entry)}</div>
       </div>
     </button>
   );
@@ -128,20 +128,20 @@ export function Gallery() {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="flex items-center gap-3 px-5 py-4 border-b border-white/10 flex-wrap">
+      <div className="flex items-center gap-3 px-5 py-4 border-b border-[var(--op-10)] flex-wrap">
         <div className="flex items-center gap-2 text-lg font-medium" style={{ color }}>
           {activeCategory === "all" ? <LayoutGrid size={18} /> : null}
           {title}
-          <span className="text-xs mono text-white/30 bg-white/5 border border-white/10 rounded-full px-2 py-0.5">{list.length}</span>
+          <span className="text-xs mono text-[var(--op-30)] bg-[var(--op-5)] border border-[var(--op-10)] rounded-full px-2 py-0.5">{list.length}</span>
         </div>
         <div className="ml-auto flex items-center gap-2">
           <div className="glass rounded-md px-3 py-1.5 flex items-center gap-2 text-sm w-64">
-            <Search size={14} className="text-white/40" />
+            <Search size={14} className="text-[var(--op-40)]" />
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Поиск по миру…"
-              className="bg-transparent outline-none text-white/80 placeholder:text-white/30 w-full"
+              className="bg-transparent outline-none text-[var(--op-80)] placeholder:text-[var(--op-30)] w-full"
             />
           </div>
           {activeCategory !== "all" && (
@@ -157,7 +157,7 @@ export function Gallery() {
 
       <div className="flex-1 overflow-y-auto p-5">
         {list.length === 0 ? (
-          <div className="h-full flex flex-col items-center justify-center text-white/30 gap-2">
+          <div className="h-full flex flex-col items-center justify-center text-[var(--op-30)] gap-2">
             <LayoutGrid size={28} />
             <div className="text-sm">Ничего не найдено.</div>
           </div>

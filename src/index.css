@@ -2,21 +2,82 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ---------------------------------------------------------------------- */
+/* Theme tokens. Default (no data-theme attr, or data-theme="dark") is the
+   original dark glass look. data-theme="light" overrides the same variable
+   names with a warm parchment palette. Every component reads colors through
+   these vars via Tailwind arbitrary values, e.g. bg-[var(--op-10)]. */
+/* ---------------------------------------------------------------------- */
+
+:root {
+  --bg-grad-a: #171a24;
+  --bg-grad-b: #0b0d12;
+  --glass-bg: rgba(255, 255, 255, 0.045);
+  --glass-border: rgba(255, 255, 255, 0.07);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.12);
+
+  /* opacity ladder — same numeric key used for text, backgrounds and borders */
+  --op-5: rgba(255, 255, 255, 0.05);
+  --op-6: rgba(255, 255, 255, 0.06);
+  --op-7: rgba(255, 255, 255, 0.07);
+  --op-8: rgba(255, 255, 255, 0.08);
+  --op-10: rgba(255, 255, 255, 0.1);
+  --op-15: rgba(255, 255, 255, 0.15);
+  --op-20: rgba(255, 255, 255, 0.2);
+  --op-25: rgba(255, 255, 255, 0.25);
+  --op-30: rgba(255, 255, 255, 0.3);
+  --op-35: rgba(255, 255, 255, 0.35);
+  --op-40: rgba(255, 255, 255, 0.4);
+  --op-45: rgba(255, 255, 255, 0.45);
+  --op-50: rgba(255, 255, 255, 0.5);
+  --op-60: rgba(255, 255, 255, 0.6);
+  --op-70: rgba(255, 255, 255, 0.7);
+  --op-80: rgba(255, 255, 255, 0.8);
+  --op-90: rgba(255, 255, 255, 0.9);
+}
+
+[data-theme="light"] {
+  --bg-grad-a: #f4efe2;
+  --bg-grad-b: #e9e2d0;
+  --glass-bg: rgba(30, 24, 12, 0.04);
+  --glass-border: rgba(30, 24, 12, 0.1);
+  --scrollbar-thumb: rgba(30, 24, 12, 0.18);
+
+  --op-5: rgba(30, 24, 12, 0.05);
+  --op-6: rgba(30, 24, 12, 0.06);
+  --op-7: rgba(30, 24, 12, 0.07);
+  --op-8: rgba(30, 24, 12, 0.08);
+  --op-10: rgba(30, 24, 12, 0.1);
+  --op-15: rgba(30, 24, 12, 0.15);
+  --op-20: rgba(30, 24, 12, 0.2);
+  --op-25: rgba(30, 24, 12, 0.28);
+  --op-30: rgba(30, 24, 12, 0.34);
+  --op-35: rgba(30, 24, 12, 0.4);
+  --op-40: rgba(30, 24, 12, 0.46);
+  --op-45: rgba(30, 24, 12, 0.52);
+  --op-50: rgba(30, 24, 12, 0.58);
+  --op-60: rgba(30, 24, 12, 0.66);
+  --op-70: rgba(30, 24, 12, 0.74);
+  --op-80: rgba(30, 24, 12, 0.82);
+  --op-90: rgba(30, 24, 12, 0.9);
+}
+
 html, body, #root {
   height: 100%;
 }
 
 body {
   margin: 0;
-  background: radial-gradient(circle at 20% 0%, #171a24 0%, #0b0d12 55%);
-  color: #e8e9ee;
+  background: radial-gradient(circle at 20% 0%, var(--bg-grad-a) 0%, var(--bg-grad-b) 55%);
+  color: var(--op-90);
   font-family: Inter, system-ui, -apple-system, sans-serif;
+  transition: background 0.2s ease, color 0.2s ease;
 }
 
 .glass {
-  background: rgba(255, 255, 255, 0.045);
+  background: var(--glass-bg);
   backdrop-filter: blur(24px);
-  border: 1px solid rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--glass-border);
 }
 
 .mono {
@@ -24,8 +85,20 @@ body {
 }
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 8px; }
+::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 8px; }
 
 .input {
-  @apply w-full bg-white/5 border border-white/10 rounded-md px-3 py-1.5 text-sm text-white/90 outline-none focus:border-accent/60 focus:bg-white/[0.07] transition-colors;
+  width: 100%;
+  background: var(--op-5);
+  border: 1px solid var(--op-10);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 0.875rem;
+  color: var(--op-90);
+  outline: none;
+  transition: border-color 0.15s, background 0.15s;
+}
+.input:focus {
+  border-color: rgba(139, 123, 255, 0.6);
+  background: var(--op-7);
 }

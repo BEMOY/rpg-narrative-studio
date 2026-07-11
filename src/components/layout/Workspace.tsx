@@ -1,6 +1,6 @@
 import { X, LayoutGrid } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
-import { EntryEditor } from "../editors/EntryEditor";
+import { EntryPanel } from "../editors/EntryPanel";
 import { Gallery } from "../gallery/Gallery";
 import { CAT_COLOR } from "../../types/database";
 
@@ -17,11 +17,11 @@ export function Workspace() {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="h-10 flex items-stretch border-b border-white/10 shrink-0 overflow-x-auto">
+      <div className="h-10 flex items-stretch border-b border-[var(--op-10)] shrink-0 overflow-x-auto">
         <div
           onClick={showGallery}
-          className={`flex items-center gap-2 px-3 text-sm cursor-pointer border-r border-white/10 shrink-0 ${
-            activeIndex === -1 ? "bg-white/[0.06] text-white" : "text-white/40 hover:text-white/70"
+          className={`flex items-center gap-2 px-3 text-sm cursor-pointer border-r border-[var(--op-10)] shrink-0 ${
+            activeIndex === -1 ? "bg-[var(--op-6)] text-[var(--op-90)]" : "text-[var(--op-40)] hover:text-[var(--op-70)]"
           }`}
         >
           <LayoutGrid size={12} />
@@ -33,8 +33,8 @@ export function Workspace() {
             <div
               key={tab.id}
               onClick={() => setActiveTab(i)}
-              className={`flex items-center gap-2 px-3 text-sm cursor-pointer border-r border-white/10 shrink-0 ${
-                i === activeIndex ? "bg-white/[0.06] text-white" : "text-white/40 hover:text-white/70"
+              className={`flex items-center gap-2 px-3 text-sm cursor-pointer border-r border-[var(--op-10)] shrink-0 ${
+                i === activeIndex ? "bg-[var(--op-6)] text-[var(--op-90)]" : "text-[var(--op-40)] hover:text-[var(--op-70)]"
               }`}
             >
               <span className="w-1.5 h-1.5 rounded-full" style={{ background: entry ? CAT_COLOR[entry.category] : "#888" }} />
@@ -53,7 +53,7 @@ export function Workspace() {
         })}
       </div>
 
-      <div className="flex-1 overflow-y-auto">{activeEntry ? <EntryEditor entry={activeEntry} /> : <Gallery />}</div>
+      <div className="flex-1 overflow-y-auto">{activeEntry ? <EntryPanel entry={activeEntry} /> : <Gallery />}</div>
     </div>
   );
 }

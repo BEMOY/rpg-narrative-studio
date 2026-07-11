@@ -9,7 +9,7 @@ const SLOTS: EquipSlot[] = ["head", "body", "weapon", "offhand"];
 const RELATIONSHIPS: Relationship[] = ["friend", "neutral", "enemy"];
 const SUGGESTED_STATS = ["attack", "defense", "magic", "speed", "luck", "crit", "dodge", "capacity", "level", "xp", "xp_max"];
 
-export function EntryEditor({ entry }: { entry: Entry }) {
+export function EntryEditor({ entry, onDone }: { entry: Entry; onDone: () => void }) {
   const rarities = useProjectStore((s) => s.project.rarities);
   const updateEntry = useProjectStore((s) => s.updateEntry);
   const updateStat = useProjectStore((s) => s.updateStat);
@@ -33,6 +33,7 @@ export function EntryEditor({ entry }: { entry: Entry }) {
         </Field>
       </Section>
 
+      <ChapterSection entry={entry} />
       <VisualSection entry={entry} />
       <TagsSection entry={entry} />
 
@@ -116,15 +117,66 @@ export function EntryEditor({ entry }: { entry: Entry }) {
 
       <PropsPanel entry={entry} />
 
-      <div className="flex justify-end pt-2">
+      <div className="flex justify-between pt-2">
         <button
-          onClick={() => deleteEntry(entry.id)}
+          onClick={() => {
+            if (confirm(`Удалить «${entry.name}»? Это необратимо.`)) deleteEntry(entry.id);
+          }}
           className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-red-500/30 text-red-300 hover:bg-red-500/10"
         >
           <Trash2 size={14} /> Удалить
         </button>
+        <div className="flex gap-2">
+          <button onClick={onDone} className="text-sm px-4 py-1.5 rounded-md glass hover:bg-[var(--op-10)] transition-colors">
+            Отмена
+          </button>
+          <button onClick={onDone} className="text-sm px-4 py-1.5 rounded-md bg-accent/80 hover:bg-accent transition-colors">
+            Сохранить
+          </button>
+        </div>
       </div>
     </div>
+  );
+}
+
+function ChapterSection({ entry }: { entry: Entry }) {
+  const chapters = useProjectStore((s) => s.project.chapters);
+  const updateEntry = useProjectStore((s) => s.updateEntry);
+  const addChapter = useProjectStore((s) => s.addChapter);
+
+  const addNew = () => {
+    const name = prompt("Название главы:");
+    if (!name) return;
+    addChapter(name.trim());
+    updateEntry(entry.id, { chapter: name.trim() });
+  };
+
+  return (
+    <Section title="Глава">
+      <Field label="Глава">
+        <div className="flex gap-2">
+          <select
+            className="input"
+            value={entry.chapter ?? ""}
+            onChange={(e) => updateEntry(entry.id, { chapter: e.target.value || undefined })}
+          >
+            <option value="">— без главы —</option>
+            {chapters.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={addNew}
+            title="Новая глава"
+            className="w-9 h-9 shrink-0 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]"
+          >
+            <Plus size={14} />
+          </button>
+        </div>
+      </Field>
+    </Section>
   );
 }
 
@@ -149,11 +201,11 @@ function VisualSection({ entry }: { entry: Entry }) {
   return (
     <Section title="Visual">
       <div className="flex items-center gap-4">
-        <div className="w-20 h-20 rounded-md overflow-hidden bg-white/5 border border-white/10 shrink-0 grid place-items-center">
+        <div className="w-20 h-20 rounded-md overflow-hidden bg-[var(--op-5)] border border-[var(--op-10)] shrink-0 grid place-items-center">
           {entry.image ? (
             <img src={entry.image} alt="" className="w-full h-full object-cover" />
           ) : (
-            <ImageOff size={18} className="text-white/20" />
+            <ImageOff size={18} className="text-[var(--op-20)]" />
           )}
         </div>
         <div className="flex flex-col gap-2">
@@ -167,14 +219,14 @@ function VisualSection({ entry }: { entry: Entry }) {
           <button
             onClick={() => fileRef.current?.click()}
             disabled={busy}
-            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md glass hover:bg-white/10 disabled:opacity-50"
+            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md glass hover:bg-[var(--op-10)] disabled:opacity-50"
           >
             <Upload size={12} /> {busy ? "Загрузка…" : "Загрузить картинку"}
           </button>
           {entry.image && (
             <button
               onClick={() => updateEntry(entry.id, { image: undefined })}
-              className="text-xs text-white/40 hover:text-white/70 text-left"
+              className="text-xs text-[var(--op-40)] hover:text-[var(--op-70)] text-left"
             >
               Убрать — показывать иконку категории
             </button>
@@ -216,7 +268,7 @@ function TagsSection({ entry }: { entry: Entry }) {
     <Section title="Tags">
       <div className="flex flex-wrap gap-1.5">
         {tags.map((t) => (
-          <span key={t} className="flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-white/8 border border-white/10 text-white/70">
+          <span key={t} className="flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-[var(--op-8)] border border-[var(--op-10)] text-[var(--op-70)]">
             {t}
             <button onClick={() => removeTag(t)} className="opacity-50 hover:opacity-100">
               <X size={10} />
@@ -234,7 +286,7 @@ function TagsSection({ entry }: { entry: Entry }) {
           }}
           onBlur={addTag}
           placeholder="добавить тег…"
-          className="bg-transparent outline-none text-xs text-white/70 placeholder:text-white/25 px-1 py-1 min-w-[100px]"
+          className="bg-transparent outline-none text-xs text-[var(--op-70)] placeholder:text-[var(--op-25)] px-1 py-1 min-w-[100px]"
         />
       </div>
     </Section>
@@ -280,7 +332,7 @@ function ObjectivesPanel({ entry }: { entry: Entry }) {
         ))}
         <button
           onClick={() => set([...objectives, { text: "", done: false }])}
-          className="flex items-center gap-1.5 text-xs text-white/50 hover:text-white/80"
+          className="flex items-center gap-1.5 text-xs text-[var(--op-50)] hover:text-[var(--op-80)]"
         >
           <Plus size={12} /> Добавить objective
         </button>
@@ -324,7 +376,7 @@ function PropsPanel({ entry }: { entry: Entry }) {
             </button>
           </div>
         ))}
-        <button onClick={() => set([...props, ["", ""]])} className="flex items-center gap-1.5 text-xs text-white/50 hover:text-white/80">
+        <button onClick={() => set([...props, ["", ""]])} className="flex items-center gap-1.5 text-xs text-[var(--op-50)] hover:text-[var(--op-80)]">
           <Plus size={12} /> Добавить поле
         </button>
       </div>
@@ -335,7 +387,7 @@ function PropsPanel({ entry }: { entry: Entry }) {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="glass rounded-lg p-5">
-      <div className="text-xs uppercase tracking-wider text-white/35 mb-4">{title}</div>
+      <div className="text-xs uppercase tracking-wider text-[var(--op-35)] mb-4">{title}</div>
       <div className="space-y-3">{children}</div>
     </div>
   );
@@ -344,7 +396,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="grid grid-cols-[160px_1fr] items-center gap-3">
-      <label className="text-sm text-white/50">{label}</label>
+      <label className="text-sm text-[var(--op-50)]">{label}</label>
       {children}
     </div>
   );

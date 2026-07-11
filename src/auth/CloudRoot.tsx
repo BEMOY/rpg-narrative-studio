@@ -19,7 +19,7 @@ export function CloudRoot() {
   }, []);
 
   if (session === undefined) {
-    return <div className="h-full grid place-items-center text-white/30 text-sm">Загрузка…</div>;
+    return <div className="h-full grid place-items-center text-[var(--op-30)] text-sm">Загрузка…</div>;
   }
 
   if (!session) return <AuthScreen />;

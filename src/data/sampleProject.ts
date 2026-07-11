@@ -217,4 +217,5 @@ export const sampleProject: Project = {
   name: "Snowfall",
   entries,
   rarities,
+  chapters: ["Пролог"],
 };

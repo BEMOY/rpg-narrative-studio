@@ -100,6 +100,9 @@ export interface Entry {
   notes: string;
   chapter?: string;
 
+  // location-only: attached map image (data URL), see docs/13_Asset_System.md
+  mapImage?: string;
+
   // generic key/value props (Codex "SCHEMA" panel) — free-form per-category fields that don't need a typed slot
   props: [string, string][];
 
@@ -138,4 +141,5 @@ export interface Project {
   name: string;
   entries: Entry[];
   rarities: RarityObject[];
+  chapters: string[];
 }

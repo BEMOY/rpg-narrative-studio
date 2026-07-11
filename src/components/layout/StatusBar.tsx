@@ -7,13 +7,13 @@ export function StatusBar() {
   const projectId = useProjectStore((s) => s.projectId);
 
   return (
-    <div className="h-7 glass shrink-0 flex items-center px-3 text-xs text-white/45 gap-4">
+    <div className="h-7 glass shrink-0 flex items-center px-3 text-xs text-[var(--op-45)] gap-4">
       <span>{saving ? "Saving…" : projectId ? "Saved to cloud" : "Local demo — not saved"}</span>
-      <span className="text-white/20">|</span>
+      <span className="text-[var(--op-20)]">|</span>
       <span>Project/{projectName}</span>
       <div className="flex-1" />
       <span>0 ⛔ · 0 ⚠</span>
-      <span className="text-white/20">|</span>
+      <span className="text-[var(--op-20)]">|</span>
       <span>{itemCount} объектов</span>
     </div>
   );

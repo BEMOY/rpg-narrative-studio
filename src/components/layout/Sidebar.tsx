@@ -25,22 +25,22 @@ export function Sidebar() {
 
   return (
     <div className="w-[280px] glass shrink-0 flex flex-col overflow-hidden">
-      <div className="px-3 py-3 text-xs uppercase tracking-wider text-white/35">Database</div>
+      <div className="px-3 py-3 text-xs uppercase tracking-wider text-[var(--op-35)]">Database</div>
       <div className="flex-1 overflow-y-auto px-2 pb-4 space-y-0.5">
         <button
           onClick={() => setCategory("all")}
           className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-sm transition-colors ${
-            isActive("all") ? "bg-accent/20 text-white" : "text-white/60 hover:bg-white/5 hover:text-white/90"
+            isActive("all") ? "bg-accent/20 text-[var(--op-90)]" : "text-[var(--op-60)] hover:bg-[var(--op-5)] hover:text-[var(--op-90)]"
           }`}
         >
-          <span className="w-6 h-6 rounded-md grid place-items-center bg-white/10">
+          <span className="w-6 h-6 rounded-md grid place-items-center bg-[var(--op-10)]">
             <LayoutGrid size={13} />
           </span>
           Весь Codex
-          <span className="ml-auto text-xs mono text-white/30">{countFor("all")}</span>
+          <span className="ml-auto text-xs mono text-[var(--op-30)]">{countFor("all")}</span>
         </button>
 
-        <div className="h-px bg-white/5 my-2" />
+        <div className="h-px bg-[var(--op-5)] my-2" />
 
         {CAT_ORDER.map((cat) => {
           const Icon = CAT_ICON[cat];
@@ -50,14 +50,14 @@ export function Sidebar() {
               key={cat}
               onClick={() => setCategory(cat)}
               className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-sm transition-colors ${
-                isActive(cat) ? "bg-accent/20 text-white" : "text-white/60 hover:bg-white/5 hover:text-white/90"
+                isActive(cat) ? "bg-accent/20 text-[var(--op-90)]" : "text-[var(--op-60)] hover:bg-[var(--op-5)] hover:text-[var(--op-90)]"
               }`}
             >
               <span className="w-6 h-6 rounded-md grid place-items-center" style={{ background: color + "29", color }}>
                 <Icon size={13} />
               </span>
               {CAT_LABEL[cat]}
-              <span className="ml-auto text-xs mono text-white/30">{countFor(cat)}</span>
+              <span className="ml-auto text-xs mono text-[var(--op-30)]">{countFor(cat)}</span>
             </button>
           );
         })}
