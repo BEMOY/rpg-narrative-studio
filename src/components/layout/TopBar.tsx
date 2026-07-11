@@ -1,11 +1,19 @@
-import { Search, Play, Download } from "lucide-react";
+import { Search, Play, Download, ArrowLeft } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 
 export function TopBar({ onExport }: { onExport: () => void }) {
   const projectName = useProjectStore((s) => s.project.name);
+  const closeProject = useProjectStore((s) => s.closeProject);
 
   return (
     <div className="h-14 glass flex items-center gap-4 px-4 shrink-0">
+      <button
+        onClick={closeProject}
+        title="К списку проектов"
+        className="w-8 h-8 grid place-items-center rounded-md hover:bg-white/10 text-white/50 hover:text-white/90 transition-colors"
+      >
+        <ArrowLeft size={16} />
+      </button>
       <div className="font-semibold tracking-tight">{projectName}</div>
       <div className="text-white/30">/</div>
       <div className="text-sm text-white/50">Database</div>

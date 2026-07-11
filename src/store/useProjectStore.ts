@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { Category, Entry, Project } from "../types/database";
 import { sampleProject } from "../data/sampleProject";
+import { saveProjectData } from "../cloud/projects";
 
 interface EntryTab {
   kind: "entry";
@@ -11,12 +12,15 @@ type Tab = EntryTab;
 
 interface ProjectState {
   project: Project;
+  projectId: string | null; // Supabase projects.id — null while working on the local-only demo project
   openTabs: Tab[];
   activeTabIndex: number; // -1 means the pinned Gallery view is active
   activeCategory: Category | "all";
   galleryQuery: string;
   saving: boolean;
 
+  loadProject: (id: string, data: Project) => void;
+  closeProject: () => void;
   setCategory: (c: Category | "all") => void;
   setGalleryQuery: (q: string) => void;
   showGallery: () => void;
@@ -30,15 +34,22 @@ interface ProjectState {
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let cloudTimer: ReturnType<typeof setTimeout> | null = null;
 
 export const useProjectStore = create<ProjectState>((set, get) => ({
   project: sampleProject,
+  projectId: null,
   openTabs: [],
   activeTabIndex: -1,
   activeCategory: "all",
   galleryQuery: "",
   saving: false,
 
+  loadProject: (id, data) => set({ projectId: id, project: data, openTabs: [], activeTabIndex: -1, activeCategory: "all" }),
+  closeProject: () => {
+    if (cloudTimer) clearTimeout(cloudTimer);
+    set({ projectId: null, project: sampleProject, openTabs: [], activeTabIndex: -1, activeCategory: "all" });
+  },
   setCategory: (c) => set({ activeCategory: c, activeTabIndex: -1 }),
   setGalleryQuery: (q) => set({ galleryQuery: q }),
   showGallery: () => set({ activeTabIndex: -1 }),
@@ -130,4 +141,12 @@ function triggerAutosavePulse(set: (partial: Partial<ProjectState>) => void) {
   set({ saving: true });
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => set({ saving: false }), 500);
+
+  // Debounced cloud sync (docs/01_Project_Rules.md #8: autosave, no Save button).
+  // Reads current state lazily so this file never needs zustand's `get` outside actions.
+  if (cloudTimer) clearTimeout(cloudTimer);
+  cloudTimer = setTimeout(() => {
+    const { project, projectId } = useProjectStore.getState();
+    if (projectId) saveProjectData(projectId, project).catch((e) => console.error("cloud save failed", e));
+  }, 900);
 }
