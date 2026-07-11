@@ -1,4 +1,4 @@
-import { Trash2, Plus, X, Upload, ImageOff } from "lucide-react";
+import { Trash2, Plus, X, Upload, ImageOff, ChevronDown } from "lucide-react";
 import { useRef, useState } from "react";
 import type { Entry, EquipSlot, Relationship } from "../../types/database";
 import { canHaveStats, hasRelationship, isEquip, isQuest } from "../../types/database";
@@ -388,11 +388,18 @@ function PropsPanel({ entry }: { entry: Entry }) {
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, children, defaultOpen = true }: { title: string; children: React.ReactNode; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
   return (
     <div className="glass rounded-lg p-5">
-      <div className="text-xs uppercase tracking-wider text-[var(--op-35)] mb-4">{title}</div>
-      <div className="space-y-3">{children}</div>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between text-xs uppercase tracking-wider text-[var(--op-35)] hover:text-[var(--op-60)] transition-colors"
+      >
+        {title}
+        <ChevronDown size={13} className={`transition-transform ${open ? "" : "-rotate-90"}`} />
+      </button>
+      {open && <div className="space-y-3 mt-4">{children}</div>}
     </div>
   );
 }

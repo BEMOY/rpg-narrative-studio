@@ -74,6 +74,10 @@ export function applyTheme(theme: ThemeSpec) {
   root.setProperty("--glass-bg", rgbaHex(theme.ink, 0.045));
   root.setProperty("--glass-border", rgbaHex(theme.ink, 0.08));
   root.setProperty("--scrollbar-thumb", rgbaHex(theme.ink, 0.14));
+  // Popovers/dropdown menus need a genuinely OPAQUE surface (unlike .glass) so they don't let
+  // whatever is underneath bleed through and visually collide with the menu's own text.
+  root.setProperty("--popover-bg", mix(theme.bg, hexToRgb(theme.ink), 0.09));
+  root.setProperty("--popover-border", rgbaHex(theme.ink, 0.16));
   const [ar, ag, ab] = hexToRgb(theme.accent);
   root.setProperty("--accent-rgb", `${ar} ${ag} ${ab}`);
   for (const lvl of OP_LEVELS) {

@@ -97,6 +97,7 @@ export interface Entry {
   modified: string;
   tags: string[];
   references: string[];
+  referenceNotes?: Record<string, string>; // optional short description per reference, keyed by target entry id
   notes: string;
   chapter?: string;
 

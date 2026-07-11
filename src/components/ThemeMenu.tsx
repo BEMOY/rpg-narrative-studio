@@ -49,7 +49,7 @@ export function ThemeMenu() {
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 top-10 z-50 w-72 glass rounded-lg p-3 space-y-3 shadow-xl">
+          <div className="absolute right-0 top-10 z-50 w-72 popover rounded-lg p-3 space-y-3">
             {!creating ? (
               <>
                 <div className="text-xs uppercase tracking-wider text-[var(--op-35)] px-1">Готовые темы</div>

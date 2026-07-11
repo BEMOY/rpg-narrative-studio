@@ -848,7 +848,7 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
             {exportMenuOpen && (
               <>
                 <div className="fixed inset-0 z-40" onClick={() => setExportMenuOpen(false)} />
-                <div className="absolute right-0 top-10 z-50 w-48 glass rounded-lg p-1.5 space-y-0.5 shadow-xl">
+                <div className="absolute right-0 top-10 z-50 w-48 popover rounded-lg p-1.5 space-y-0.5">
                   <button
                     onClick={exportJson}
                     className="w-full flex items-center gap-2 px-2.5 py-2 rounded-md text-sm text-[var(--op-80)] hover:bg-[var(--op-7)]"
@@ -1064,7 +1064,7 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
                 {addLayerMenuOpen && (
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => setAddLayerMenuOpen(false)} />
-                    <div className="absolute right-0 top-6 z-50 w-40 glass rounded-lg p-1 space-y-0.5 shadow-xl">
+                    <div className="absolute right-0 top-6 z-50 w-40 popover rounded-lg p-1 space-y-0.5">
                       {(
                         [
                           ["tile", "Слой тайлов"],
@@ -1267,10 +1267,6 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
                 height: map.height * map.gridSize,
                 transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
                 transformOrigin: "0 0",
-                backgroundImage: gridVisible
-                  ? "linear-gradient(to right, var(--op-10) 1px, transparent 1px), linear-gradient(to bottom, var(--op-10) 1px, transparent 1px)"
-                  : undefined,
-                backgroundSize: `${map.gridSize}px ${map.gridSize}px`,
                 backgroundColor: "var(--op-6)",
                 outline: "1px solid var(--op-15)",
               }}
@@ -1505,6 +1501,19 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
                     height: selectionRect.h * map.gridSize,
                     border: "2px dashed white",
                     background: "rgba(255,255,255,0.08)",
+                    pointerEvents: "none",
+                  }}
+                />
+              )}
+
+              {gridVisible && (
+                <div
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    backgroundImage:
+                      "linear-gradient(to right, var(--op-15) 1px, transparent 1px), linear-gradient(to bottom, var(--op-15) 1px, transparent 1px)",
+                    backgroundSize: `${map.gridSize}px ${map.gridSize}px`,
                     pointerEvents: "none",
                   }}
                 />

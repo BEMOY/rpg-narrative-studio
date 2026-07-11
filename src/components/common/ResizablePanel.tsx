@@ -49,7 +49,7 @@ export function ResizablePanel({
   return (
     <div className="flex h-full shrink-0" style={{ width }}>
       {side === "right" && handle}
-      <div className="h-full min-w-0 flex-1">{children}</div>
+      <div className="h-full min-w-0 min-h-0 flex-1 flex flex-col overflow-hidden">{children}</div>
       {side === "left" && handle}
     </div>
   );

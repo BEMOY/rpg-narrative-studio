@@ -1,15 +1,19 @@
 import { useEffect, useState } from "react";
-import { Plus, LogOut, Copy, KeyRound, FolderOpen, Pencil, Trash2 } from "lucide-react";
+import { Plus, LogOut, Copy, KeyRound, FolderOpen, Pencil, Trash2, ShieldCheck, ChevronDown, ChevronRight } from "lucide-react";
 import { ThemeMenu } from "../components/ThemeMenu";
 import { supabase } from "../lib/supabaseClient";
 import {
   createInvite,
   createProject,
   deleteProject,
+  getMyProfile,
+  listAllProjectsForAdmin,
   listMyInvites,
   listProjects,
   renameProject,
+  type AdminProjectGroup,
   type InviteRow,
+  type ProfileRow,
   type ProjectRow,
 } from "../cloud/projects";
 import type { RarityObject } from "../types/database";
@@ -28,6 +32,9 @@ export function ProjectsHome({ onOpen }: { onOpen: (row: ProjectRow) => void }) 
   const [showInvites, setShowInvites] = useState(false);
   const [creating, setCreating] = useState(false);
   const [username, setUsername] = useState<string>("");
+  const [myProfile, setMyProfile] = useState<ProfileRow | null>(null);
+  const [adminGroups, setAdminGroups] = useState<AdminProjectGroup[] | null>(null);
+  const [adminOpen, setAdminOpen] = useState(false);
 
   const refresh = async () => {
     setProjects(await listProjects());
@@ -39,7 +46,21 @@ export function ProjectsHome({ onOpen }: { onOpen: (row: ProjectRow) => void }) 
       const meta = data.user?.user_metadata as { username?: string } | undefined;
       setUsername(meta?.username ?? data.user?.email?.split("@")[0] ?? "");
     });
+    getMyProfile()
+      .then(setMyProfile)
+      .catch(() => setMyProfile(null));
   }, []);
+
+  const toggleAdmin = async () => {
+    setAdminOpen((v) => !v);
+    if (!adminGroups) {
+      try {
+        setAdminGroups(await listAllProjectsForAdmin());
+      } catch (e: any) {
+        alert(e?.message ?? String(e));
+      }
+    }
+  };
 
   const newProject = async () => {
     const name = prompt("Название проекта:", "New Project");
@@ -99,11 +120,20 @@ export function ProjectsHome({ onOpen }: { onOpen: (row: ProjectRow) => void }) 
       <div className="max-w-4xl mx-auto">
         <div className="flex items-center gap-3 mb-8">
           <div className="text-xl font-semibold">Ваши проекты</div>
-          <div className="text-xs text-[var(--op-30)]">@{username}</div>
+          <div className="text-xs text-[var(--op-30)] flex items-center gap-1">
+            @{username}
+            {myProfile?.is_admin && (
+              <span className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-accent/20 text-accent">
+                <ShieldCheck size={10} /> admin
+              </span>
+            )}
+          </div>
           <div className="flex-1" />
-          <button onClick={openInvites} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md glass hover:bg-[var(--op-10)]">
-            <KeyRound size={14} /> Пригласить друга
-          </button>
+          {myProfile?.is_admin && (
+            <button onClick={openInvites} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md glass hover:bg-[var(--op-10)]">
+              <KeyRound size={14} /> Пригласить друга
+            </button>
+          )}
           <button
             onClick={() => supabase.auth.signOut()}
             className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md glass hover:bg-[var(--op-10)]"
@@ -179,6 +209,57 @@ export function ProjectsHome({ onOpen }: { onOpen: (row: ProjectRow) => void }) 
             <span className="text-sm">{creating ? "Создаю…" : "Новый проект"}</span>
           </button>
         </div>
+
+        {myProfile?.is_admin && (
+          <div className="mt-8">
+            <button
+              onClick={toggleAdmin}
+              className="flex items-center gap-2 text-sm text-[var(--op-60)] hover:text-[var(--op-90)] mb-3"
+            >
+              {adminOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+              <ShieldCheck size={14} className="text-accent" />
+              <span className="font-medium">Все проекты</span>
+              <span className="text-xs text-[var(--op-30)]">(админ)</span>
+            </button>
+
+            {adminOpen && (
+              <div className="space-y-6">
+                {adminGroups === null && <div className="text-[var(--op-30)] text-sm">Загрузка…</div>}
+                {adminGroups?.length === 0 && (
+                  <div className="text-[var(--op-30)] text-sm">Других пользователей пока нет.</div>
+                )}
+                {adminGroups?.map((g) => (
+                  <div key={g.profile.id}>
+                    <div className="text-xs uppercase tracking-wider text-[var(--op-40)] mb-2">
+                      {g.profile.username ?? g.profile.id.slice(0, 8)}
+                      <span className="ml-2 text-[var(--op-25)] normal-case">{g.projects.length} проект(ов)</span>
+                    </div>
+                    {g.projects.length === 0 ? (
+                      <div className="text-xs text-[var(--op-25)] mb-2">Нет проектов.</div>
+                    ) : (
+                      <div className="grid gap-3.5" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))" }}>
+                        {g.projects.map((p) => (
+                          <div
+                            key={p.id}
+                            onClick={() => onOpen(p)}
+                            role="button"
+                            tabIndex={0}
+                            className="group relative glass rounded-lg p-5 text-left hover:-translate-y-0.5 hover:border-[var(--op-20)] transition-transform cursor-pointer"
+                          >
+                            <FolderOpen size={20} className="text-accent mb-3" />
+                            <div className="text-sm font-medium text-[var(--op-90)] truncate">{p.name}</div>
+                            <div className="text-xs text-[var(--op-40)] mt-1">{(p.data?.entries?.length ?? 0)} объектов</div>
+                            <div className="text-[11px] text-[var(--op-25)] mt-2">обновлён {new Date(p.updated_at).toLocaleString()}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

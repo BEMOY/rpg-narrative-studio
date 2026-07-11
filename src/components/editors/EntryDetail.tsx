@@ -40,7 +40,6 @@ const REL_LABEL: Record<string, string> = { friend: "Друг", neutral: "Ней
 export function EntryDetail({ entry, onEdit }: { entry: Entry; onEdit: () => void }) {
   const showGallery = useProjectStore((s) => s.showGallery);
   const deleteEntry = useProjectStore((s) => s.deleteEntry);
-  const allEntries = useProjectStore((s) => s.project.entries);
   const color = CAT_COLOR[entry.category];
   const Icon = CAT_ICON[entry.category];
 
@@ -61,10 +60,6 @@ export function EntryDetail({ entry, onEdit }: { entry: Entry; onEdit: () => voi
         <div className="relative h-52">
           {entry.image ? (
             <img src={entry.image} alt="" className="w-full h-full object-cover" />
-          ) : entry.category === "location" && mapHasContent(entry.map) ? (
-            <MapThumbnail map={entry.map!} entries={allEntries} />
-          ) : entry.mapImage ? (
-            <img src={entry.mapImage} alt="" className="w-full h-full object-cover" />
           ) : (
             <div
               className="w-full h-full grid place-items-center"
@@ -191,6 +186,7 @@ function Block({ title, children }: { title: string; children: React.ReactNode }
 
 function LocationMapBlock({ entry }: { entry: Entry }) {
   const updateEntry = useProjectStore((s) => s.updateEntry);
+  const allEntries = useProjectStore((s) => s.project.entries);
   const fileRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
@@ -236,7 +232,7 @@ function LocationMapBlock({ entry }: { entry: Entry }) {
       {editorOpen && <MapEditorModal entry={entry} onClose={() => setEditorOpen(false)} />}
 
       <div className="text-[10px] uppercase tracking-wider text-[var(--op-30)] mb-2 pt-1 border-t border-[var(--op-7)]">
-        Обложка картой (необязательно) — отдельная картинка поверх превью, если не хотите показывать карту из редактора
+        Обложка — картинка из редактора карты, или своя, если загрузите вручную
       </div>
       <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => onFile(e.target.files?.[0])} />
       {entry.mapImage ? (
@@ -256,9 +252,22 @@ function LocationMapBlock({ entry }: { entry: Entry }) {
               onClick={() => updateEntry(entry.id, { mapImage: undefined })}
               className="text-xs text-[var(--op-40)] hover:text-[var(--op-70)]"
             >
-              Убрать
+              Убрать, показывать карту из редактора
             </button>
           </div>
+        </div>
+      ) : mapHasContent(entry.map) ? (
+        <div className="space-y-2">
+          <div className="rounded-lg overflow-hidden border border-[var(--op-10)] h-40">
+            <MapThumbnail map={entry.map!} entries={allEntries} />
+          </div>
+          <button
+            onClick={() => fileRef.current?.click()}
+            disabled={busy}
+            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md glass hover:bg-[var(--op-10)] disabled:opacity-50"
+          >
+            <Upload size={12} /> {busy ? "Загрузка…" : "Или загрузить свою обложку"}
+          </button>
         </div>
       ) : (
         <button
@@ -292,7 +301,17 @@ function RelationsBlock({ entry }: { entry: Entry }) {
   };
 
   const removeRef = (id: string) => {
-    updateEntry(entry.id, { references: entry.references.filter((r) => r !== id) });
+    updateEntry(entry.id, {
+      references: entry.references.filter((r) => r !== id),
+      referenceNotes: entry.referenceNotes ? Object.fromEntries(Object.entries(entry.referenceNotes).filter(([k]) => k !== id)) : undefined,
+    });
+  };
+
+  const setNote = (id: string, note: string) => {
+    const next = { ...(entry.referenceNotes ?? {}) };
+    if (note.trim()) next[id] = note;
+    else delete next[id];
+    updateEntry(entry.id, { referenceNotes: next });
   };
 
   return (
@@ -300,13 +319,21 @@ function RelationsBlock({ entry }: { entry: Entry }) {
       <div className="space-y-1.5">
         {linked.length === 0 && !picking && <div className="text-sm text-[var(--op-30)]">Пока нет связей.</div>}
         {linked.map((e) => (
-          <div key={e.id} className="flex items-center gap-2 text-sm bg-[var(--op-5)] rounded-md px-3 py-1.5">
-            <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: CAT_COLOR[e.category] }} />
-            <span className="text-[var(--op-80)] truncate">{e.name}</span>
-            <span className="text-[var(--op-30)] text-xs">{CAT_LABEL[e.category]}</span>
-            <button onClick={() => removeRef(e.id)} className="ml-auto opacity-40 hover:opacity-100 shrink-0">
-              <X size={13} />
-            </button>
+          <div key={e.id} className="bg-[var(--op-5)] rounded-md px-3 py-1.5">
+            <div className="flex items-center gap-2 text-sm">
+              <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: CAT_COLOR[e.category] }} />
+              <span className="text-[var(--op-80)] truncate">{e.name}</span>
+              <span className="text-[var(--op-30)] text-xs">{CAT_LABEL[e.category]}</span>
+              <button onClick={() => removeRef(e.id)} className="ml-auto opacity-40 hover:opacity-100 shrink-0">
+                <X size={13} />
+              </button>
+            </div>
+            <input
+              value={entry.referenceNotes?.[e.id] ?? ""}
+              onChange={(ev) => setNote(e.id, ev.target.value)}
+              placeholder="описание связи (необязательно)…"
+              className="mt-1 w-full bg-transparent outline-none text-xs text-[var(--op-60)] placeholder:text-[var(--op-25)] border-t border-[var(--op-7)] pt-1"
+            />
           </div>
         ))}
 

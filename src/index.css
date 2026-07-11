@@ -17,6 +17,8 @@
   --glass-border: rgba(255, 255, 255, 0.07);
   --scrollbar-thumb: rgba(255, 255, 255, 0.12);
   --accent-rgb: 139 123 255;
+  --popover-bg: #1c202b;
+  --popover-border: rgba(255, 255, 255, 0.16);
 
   --op-5: rgba(255, 255, 255, 0.05);
   --op-6: rgba(255, 255, 255, 0.06);
@@ -83,5 +85,45 @@ body {
   .input:focus {
     border-color: rgb(var(--accent-rgb) / 0.6);
     background: var(--op-7);
+  }
+
+  /* Opaque dropdown/popover surface — deliberately NOT .glass, see comment in theme.ts. */
+  .popover {
+    background: var(--popover-bg);
+    border: 1px solid var(--popover-border);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  }
+
+  /* Theme-colored range sliders (layer opacity, brush size) instead of the native browser control. */
+  input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    border-radius: 999px;
+    background: var(--op-15);
+    outline: none;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: rgb(var(--accent-rgb));
+    border: 2px solid var(--popover-bg);
+    cursor: pointer;
+  }
+  input[type="range"]::-moz-range-thumb {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: rgb(var(--accent-rgb));
+    border: 2px solid var(--popover-bg);
+    cursor: pointer;
+  }
+  input[type="range"]::-moz-range-track {
+    height: 4px;
+    border-radius: 999px;
+    background: var(--op-15);
   }
 }

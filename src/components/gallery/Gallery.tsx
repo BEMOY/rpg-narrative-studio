@@ -114,6 +114,7 @@ export function Gallery() {
   const setQuery = useProjectStore((s) => s.setGalleryQuery);
   const openEntry = useProjectStore((s) => s.openEntry);
   const createEntry = useProjectStore((s) => s.createEntry);
+  const chapters = useProjectStore((s) => s.project.chapters);
 
   const list = useMemo(() => {
     let l = entries;
@@ -130,6 +131,25 @@ export function Gallery() {
     }
     return l;
   }, [entries, activeCategory, query]);
+
+  // Group by chapter (story order), matching the author's own Codex — entries with no chapter
+  // (or a chapter that no longer exists in the project) land in one trailing "без главы" group.
+  const groups = useMemo(() => {
+    const byChapter = new Map<string, Entry[]>();
+    for (const e of list) {
+      const key = e.chapter && chapters.includes(e.chapter) ? e.chapter : "";
+      if (!byChapter.has(key)) byChapter.set(key, []);
+      byChapter.get(key)!.push(e);
+    }
+    const ordered: { label: string; entries: Entry[] }[] = [];
+    for (const c of chapters) {
+      const items = byChapter.get(c);
+      if (items && items.length) ordered.push({ label: c, entries: items });
+    }
+    const rest = byChapter.get("");
+    if (rest && rest.length) ordered.push({ label: "Без главы", entries: rest });
+    return ordered;
+  }, [list, chapters]);
 
   const title = activeCategory === "all" ? "Весь Codex" : CAT_LABEL[activeCategory];
   const color = activeCategory === "all" ? "#ece4d2" : CAT_COLOR[activeCategory];
@@ -170,9 +190,19 @@ export function Gallery() {
             <div className="text-sm">Ничего не найдено.</div>
           </div>
         ) : (
-          <div className="grid gap-3.5" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))" }}>
-            {list.map((e) => (
-              <Card key={e.id} entry={e} onOpen={() => openEntry(e.id)} />
+          <div className="space-y-8">
+            {groups.map((g) => (
+              <div key={g.label}>
+                <div className="flex items-center gap-3 mb-3">
+                  <span className="text-xs uppercase tracking-wider font-medium text-accent whitespace-nowrap">{g.label}</span>
+                  <span className="flex-1 h-px bg-[var(--op-10)]" />
+                </div>
+                <div className="grid gap-3.5" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))" }}>
+                  {g.entries.map((e) => (
+                    <Card key={e.id} entry={e} onOpen={() => openEntry(e.id)} />
+                  ))}
+                </div>
+              </div>
             ))}
           </div>
         )}
