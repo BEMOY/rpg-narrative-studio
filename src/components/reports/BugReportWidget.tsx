@@ -16,7 +16,7 @@ const POLL_MS = 8000;
 // the app (project list or inside a project). Once a thread is open it behaves like a
 // tiny support chat: the user's messages and any admin replies, polled periodically
 // since we don't have realtime subscriptions wired up.
-export function BugReportWidget() {
+export function BugReportWidget({ variant = "floating" }: { variant?: "floating" | "inline" }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [report, setReport] = useState<BugReportRow | null>(null);
@@ -100,14 +100,26 @@ export function BugReportWidget() {
 
   return (
     <>
-      <button
-        onClick={() => setOpen((v) => !v)}
-        title="Сообщить об ошибке"
-        className="fixed bottom-4 right-4 z-[9990] w-9 h-9 rounded-full grid place-items-center shadow-lg transition-transform hover:scale-105"
-        style={{ background: "var(--popover-bg)", border: "1px solid var(--popover-border)", color: "var(--op-60)" }}
-      >
-        <Bug size={15} />
-      </button>
+      {variant === "floating" ? (
+        <button
+          onClick={() => setOpen((v) => !v)}
+          title="Сообщить об ошибке"
+          className="fixed bottom-4 right-4 z-[9990] w-9 h-9 rounded-full grid place-items-center shadow-lg transition-transform hover:scale-105"
+          style={{ background: "var(--popover-bg)", border: "1px solid var(--popover-border)", color: "var(--op-60)" }}
+        >
+          <Bug size={15} />
+        </button>
+      ) : (
+        // Inline variant: sized to match the status bar's other small icons (the
+        // "0 ⛔ · 0 ⚠" warning counters) instead of floating as its own big button.
+        <button
+          onClick={() => setOpen((v) => !v)}
+          title="Сообщить об ошибке"
+          className="inline-flex items-center opacity-60 hover:opacity-100 hover:text-[var(--op-90)] transition-opacity"
+        >
+          <Bug size={12} />
+        </button>
+      )}
 
       {open && (
         <div

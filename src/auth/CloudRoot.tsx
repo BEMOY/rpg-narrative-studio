@@ -34,10 +34,7 @@ export function CloudRoot() {
     );
   }
 
-  return (
-    <>
-      <App />
-      <BugReportWidget />
-    </>
-  );
+  // Inside a project, the report button lives inline in the StatusBar (next to the
+  // other small status icons) instead of floating over the workspace.
+  return <App />;
 }

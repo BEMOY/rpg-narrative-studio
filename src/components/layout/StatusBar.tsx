@@ -1,4 +1,5 @@
 import { useProjectStore } from "../../store/useProjectStore";
+import { BugReportWidget } from "../reports/BugReportWidget";
 
 export function StatusBar() {
   const saving = useProjectStore((s) => s.saving);
@@ -12,7 +13,10 @@ export function StatusBar() {
       <span className="text-[var(--op-20)]">|</span>
       <span>Project/{projectName}</span>
       <div className="flex-1" />
-      <span>0 ⛔ · 0 ⚠</span>
+      <span className="flex items-center gap-1.5">
+        0 ⛔ · 0 ⚠
+        <BugReportWidget variant="inline" />
+      </span>
       <span className="text-[var(--op-20)]">|</span>
       <span>{itemCount} объектов</span>
     </div>

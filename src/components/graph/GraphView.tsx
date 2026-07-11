@@ -478,8 +478,18 @@ export function GraphView() {
                 <div
                   key={e.id}
                   onMouseDown={(ev) => onNodePointerDown(e.id, ev)}
-                  onMouseEnter={() => setHoveredId(e.id)}
-                  onMouseLeave={() => setHoveredId((cur) => (cur === e.id ? null : cur))}
+                  onMouseEnter={() => {
+                    // While a node is being dragged, the cursor sweeps across the
+                    // canvas and constantly enters/leaves other nodes' hitboxes —
+                    // without this guard that rapidly toggles the highlight/dim
+                    // state on every other node, which reads as flickering.
+                    if (draggingRef.current) return;
+                    setHoveredId(e.id);
+                  }}
+                  onMouseLeave={() => {
+                    if (draggingRef.current) return;
+                    setHoveredId((cur) => (cur === e.id ? null : cur));
+                  }}
                   style={{
                     position: "absolute",
                     left: p.x,
