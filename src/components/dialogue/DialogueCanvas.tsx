@@ -1,11 +1,12 @@
 import { useLayoutEffect, useRef, useState } from "react";
-import { Plus, ZoomIn, ZoomOut, Maximize2, Flag, Play, FileDown, FileUp, Share2 } from "lucide-react";
+import { Plus, ZoomIn, ZoomOut, Maximize2, Flag, Play, FileDown, FileUp, FileCode, Share2 } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { PortalMenu } from "../common/PortalMenu";
 import type { Dialogue } from "../../types/database";
 import { DialogueNodeCard } from "./DialogueNodeCard";
 import { FlagsManagerModal } from "./FlagsManagerModal";
 import { TestPlayModal } from "./TestPlayModal";
+import { GmlExportModal } from "./GmlExportModal";
 
 const CANVAS_W = 4000;
 const CANVAS_H = 3000;
@@ -19,6 +20,7 @@ type AnchorKey = string; // "in:<nodeId>" | "cont:<nodeId>" | "choice:<choiceId>
 
 export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
   const dialogueFlags = useProjectStore((s) => s.project.dialogueFlags);
+  const entries = useProjectStore((s) => s.project.entries);
   const updateDialogueNode = useProjectStore((s) => s.updateDialogueNode);
   const addDialogueNode = useProjectStore((s) => s.addDialogueNode);
   const setDialogueStartNode = useProjectStore((s) => s.setDialogueStartNode);
@@ -32,6 +34,7 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
   const [flagsOpen, setFlagsOpen] = useState(false);
   const [testOpen, setTestOpen] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const [gmlOpen, setGmlOpen] = useState(false);
   const exportBtnRef = useRef<HTMLButtonElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
 
@@ -240,6 +243,16 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
               >
                 <FileUp size={13} /> Импорт JSON
               </button>
+              <div className="h-px bg-[var(--op-10)] my-1" />
+              <button
+                onClick={() => {
+                  setExportMenuOpen(false);
+                  setGmlOpen(true);
+                }}
+                className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs text-[var(--op-80)] hover:bg-[var(--op-7)]"
+              >
+                <FileCode size={13} /> Экспорт GML
+              </button>
             </div>
           </PortalMenu>
         </div>
@@ -353,6 +366,7 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
 
       {flagsOpen && <FlagsManagerModal onClose={() => setFlagsOpen(false)} />}
       {testOpen && <TestPlayModal dialogue={dialogue} onClose={() => setTestOpen(false)} />}
+      {gmlOpen && <GmlExportModal dialogue={dialogue} entries={entries} onClose={() => setGmlOpen(false)} />}
     </div>
   );
 }

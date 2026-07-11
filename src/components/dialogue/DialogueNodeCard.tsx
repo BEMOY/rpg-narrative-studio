@@ -146,6 +146,7 @@ function LineBlock({
           <option value="left">сторона: left</option>
           <option value="default">сторона: default</option>
           <option value="right">сторона: right</option>
+          <option value="none">сторона: none (без портрета)</option>
         </select>
         <input
           value={line.emotion ?? ""}

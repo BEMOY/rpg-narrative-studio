@@ -253,7 +253,7 @@ export interface DialogueFolder {
   parentId: string | null; // null = root
 }
 
-export type DialogueSide = "left" | "default" | "right";
+export type DialogueSide = "left" | "default" | "right" | "none";
 
 // v1 condition model: pick a kind, then a key (flag name / quest entry id / any entry id)
 // and an operator. "flag" compares a flag's stored value; "quest" compares a quest entry's
