@@ -1,67 +1,141 @@
-// Base Object shape — see docs/05_Database.md
-export interface BaseObject {
-  uuid: string;
-  id: string; // readable id, snake_case, immutable
-  version: number;
-  name: string;
-  description: string;
-  created: string;
-  modified: string;
-  tags: string[];
-  references: string[];
-  notes: string;
-  icon: string;
+// Universal Entry model — see docs/05_Database.md (Base Object, Object Categories)
+// Category set ported 1:1 from the user's existing Codex tool (CATS/CAT_ORDER), which had
+// already converged, independently, on the same object shape the docs describe.
+
+export type Category =
+  | "character"
+  | "location"
+  | "main_quest"
+  | "side_quest"
+  | "equipment"
+  | "item"
+  | "object"
+  | "lore";
+
+export const CAT_ORDER: Category[] = [
+  "character",
+  "location",
+  "main_quest",
+  "side_quest",
+  "equipment",
+  "item",
+  "object",
+  "lore",
+];
+
+export const CAT_LABEL: Record<Category, string> = {
+  character: "Персонажи",
+  location: "Локации",
+  main_quest: "Основные квесты",
+  side_quest: "Побочные квесты",
+  equipment: "Экипировка",
+  item: "Предметы",
+  object: "Игровые объекты",
+  lore: "Лор",
+};
+
+// hex accent per category — same palette family as Codex, remapped onto the glass/dark design system
+export const CAT_COLOR: Record<Category, string> = {
+  character: "#65a3a0",
+  location: "#cd7d54",
+  main_quest: "#cda559",
+  side_quest: "#9fb867",
+  equipment: "#9a85c4",
+  item: "#c77b9e",
+  object: "#5e9bb5",
+  lore: "#6f93c4",
+};
+
+export function isQuest(c: Category): boolean {
+  return c === "main_quest" || c === "side_quest";
+}
+export function hasRelationship(c: Category): boolean {
+  return c === "character";
+}
+export function canHaveStats(c: Category): boolean {
+  return c === "character" || c === "equipment" || c === "item" || c === "object";
+}
+export function isEquip(c: Category): boolean {
+  return c === "equipment";
 }
 
-// Item — see docs/05_Database.md (Item, Equipment) and docs/12_Editors.md (Item Editor)
-export type ItemType = "item" | "equip";
 export type EquipSlot = "head" | "body" | "weapon" | "offhand";
+export type Relationship = "friend" | "neutral" | "enemy";
+export type QuestStatus = "todo" | "active" | "done";
 
-export interface ItemStats {
+export interface Stats {
+  level?: number;
+  xp?: number;
+  xp_max?: number;
   attack?: number;
   defense?: number;
   magic?: number;
   speed?: number;
   luck?: number;
   crit?: number;
+  dodge?: number;
   capacity?: number;
-  [key: string]: number | undefined; // open map — unknown keys preserved (Future Extensions rule)
+  [key: string]: number | undefined;
 }
 
-export interface ItemObject extends BaseObject {
-  category: "item";
-  sprite: string; // asset ref (Studio) -> resolved to engineSymbol on export
-  overlay?: string; // asset ref, only meaningful when type === "equip"
-  type: ItemType;
-  slot?: EquipSlot; // only when type === "equip"
-  rarityId: string; // reference to a RarityObject id
-  quest: boolean;
-  value: number;
-  stack: number;
-  stats: ItemStats;
+export interface Objective {
+  text: string;
+  done: boolean;
+  objId?: string; // matches quest_progress()'s objective flag id (obj_<id>) — see docs/12_Editors.md
 }
 
-// Rarity — see docs/12_Editors.md (Rarity Editor), docs/13_Asset_System.md (Color Styles)
+// Base Object shape — see docs/05_Database.md
+export interface Entry {
+  uuid: string;
+  id: string; // readable id, snake_case, immutable
+  category: Category;
+  version: number;
+  name: string;
+  description: string;
+  image?: string; // data URL (uploaded) or asset ref (engineSymbol) — resolved on export, see docs/13_Asset_System.md
+  created: string;
+  modified: string;
+  tags: string[];
+  references: string[];
+  notes: string;
+  chapter?: string;
+
+  // generic key/value props (Codex "SCHEMA" panel) — free-form per-category fields that don't need a typed slot
+  props: [string, string][];
+
+  // category-conditional
+  stats?: Stats; // canHaveStats(category)
+  relationship?: Relationship; // hasRelationship(category)
+  objectives?: Objective[]; // isQuest(category)
+  slot?: EquipSlot; // isEquip(category)
+
+  // equip/item economy + export fields — see docs/14_Export_System.md Field Mapping: Items
+  value?: number;
+  stack?: number;
+  quest?: boolean; // "quest item" flag, not to be confused with category main_quest/side_quest
+  overlay?: string;
+  rarityId?: string;
+}
+
 export type ColorStyleKind = "solid" | "gradient" | "gradient_anim" | "rainbow" | "pulse";
 
 export interface ColorStyle {
   kind: ColorStyleKind;
-  c1: string; // hex
-  c2?: string; // hex, gradient/pulse only
-  speed?: number; // gradient_anim / rainbow / pulse only
+  c1: string;
+  c2?: string;
+  speed?: number;
 }
 
 export interface RarityObject {
   uuid: string;
   id: string;
-  name: string; // display name, e.g. "EPIC"
+  name: string;
   order: number;
   style: ColorStyle;
-  glow?: { r: number; g: number; b: number; a: number; radius: number };
 }
 
 export interface Project {
   name: string;
-  items: ItemObject[];
+  entries: Entry[];
   rarities: RarityObject[];
 }

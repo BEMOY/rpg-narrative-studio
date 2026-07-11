@@ -5,8 +5,11 @@ const TABS = ["Properties", "References", "History", "Diagnostics"] as const;
 
 export function Inspector() {
   const [tab, setTab] = useState<(typeof TABS)[number]>("Properties");
-  const selectedId = useProjectStore((s) => s.selectedId);
-  const item = useProjectStore((s) => s.project.items.find((i) => i.id === selectedId));
+  const activeIndex = useProjectStore((s) => s.activeTabIndex);
+  const openTabs = useProjectStore((s) => s.openTabs);
+  const entries = useProjectStore((s) => s.project.entries);
+  const activeTab = activeIndex >= 0 ? openTabs[activeIndex] : undefined;
+  const entry = activeTab ? entries.find((e) => e.id === activeTab.id) : undefined;
 
   return (
     <div className="w-[360px] glass shrink-0 flex flex-col overflow-hidden">
@@ -25,31 +28,37 @@ export function Inspector() {
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 text-sm">
-        {!item && <div className="text-white/30">Nothing selected.</div>}
+        {!entry && <div className="text-white/30">Ничего не выбрано — откройте объект из галереи.</div>}
 
-        {item && tab === "Properties" && (
+        {entry && tab === "Properties" && (
           <div className="space-y-3">
-            <Row label="UUID" value={item.uuid} mono />
-            <Row label="Readable ID" value={item.id} mono />
-            <Row label="Version" value={String(item.version || 1)} />
-            <Row label="Category" value={item.category} />
+            <Row label="UUID" value={entry.uuid} mono />
+            <Row label="Readable ID" value={entry.id} mono />
+            <Row label="Version" value={String(entry.version || 1)} />
+            <Row label="Category" value={entry.category} />
           </div>
         )}
 
-        {item && tab === "References" && (
+        {entry && tab === "References" && (
           <div className="text-white/40">
             <div className="mb-2 text-white/60">Incoming</div>
-            <div className="text-xs mb-4">No objects reference this item yet.</div>
+            <div className="text-xs mb-4">Пока нет объектов, ссылающихся на этот.</div>
             <div className="mb-2 text-white/60">Outgoing</div>
             <div className="text-xs">
-              rarity → <span className="mono">{item.rarityId}</span>
+              {entry.rarityId ? (
+                <>
+                  rarity → <span className="mono">{entry.rarityId}</span>
+                </>
+              ) : (
+                "нет исходящих ссылок"
+              )}
             </div>
           </div>
         )}
 
-        {item && tab === "History" && <div className="text-white/30 text-xs">No history recorded in this session.</div>}
+        {entry && tab === "History" && <div className="text-white/30 text-xs">История не записывается в этой сессии.</div>}
 
-        {item && tab === "Diagnostics" && <Diagnostics itemId={item.id} />}
+        {entry && tab === "Diagnostics" && <Diagnostics entryId={entry.id} />}
       </div>
     </div>
   );
@@ -64,16 +73,17 @@ function Row({ label, value, mono }: { label: string; value: string; mono?: bool
   );
 }
 
-function Diagnostics({ itemId }: { itemId: string }) {
-  const item = useProjectStore((s) => s.project.items.find((i) => i.id === itemId))!;
+function Diagnostics({ entryId }: { entryId: string }) {
+  const entry = useProjectStore((s) => s.project.entries.find((e) => e.id === entryId));
+  if (!entry) return null;
   const warnings: string[] = [];
-  if (Object.values(item.stats).some((v) => v !== undefined && Math.abs(v) >= 9999)) {
-    warnings.push("Suspicious stat magnitude — likely a min-clamp hack (see docs/12_Editors.md).");
+  if (entry.stats && Object.values(entry.stats).some((v) => v !== undefined && Math.abs(v) >= 9999)) {
+    warnings.push("Подозрительная величина стата — похоже на min-clamp хак (см. docs/12_Editors.md).");
   }
-  if (item.type === "equip" && !item.overlay) {
-    warnings.push("No worn appearance (overlay) set — item will be invisible on the character when equipped.");
+  if (entry.category === "equipment" && !entry.overlay) {
+    warnings.push("Не задан overlay — предмет не будет виден на персонаже при экипировке.");
   }
-  if (warnings.length === 0) return <div className="text-white/30 text-xs">No issues found.</div>;
+  if (warnings.length === 0) return <div className="text-white/30 text-xs">Проблем не найдено.</div>;
   return (
     <div className="space-y-2">
       {warnings.map((w, i) => (

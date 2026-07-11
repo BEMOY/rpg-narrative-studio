@@ -1,24 +1,32 @@
 import { create } from "zustand";
-import type { ItemObject, Project } from "../types/database";
+import type { Category, Entry, Project } from "../types/database";
 import { sampleProject } from "../data/sampleProject";
 
-interface OpenTab {
-  kind: "item";
-  id: string; // ItemObject.id
+interface EntryTab {
+  kind: "entry";
+  id: string;
 }
+
+type Tab = EntryTab;
 
 interface ProjectState {
   project: Project;
-  openTabs: OpenTab[];
-  activeTabIndex: number;
-  selectedId: string | null;
+  openTabs: Tab[];
+  activeTabIndex: number; // -1 means the pinned Gallery view is active
+  activeCategory: Category | "all";
+  galleryQuery: string;
   saving: boolean;
 
-  openItem: (id: string) => void;
+  setCategory: (c: Category | "all") => void;
+  setGalleryQuery: (q: string) => void;
+  showGallery: () => void;
+  openEntry: (id: string) => void;
   closeTab: (index: number) => void;
   setActiveTab: (index: number) => void;
-  updateItem: (id: string, patch: Partial<ItemObject>) => void;
-  updateItemStat: (id: string, key: string, value: number | undefined) => void;
+  createEntry: (category: Category) => string;
+  updateEntry: (id: string, patch: Partial<Entry>) => void;
+  updateStat: (id: string, key: string, value: number | undefined) => void;
+  deleteEntry: (id: string) => void;
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -27,21 +35,22 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   project: sampleProject,
   openTabs: [],
   activeTabIndex: -1,
-  selectedId: null,
+  activeCategory: "all",
+  galleryQuery: "",
   saving: false,
 
-  openItem: (id) => {
+  setCategory: (c) => set({ activeCategory: c, activeTabIndex: -1 }),
+  setGalleryQuery: (q) => set({ galleryQuery: q }),
+  showGallery: () => set({ activeTabIndex: -1 }),
+
+  openEntry: (id) => {
     const tabs = get().openTabs;
-    const existing = tabs.findIndex((t) => t.kind === "item" && t.id === id);
+    const existing = tabs.findIndex((t) => t.id === id);
     if (existing >= 0) {
-      set({ activeTabIndex: existing, selectedId: id });
+      set({ activeTabIndex: existing });
       return;
     }
-    set({
-      openTabs: [...tabs, { kind: "item", id }],
-      activeTabIndex: tabs.length,
-      selectedId: id,
-    });
+    set({ openTabs: [...tabs, { kind: "entry", id }], activeTabIndex: tabs.length });
   },
 
   closeTab: (index) => {
@@ -49,44 +58,69 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     tabs.splice(index, 1);
     const active = get().activeTabIndex;
     const nextActive = tabs.length === 0 ? -1 : Math.min(active, tabs.length - 1);
-    set({
-      openTabs: tabs,
-      activeTabIndex: nextActive,
-      selectedId: nextActive >= 0 ? tabs[nextActive].id : null,
-    });
+    set({ openTabs: tabs, activeTabIndex: nextActive });
   },
 
-  setActiveTab: (index) => {
-    const tab = get().openTabs[index];
-    set({ activeTabIndex: index, selectedId: tab ? tab.id : null });
+  setActiveTab: (index) => set({ activeTabIndex: index }),
+
+  createEntry: (category) => {
+    const id = `new_${category}_${Date.now().toString(36)}`;
+    const entry: Entry = {
+      uuid: `u-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      id,
+      category,
+      version: 1,
+      name: "Untitled",
+      description: "",
+      created: new Date().toISOString(),
+      modified: new Date().toISOString(),
+      tags: [],
+      references: [],
+      notes: "",
+      props: [],
+      ...(category === "main_quest" || category === "side_quest" ? { objectives: [] } : {}),
+      ...(category === "character" ? { relationship: "neutral" as const } : {}),
+      ...(category === "equipment" || category === "item" || category === "object" ? { stats: {} } : {}),
+      ...(category === "equipment" ? { slot: "weapon" as const, rarityId: "common", value: 0, stack: 1, quest: false } : {}),
+      ...(category === "item" ? { rarityId: "common", value: 0, stack: 1, quest: false } : {}),
+    };
+    set((s) => ({ project: { ...s.project, entries: [...s.project.entries, entry] } }));
+    get().openEntry(id);
+    triggerAutosavePulse(set);
+    return id;
   },
 
   // Autosave rule (docs/01_Project_Rules.md #8) — no Save button, every change persists immediately.
-  updateItem: (id, patch) => {
+  updateEntry: (id, patch) => {
     set((s) => ({
       project: {
         ...s.project,
-        items: s.project.items.map((it) => (it.id === id ? { ...it, ...patch, modified: new Date().toISOString() } : it)),
+        entries: s.project.entries.map((e) => (e.id === id ? { ...e, ...patch, modified: new Date().toISOString() } : e)),
       },
     }));
     triggerAutosavePulse(set);
   },
 
-  updateItemStat: (id, key, value) => {
+  updateStat: (id, key, value) => {
     set((s) => ({
       project: {
         ...s.project,
-        items: s.project.items.map((it) => {
-          if (it.id !== id) return it;
-          const stats = { ...it.stats };
-          if (value === undefined || Number.isNaN(value)) {
-            delete stats[key];
-          } else {
-            stats[key] = value;
-          }
-          return { ...it, stats, modified: new Date().toISOString() };
+        entries: s.project.entries.map((e) => {
+          if (e.id !== id) return e;
+          const stats = { ...(e.stats ?? {}) };
+          if (value === undefined || Number.isNaN(value)) delete stats[key];
+          else stats[key] = value;
+          return { ...e, stats, modified: new Date().toISOString() };
         }),
       },
+    }));
+    triggerAutosavePulse(set);
+  },
+
+  deleteEntry: (id) => {
+    set((s) => ({
+      project: { ...s.project, entries: s.project.entries.filter((e) => e.id !== id) },
+      openTabs: s.openTabs.filter((t) => t.id !== id),
     }));
     triggerAutosavePulse(set);
   },
