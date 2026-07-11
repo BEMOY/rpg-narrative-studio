@@ -2,6 +2,16 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Pixel-art assets: never let the browser blur bitmap images when they're scaled
+   (card thumbnails, map cover images, map-editor image layers). Lucide icons are
+   inline vector SVGs, so this only ever touches actual uploaded raster images. */
+img,
+svg image {
+  image-rendering: pixelated;
+  image-rendering: -moz-crisp-edges;
+  image-rendering: crisp-edges;
+}
+
 /* ---------------------------------------------------------------------- */
 /* Theme tokens. These are fallback/default values only — src/lib/theme.ts
    overwrites every one of them at runtime (inline style on <html>) based on

@@ -45,7 +45,9 @@ import type {
 import { CAT_COLOR, CAT_LABEL, CAT_ORDER } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
 import { resizeImageFile } from "../../lib/image";
+import { usePasteImage } from "../../lib/usePasteImage";
 import { ResizablePanel } from "../common/ResizablePanel";
+import { PortalMenu } from "../common/PortalMenu";
 import {
   cellKey,
   createDefaultMap,
@@ -123,8 +125,10 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [addColorDraft, setAddColorDraft] = useState({ color: "#888888", label: "" });
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const exportBtnRef = useRef<HTMLButtonElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
   const [addLayerMenuOpen, setAddLayerMenuOpen] = useState(false);
+  const addLayerBtnRef = useRef<HTMLButtonElement>(null);
   const imageUploadRef = useRef<HTMLInputElement>(null);
   const [imageUploadBusy, setImageUploadBusy] = useState(false);
   const imageDragRef = useRef<{ id: string; startClientX: number; startClientY: number; startX: number; startY: number } | null>(null);
@@ -328,6 +332,57 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
       setImageUploadBusy(false);
     }
   };
+
+  // Paste-from-clipboard while the map is open, regardless of which layer is active —
+  // creates a "Картинки" layer on the fly if the map doesn't have one yet, so the user
+  // can just Ctrl/Cmd+V without first adding a layer manually.
+  const pasteImageIntoMap = async (file: File | undefined) => {
+    if (!file) return;
+    setImageUploadBusy(true);
+    try {
+      const dataUrl = await resizeImageFile(file);
+      const existing = effectiveImageLayer();
+      const w = Math.min(6, map.width / 2);
+      const h = w;
+      const inst: MapImageInstance = {
+        id: nextId("img"),
+        src: dataUrl,
+        x: Math.max(0, map.width / 2 - w / 2),
+        y: Math.max(0, map.height / 2 - h / 2),
+        w,
+        h,
+      };
+      let targetLayerId: string;
+      if (existing && !existing.locked) {
+        targetLayerId = existing.id;
+        snapshot();
+        setMapState((prev) => {
+          const next = cloneMap(prev);
+          const l = next.layers.find((x) => x.id === targetLayerId);
+          if (l && isImageLayer(l)) l.images.push(inst);
+          return next;
+        });
+      } else {
+        const count = map.layers.filter((l) => l.kind === "image").length + 1;
+        const newLayer: MapImageLayer = { ...createImageLayer(), name: `Картинки ${count}`, images: [inst] };
+        targetLayerId = newLayer.id;
+        snapshot();
+        setMapState((prev) => {
+          const next = cloneMap(prev);
+          next.layers.push(newLayer);
+          return next;
+        });
+      }
+      setActiveLayerId(targetLayerId);
+      setSelection({ kind: "image", id: inst.id });
+    } catch {
+      alert("Не удалось вставить картинку из буфера обмена.");
+    } finally {
+      setImageUploadBusy(false);
+    }
+  };
+
+  usePasteImage((file) => pasteImageIntoMap(file));
 
   // ---- geometry ----
   const getCell = (e: { clientX: number; clientY: number }) => {
@@ -839,34 +894,32 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
               onChange={(e) => importJson(e.target.files?.[0])}
             />
             <button
+              ref={exportBtnRef}
               onClick={() => setExportMenuOpen((v) => !v)}
               title="Экспорт / импорт карты"
               className={`w-8 h-8 grid place-items-center rounded-md hover:bg-[var(--op-10)] ${exportMenuOpen ? "text-accent" : "text-[var(--op-50)]"}`}
             >
               <Share2 size={15} />
             </button>
-            {exportMenuOpen && (
-              <>
-                <div className="fixed inset-0 z-40" onClick={() => setExportMenuOpen(false)} />
-                <div className="absolute right-0 top-10 z-50 w-48 popover rounded-lg p-1.5 space-y-0.5">
-                  <button
-                    onClick={exportJson}
-                    className="w-full flex items-center gap-2 px-2.5 py-2 rounded-md text-sm text-[var(--op-80)] hover:bg-[var(--op-7)]"
-                  >
-                    <FileDown size={14} /> Экспорт JSON
-                  </button>
-                  <button
-                    onClick={() => {
-                      setExportMenuOpen(false);
-                      importInputRef.current?.click();
-                    }}
-                    className="w-full flex items-center gap-2 px-2.5 py-2 rounded-md text-sm text-[var(--op-80)] hover:bg-[var(--op-7)]"
-                  >
-                    <FileUp size={14} /> Импорт JSON
-                  </button>
-                </div>
-              </>
-            )}
+            <PortalMenu anchorRef={exportBtnRef} open={exportMenuOpen} onClose={() => setExportMenuOpen(false)}>
+              <div className="w-48 p-1.5 space-y-0.5">
+                <button
+                  onClick={exportJson}
+                  className="w-full flex items-center gap-2 px-2.5 py-2 rounded-md text-sm text-[var(--op-80)] hover:bg-[var(--op-7)]"
+                >
+                  <FileDown size={14} /> Экспорт JSON
+                </button>
+                <button
+                  onClick={() => {
+                    setExportMenuOpen(false);
+                    importInputRef.current?.click();
+                  }}
+                  className="w-full flex items-center gap-2 px-2.5 py-2 rounded-md text-sm text-[var(--op-80)] hover:bg-[var(--op-7)]"
+                >
+                  <FileUp size={14} /> Импорт JSON
+                </button>
+              </div>
+            </PortalMenu>
           </div>
           <button onClick={onClose} className="w-8 h-8 grid place-items-center rounded-md hover:bg-[var(--op-10)] ml-1">
             <X size={16} />
@@ -1055,39 +1108,37 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
               <div className="flex items-center justify-between mb-2 relative">
                 <div className="text-xs uppercase tracking-wider text-[var(--op-35)]">Слои</div>
                 <button
+                  ref={addLayerBtnRef}
                   onClick={() => setAddLayerMenuOpen((v) => !v)}
                   className="opacity-60 hover:opacity-100 text-[var(--op-60)]"
                   title="Добавить слой"
                 >
                   <Plus size={13} />
                 </button>
-                {addLayerMenuOpen && (
-                  <>
-                    <div className="fixed inset-0 z-40" onClick={() => setAddLayerMenuOpen(false)} />
-                    <div className="absolute right-0 top-6 z-50 w-40 popover rounded-lg p-1 space-y-0.5">
-                      {(
-                        [
-                          ["tile", "Слой тайлов"],
-                          ["object", "Слой объектов"],
-                          ["zone", "Слой зон"],
-                          ["freehand", "Слой рисования"],
-                          ["image", "Слой картинок"],
-                        ] as [MapLayer["kind"], string][]
-                      ).map(([kind, label]) => (
-                        <button
-                          key={kind}
-                          onClick={() => {
-                            addLayer(kind);
-                            setAddLayerMenuOpen(false);
-                          }}
-                          className="w-full text-left px-2 py-1.5 rounded-md text-xs text-[var(--op-70)] hover:bg-[var(--op-7)]"
-                        >
-                          {label}
-                        </button>
-                      ))}
-                    </div>
-                  </>
-                )}
+                <PortalMenu anchorRef={addLayerBtnRef} open={addLayerMenuOpen} onClose={() => setAddLayerMenuOpen(false)}>
+                  <div className="w-40 p-1 space-y-0.5">
+                    {(
+                      [
+                        ["tile", "Слой тайлов"],
+                        ["object", "Слой объектов"],
+                        ["zone", "Слой зон"],
+                        ["freehand", "Слой рисования"],
+                        ["image", "Слой картинок"],
+                      ] as [MapLayer["kind"], string][]
+                    ).map(([kind, label]) => (
+                      <button
+                        key={kind}
+                        onClick={() => {
+                          addLayer(kind);
+                          setAddLayerMenuOpen(false);
+                        }}
+                        className="w-full text-left px-2 py-1.5 rounded-md text-xs text-[var(--op-70)] hover:bg-[var(--op-7)]"
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </PortalMenu>
               </div>
               <div className="space-y-1">
                 {[...map.layers].reverse().map((l, revIdx) => {

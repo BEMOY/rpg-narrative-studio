@@ -204,7 +204,7 @@ function LocationMapBlock({ entry }: { entry: Entry }) {
     }
   };
 
-  usePasteImage((file) => onFile(file));
+  usePasteImage((file) => onFile(file), !editorOpen);
 
   const layerCounts = entry.map
     ? {

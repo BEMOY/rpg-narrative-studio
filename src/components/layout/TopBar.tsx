@@ -1,10 +1,24 @@
+import { useEffect, useState } from "react";
 import { Search, Play, Download, ArrowLeft } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { ThemeMenu } from "../ThemeMenu";
+import { CommandPalette } from "./CommandPalette";
 
 export function TopBar({ onExport }: { onExport: () => void }) {
   const projectName = useProjectStore((s) => s.project.name);
   const closeProject = useProjectStore((s) => s.closeProject);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen(true);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   return (
     <div className="h-14 glass flex items-center gap-4 px-4 shrink-0">
@@ -20,11 +34,14 @@ export function TopBar({ onExport }: { onExport: () => void }) {
       <div className="text-sm text-[var(--op-50)]">Database</div>
 
       <div className="flex-1 flex items-center justify-center">
-        <div className="glass rounded-md px-3 py-1.5 flex items-center gap-2 text-sm text-[var(--op-40)] w-80">
+        <button
+          onClick={() => setPaletteOpen(true)}
+          className="glass rounded-md px-3 py-1.5 flex items-center gap-2 text-sm text-[var(--op-40)] hover:text-[var(--op-70)] w-80 transition-colors"
+        >
           <Search size={14} />
           <span>Search…</span>
           <span className="ml-auto text-xs mono">Ctrl K</span>
-        </div>
+        </button>
       </div>
 
       <button className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md glass hover:bg-[var(--op-10)] transition-colors">
@@ -37,6 +54,7 @@ export function TopBar({ onExport }: { onExport: () => void }) {
         <Download size={14} /> Export
       </button>
       <ThemeMenu />
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
     </div>
   );
 }

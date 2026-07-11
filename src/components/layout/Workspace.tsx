@@ -1,7 +1,8 @@
-import { X, LayoutGrid } from "lucide-react";
+import { X, LayoutGrid, Waypoints } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { EntryPanel } from "../editors/EntryPanel";
 import { Gallery } from "../gallery/Gallery";
+import { GraphView } from "../graph/GraphView";
 import { CAT_COLOR } from "../../types/database";
 
 export function Workspace() {
@@ -9,6 +10,8 @@ export function Workspace() {
   const activeIndex = useProjectStore((s) => s.activeTabIndex);
   const setActiveTab = useProjectStore((s) => s.setActiveTab);
   const showGallery = useProjectStore((s) => s.showGallery);
+  const showGraph = useProjectStore((s) => s.showGraph);
+  const workspaceView = useProjectStore((s) => s.workspaceView);
   const closeTab = useProjectStore((s) => s.closeTab);
   const entries = useProjectStore((s) => s.project.entries);
 
@@ -21,11 +24,20 @@ export function Workspace() {
         <div
           onClick={showGallery}
           className={`flex items-center gap-2 px-3 text-sm cursor-pointer border-r border-[var(--op-10)] shrink-0 ${
-            activeIndex === -1 ? "bg-[var(--op-6)] text-[var(--op-90)]" : "text-[var(--op-40)] hover:text-[var(--op-70)]"
+            activeIndex === -1 && workspaceView === "gallery" ? "bg-[var(--op-6)] text-[var(--op-90)]" : "text-[var(--op-40)] hover:text-[var(--op-70)]"
           }`}
         >
           <LayoutGrid size={12} />
           Галерея
+        </div>
+        <div
+          onClick={showGraph}
+          className={`flex items-center gap-2 px-3 text-sm cursor-pointer border-r border-[var(--op-10)] shrink-0 ${
+            activeIndex === -1 && workspaceView === "graph" ? "bg-[var(--op-6)] text-[var(--op-90)]" : "text-[var(--op-40)] hover:text-[var(--op-70)]"
+          }`}
+        >
+          <Waypoints size={12} />
+          Граф связей
         </div>
         {tabs.map((tab, i) => {
           const entry = entries.find((e) => e.id === tab.id);
@@ -53,7 +65,9 @@ export function Workspace() {
         })}
       </div>
 
-      <div className="flex-1 overflow-y-auto">{activeEntry ? <EntryPanel entry={activeEntry} /> : <Gallery />}</div>
+      <div className="flex-1 overflow-y-auto">
+        {activeEntry ? <EntryPanel entry={activeEntry} /> : workspaceView === "graph" ? <GraphView /> : <Gallery />}
+      </div>
     </div>
   );
 }

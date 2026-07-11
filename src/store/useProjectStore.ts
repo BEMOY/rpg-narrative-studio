@@ -14,9 +14,11 @@ interface ProjectState {
   project: Project;
   projectId: string | null; // Supabase projects.id — null while working on the local-only demo project
   openTabs: Tab[];
-  activeTabIndex: number; // -1 means the pinned Gallery view is active
+  activeTabIndex: number; // -1 means a pinned view (Gallery/Graph) is active — see workspaceView
   activeCategory: Category | "all";
   galleryQuery: string;
+  hiddenCategories: Category[];
+  workspaceView: "gallery" | "graph";
   saving: boolean;
 
   loadProject: (id: string, data: Project) => void;
@@ -24,6 +26,7 @@ interface ProjectState {
   setCategory: (c: Category | "all") => void;
   setGalleryQuery: (q: string) => void;
   showGallery: () => void;
+  showGraph: () => void;
   openEntry: (id: string) => void;
   closeTab: (index: number) => void;
   setActiveTab: (index: number) => void;
@@ -31,6 +34,8 @@ interface ProjectState {
   updateEntry: (id: string, patch: Partial<Entry>) => void;
   updateStat: (id: string, key: string, value: number | undefined) => void;
   deleteEntry: (id: string) => void;
+  deleteEntries: (ids: string[]) => void;
+  toggleCategoryVisibility: (c: Category) => void;
   addChapter: (name: string) => void;
 }
 
@@ -44,6 +49,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   activeTabIndex: -1,
   activeCategory: "all",
   galleryQuery: "",
+  hiddenCategories: [],
+  workspaceView: "gallery",
   saving: false,
 
   loadProject: (id, data) => {
@@ -60,9 +67,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     if (cloudTimer) clearTimeout(cloudTimer);
     set({ projectId: null, project: sampleProject, openTabs: [], activeTabIndex: -1, activeCategory: "all" });
   },
-  setCategory: (c) => set({ activeCategory: c, activeTabIndex: -1 }),
+  setCategory: (c) => set({ activeCategory: c, activeTabIndex: -1, workspaceView: "gallery" }),
   setGalleryQuery: (q) => set({ galleryQuery: q }),
-  showGallery: () => set({ activeTabIndex: -1 }),
+  showGallery: () => set({ activeTabIndex: -1, workspaceView: "gallery" }),
+  showGraph: () => set({ activeTabIndex: -1, workspaceView: "graph" }),
 
   openEntry: (id) => {
     const tabs = get().openTabs;
@@ -144,6 +152,23 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       openTabs: s.openTabs.filter((t) => t.id !== id),
     }));
     triggerAutosavePulse(set);
+  },
+
+  deleteEntries: (ids) => {
+    const idSet = new Set(ids);
+    set((s) => ({
+      project: { ...s.project, entries: s.project.entries.filter((e) => !idSet.has(e.id)) },
+      openTabs: s.openTabs.filter((t) => !idSet.has(t.id)),
+    }));
+    triggerAutosavePulse(set);
+  },
+
+  toggleCategoryVisibility: (c) => {
+    set((s) => ({
+      hiddenCategories: s.hiddenCategories.includes(c)
+        ? s.hiddenCategories.filter((x) => x !== c)
+        : [...s.hiddenCategories, c],
+    }));
   },
 
   addChapter: (name) => {

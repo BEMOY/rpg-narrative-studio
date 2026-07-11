@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { Palette, Check, Plus, Trash2 } from "lucide-react";
 import { useTheme, type ThemeSpec } from "../lib/theme";
+import { PortalMenu } from "./common/PortalMenu";
 
 function Swatch({ theme }: { theme: ThemeSpec }) {
   return (
@@ -46,13 +47,11 @@ export function ThemeMenu() {
         <Palette size={15} />
       </button>
 
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 top-10 z-50 w-72 popover rounded-lg p-3 space-y-3">
-            {!creating ? (
-              <>
-                <div className="text-xs uppercase tracking-wider text-[var(--op-35)] px-1">Готовые темы</div>
+      <PortalMenu anchorRef={btnRef} open={open} onClose={() => setOpen(false)}>
+        <div className="w-72 p-3 space-y-3">
+          {!creating ? (
+            <>
+              <div className="text-xs uppercase tracking-wider text-[var(--op-35)] px-1">Готовые темы</div>
                 <div className="space-y-1">
                   {presets.map((t) => (
                     <button
@@ -101,10 +100,10 @@ export function ThemeMenu() {
                 >
                   <Plus size={12} /> Создать свою тему
                 </button>
-              </>
-            ) : (
-              <>
-                <div className="text-xs uppercase tracking-wider text-[var(--op-35)] px-1">Своя тема</div>
+            </>
+          ) : (
+            <>
+              <div className="text-xs uppercase tracking-wider text-[var(--op-35)] px-1">Своя тема</div>
                 <input
                   className="input"
                   value={draftName}
@@ -124,18 +123,17 @@ export function ThemeMenu() {
                   >
                     Отмена
                   </button>
-                  <button
-                    onClick={save}
-                    className="flex-1 text-sm px-3 py-1.5 rounded-md bg-accent/80 hover:bg-accent transition-colors"
-                  >
-                    Сохранить
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        </>
-      )}
+                <button
+                  onClick={save}
+                  className="flex-1 text-sm px-3 py-1.5 rounded-md bg-accent/80 hover:bg-accent transition-colors"
+                >
+                  Сохранить
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </PortalMenu>
     </div>
   );
 }
