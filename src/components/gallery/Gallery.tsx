@@ -145,6 +145,8 @@ export function Gallery() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [filterOpen, setFilterOpen] = useState(false);
   const filterBtnRef = useRef<HTMLButtonElement>(null);
+  const [createMenuOpen, setCreateMenuOpen] = useState(false);
+  const createBtnRef = useRef<HTMLButtonElement>(null);
 
   const list = useMemo(() => {
     let l = entries;
@@ -303,6 +305,40 @@ export function Gallery() {
             >
               <Plus size={14} /> Создать
             </button>
+          )}
+          {activeCategory === "all" && !selectMode && (
+            <>
+              <button
+                ref={createBtnRef}
+                onClick={() => setCreateMenuOpen((v) => !v)}
+                className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md bg-accent/80 hover:bg-accent transition-colors"
+              >
+                <Plus size={14} /> Создать
+              </button>
+              <PortalMenu anchorRef={createBtnRef} open={createMenuOpen} onClose={() => setCreateMenuOpen(false)}>
+                <div className="w-52 p-1.5">
+                  <div className="text-xs uppercase tracking-wider text-[var(--op-35)] px-1.5 pb-1.5 mb-1 border-b border-[var(--op-10)]">
+                    Выберите категорию
+                  </div>
+                  {CAT_ORDER.map((c) => {
+                    const Icon = CAT_ICON[c];
+                    return (
+                      <button
+                        key={c}
+                        onClick={() => {
+                          setCreateMenuOpen(false);
+                          createEntry(c);
+                        }}
+                        className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-md hover:bg-[var(--op-7)] text-left text-sm text-[var(--op-80)]"
+                      >
+                        <Icon size={13} style={{ color: CAT_COLOR[c] }} className="shrink-0" />
+                        {CAT_LABEL[c]}
+                      </button>
+                    );
+                  })}
+                </div>
+              </PortalMenu>
+            </>
           )}
         </div>
       </div>

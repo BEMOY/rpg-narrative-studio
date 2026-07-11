@@ -18,7 +18,7 @@ export interface MarkupGlyph {
 // looks (cursed, fire, rainbow, ...). "rainbow" is handled specially by the renderer;
 // everything else maps to a plain CSS color. Unknown names pass through as raw CSS colors
 // (so e.g. [c=#ff0000] or [c=orange] also works).
-const NAMED_COLORS: Record<string, string> = {
+export const NAMED_COLORS: Record<string, string> = {
   fire: "#ff7043",
   cursed: "#8b5cf6",
   poison: "#84cc16",
@@ -101,18 +101,22 @@ export function markupLength(text: string): number {
 export interface MarkupTagDef {
   id: string;
   label: string;
-  paired: boolean; // wraps the current selection with [tag]...[/tag] when true
+  // "wrap": wraps the current selection with [tag]...[/tag] (open before, close after).
+  // "prefix": inserts only [tag] right before the selection, leaving the selected text (and
+  // everything else) untouched — matches [pause=N], which is a point-in-time marker in the
+  // engine, not a range.
+  mode: "wrap" | "prefix";
   promptForValue?: boolean; // asks for an argument (e.g. color name / N) before applying
   defaultValue?: string;
   promptLabel?: string;
 }
 
 export const MARKUP_TAGS: MarkupTagDef[] = [
-  { id: "wave", label: "[wave]", paired: true },
-  { id: "shake", label: "[shake]", paired: true, promptForValue: true, defaultValue: "3", promptLabel: "Сила тряски (N), пусто — по умолчанию" },
-  { id: "c", label: "[c=…]", paired: true, promptForValue: true, defaultValue: "fire", promptLabel: "Имя цвета/стиля (fire, cursed, rainbow, gold, #ff0000…)" },
-  { id: "speed", label: "[speed=N]", paired: false, promptForValue: true, defaultValue: "0.5", promptLabel: "Множитель скорости печати (пусто — сброс к обычной)" },
-  { id: "pause", label: "[pause=N]", paired: false, promptForValue: true, defaultValue: "10", promptLabel: "Пауза (кол-во кадров)" },
+  { id: "wave", label: "[wave]", mode: "wrap" },
+  { id: "shake", label: "[shake]", mode: "wrap", promptForValue: true, defaultValue: "3", promptLabel: "Сила тряски (N), пусто — по умолчанию" },
+  { id: "c", label: "[c=…]", mode: "wrap", promptForValue: true, defaultValue: "fire", promptLabel: "Имя цвета/стиля (fire, cursed, rainbow, gold, #ff0000…)" },
+  { id: "speed", label: "[speed=N]", mode: "wrap", promptForValue: true, defaultValue: "0.5", promptLabel: "Множитель скорости печати (пусто — сброс к обычной)" },
+  { id: "pause", label: "[pause=N]", mode: "prefix", promptForValue: true, defaultValue: "10", promptLabel: "Пауза (кол-во кадров) перед этим текстом" },
 ];
 
 // Best-effort mapping from GML's built-in color constants (as typically typed into the

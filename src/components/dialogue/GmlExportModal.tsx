@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { X, Copy, Check, Download, TriangleAlert } from "lucide-react";
 import type { Dialogue, Entry } from "../../types/database";
 import { compileDialogueToGML, compileDialogueToLines, compileSpeakersScript } from "../../lib/dialogueCompile";
@@ -22,6 +22,32 @@ export function GmlExportModal({
 }) {
   const [mode, setMode] = useState<Mode>("register");
   const [copied, setCopied] = useState(false);
+  const [size, setSize] = useState(() => ({
+    w: Math.min(1080, window.innerWidth - 80),
+    h: Math.min(760, window.innerHeight - 80),
+  }));
+  const resizeRef = useRef<{ startX: number; startY: number; startW: number; startH: number } | null>(null);
+
+  const startResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    resizeRef.current = { startX: e.clientX, startY: e.clientY, startW: size.w, startH: size.h };
+    const onMove = (ev: MouseEvent) => {
+      const r = resizeRef.current;
+      if (!r) return;
+      setSize({
+        w: Math.max(520, Math.min(window.innerWidth - 40, r.startW + (ev.clientX - r.startX))),
+        h: Math.max(360, Math.min(window.innerHeight - 40, r.startH + (ev.clientY - r.startY))),
+      });
+    };
+    const onUp = () => {
+      resizeRef.current = null;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
 
   const { code, error } = useMemo(() => {
     try {
@@ -61,7 +87,8 @@ export function GmlExportModal({
   return (
     <div className="fixed inset-0 z-50 bg-black/70 grid place-items-center p-4" onMouseDown={onClose}>
       <div
-        className="glass w-full max-w-3xl max-h-[85vh] rounded-xl flex flex-col overflow-hidden"
+        className="glass rounded-xl flex flex-col overflow-hidden relative"
+        style={{ width: size.w, height: size.h, maxWidth: "calc(100vw - 40px)", maxHeight: "calc(100vh - 40px)" }}
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-2 px-4 py-3 border-b border-[var(--op-10)] shrink-0">
@@ -125,6 +152,16 @@ export function GmlExportModal({
             />
           </>
         )}
+
+        <div
+          onMouseDown={startResize}
+          title="Потяните, чтобы изменить размер"
+          className="absolute bottom-0 right-0 w-5 h-5 cursor-nwse-resize flex items-end justify-end p-1 opacity-40 hover:opacity-90 transition-opacity"
+        >
+          <svg width="10" height="10" viewBox="0 0 10 10">
+            <path d="M9 1 L1 9 M9 5 L5 9 M9 9 L9 9" stroke="var(--op-60)" strokeWidth="1.3" />
+          </svg>
+        </div>
       </div>
     </div>
   );

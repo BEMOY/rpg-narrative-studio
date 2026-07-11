@@ -160,8 +160,17 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
       setDragOverNodeId(null);
       const target = document.elementFromPoint(ev.clientX, ev.clientY);
       const nodeEl = target && (target as HTMLElement).closest<HTMLElement>("[data-dialogue-node-id]");
-      const targetNodeId = nodeEl?.dataset.dialogueNodeId;
-      if (!targetNodeId) return;
+      let targetNodeId = nodeEl?.dataset.dialogueNodeId;
+      if (!targetNodeId) {
+        // Released over empty canvas — matches common node-editor UX: auto-create a new node
+        // right there and wire it up, instead of just dropping the connection silently.
+        const stageRect = stage.getBoundingClientRect();
+        const dropX = (ev.clientX - stageRect.left) / zoom;
+        const dropY = (ev.clientY - stageRect.top) / zoom;
+        if (dropX < 0 || dropY < 0 || dropX > CANVAS_W || dropY > CANVAS_H) return;
+        // Offset so the new node's incoming anchor (near its top-left) lands close to the cursor.
+        targetNodeId = addDialogueNode(dialogue.id, dropX - 20, dropY - 20);
+      }
       if (from.startsWith("cont:")) {
         const nodeId = from.slice(5);
         if (nodeId !== targetNodeId) setNodeContinuation(dialogue.id, nodeId, targetNodeId);

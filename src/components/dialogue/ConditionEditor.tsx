@@ -3,6 +3,7 @@ import { Filter, X } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { PortalMenu } from "../common/PortalMenu";
 import { SearchSelect } from "./SearchSelect";
+import { FlagValueInput } from "./FlagValueInput";
 import { isQuest, type DialogueCondition } from "../../types/database";
 
 const QUEST_STATUS_LABEL: Record<string, string> = { not_started: "не начат", active: "активен", done: "выполнен" };
@@ -86,12 +87,7 @@ export function ConditionEditor({
                   <option value="eq">=</option>
                   <option value="neq">≠</option>
                 </select>
-                <input
-                  value={draft.value ?? ""}
-                  onChange={(e) => set({ value: e.target.value })}
-                  placeholder="значение"
-                  className="input text-xs py-1 flex-1"
-                />
+                <FlagValueInput value={draft.value ?? ""} onChange={(v) => set({ value: v })} className="flex-1" />
               </div>
             </>
           )}

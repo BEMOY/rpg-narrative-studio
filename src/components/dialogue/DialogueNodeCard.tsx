@@ -1,67 +1,150 @@
-import { useRef } from "react";
-import { Star, Trash2, Plus, X, GripHorizontal } from "lucide-react";
+import { useRef, useState } from "react";
+import { Star, Trash2, Plus, X, GripHorizontal, Palette } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { ConditionEditor } from "./ConditionEditor";
 import { SearchSelect } from "./SearchSelect";
 import { MarkupText } from "./MarkupText";
+import { PortalMenu } from "../common/PortalMenu";
+import { FlagValueInput } from "./FlagValueInput";
 import type { Dialogue, DialogueChoice, DialogueLine, DialogueNode, DialogueSide } from "../../types/database";
-import { MARKUP_TAGS } from "../../lib/dialogueMarkup";
+import { MARKUP_TAGS, NAMED_COLORS } from "../../lib/dialogueMarkup";
+
+// Applies a markup tag around the current selection (or right before it, for "prefix" tags)
+// in a plain <textarea>. Shared between the generic tag-button row and the dedicated color
+// picker below, so both go through the exact same insertion logic.
+function insertMarkup(
+  el: HTMLTextAreaElement | null,
+  value: string,
+  onChange: (v: string) => void,
+  id: string,
+  mode: "wrap" | "prefix",
+  arg?: string
+) {
+  const start = el?.selectionStart ?? value.length;
+  const end = el?.selectionEnd ?? value.length;
+  const openTag = arg ? `[${id}=${arg}]` : `[${id}]`;
+
+  let next: string;
+  let caretStart: number;
+  let caretEnd: number;
+  if (mode === "wrap") {
+    // Wrap the selection: [tag]...selected...[/tag]. With an empty selection this just drops
+    // an empty pair at the caret, ready to type between.
+    const closeTag = `[/${id}]`;
+    const selected = value.slice(start, end);
+    next = value.slice(0, start) + openTag + selected + closeTag + value.slice(end);
+    caretStart = start + openTag.length;
+    caretEnd = caretStart + selected.length;
+  } else {
+    // "prefix": insert only [tag] right before the selection start — never delete/replace the
+    // selected text.
+    next = value.slice(0, start) + openTag + value.slice(start);
+    caretStart = start + openTag.length;
+    caretEnd = caretStart + (end - start);
+  }
+  onChange(next);
+  requestAnimationFrame(() => {
+    el?.focus();
+    el?.setSelectionRange(caretStart, caretEnd);
+  });
+}
+
+const COLOR_PRESETS = Object.keys(NAMED_COLORS);
+
+function ColorTagButton({
+  getEl,
+  value,
+  onChange,
+}: {
+  getEl: () => HTMLTextAreaElement | null;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const btnRef = useRef<HTMLButtonElement>(null);
+
+  const apply = (colorName: string) => {
+    insertMarkup(getEl(), value, onChange, "c", "wrap", colorName);
+    setOpen(false);
+  };
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded bg-[var(--op-6)] text-[var(--op-40)] hover:text-[var(--op-70)] hover:bg-[var(--op-10)] mono"
+        title="Выделите текст и выберите цвет/стиль"
+      >
+        <Palette size={9} /> [c=…]
+      </button>
+      <PortalMenu anchorRef={btnRef} open={open} onClose={() => setOpen(false)}>
+        <div className="w-52 p-2">
+          <div className="text-[10px] uppercase tracking-wider text-[var(--op-35)] mb-1.5">Готовые стили</div>
+          <div className="grid grid-cols-4 gap-1.5 mb-2">
+            {COLOR_PRESETS.map((name) => (
+              <button
+                key={name}
+                onClick={() => apply(name)}
+                title={name}
+                className="w-full aspect-square rounded-md border border-[var(--op-15)] hover:scale-105 transition-transform"
+                style={
+                  name === "rainbow"
+                    ? { backgroundImage: "linear-gradient(90deg, #ff5f6d, #ffc371, #47e0a1, #5b8def, #c56cf0)" }
+                    : { background: NAMED_COLORS[name] }
+                }
+              />
+            ))}
+          </div>
+          <div className="text-[10px] uppercase tracking-wider text-[var(--op-35)] mb-1.5">Свой цвет</div>
+          <div className="flex items-center gap-1.5">
+            <input
+              type="color"
+              className="w-8 h-8 rounded-md border border-[var(--op-15)] bg-transparent cursor-pointer shrink-0"
+              onChange={(e) => apply(e.target.value)}
+            />
+            <span className="text-[10px] text-[var(--op-35)]">Выберите — применится к выделению</span>
+          </div>
+        </div>
+      </PortalMenu>
+    </>
+  );
+}
 
 function LineTextEditor({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const ref = useRef<HTMLTextAreaElement>(null);
 
-  // Applying an effect: select a range of text first, then click the effect's name — for
-  // "paired" tags (wave/shake/c=...) the selection gets wrapped in [tag]...[/tag]; for
-  // point-in-time codes (speed/pause, which aren't ranges in the engine) the code is just
-  // inserted at the caret/selection start. Falls back to inserting an empty pair at the
-  // caret if nothing is selected, so the tags are still reachable via typing between them.
+  // Applying an effect: select a range of text first, then click the effect's name — "wrap"
+  // tags (wave/shake/c=.../speed) wrap the selection in [tag]...[/tag]; "prefix" (pause, a
+  // point-in-time marker in the engine, not a range) inserts only right before the selection
+  // without touching it. Falls back to inserting an empty pair at the caret if nothing is
+  // selected, so the tags are still reachable via typing between them.
   const applyTag = (def: (typeof MARKUP_TAGS)[number]) => {
-    const el = ref.current;
-    const start = el?.selectionStart ?? value.length;
-    const end = el?.selectionEnd ?? value.length;
-
     let arg: string | undefined;
     if (def.promptForValue) {
       const entered = prompt(def.promptLabel ?? `Значение для ${def.label}`, def.defaultValue ?? "");
       if (entered === null) return; // cancelled
       arg = entered.trim();
     }
-    const openTag = arg ? `[${def.id}=${arg}]` : `[${def.id}]`;
-
-    let next: string;
-    let caretStart: number;
-    let caretEnd: number;
-    if (def.paired) {
-      const closeTag = `[/${def.id}]`;
-      const selected = value.slice(start, end);
-      next = value.slice(0, start) + openTag + selected + closeTag + value.slice(end);
-      caretStart = start + openTag.length;
-      caretEnd = caretStart + selected.length;
-    } else {
-      next = value.slice(0, start) + openTag + value.slice(end);
-      caretStart = caretEnd = start + openTag.length;
-    }
-    onChange(next);
-    requestAnimationFrame(() => {
-      el?.focus();
-      el?.setSelectionRange(caretStart, caretEnd);
-    });
+    insertMarkup(ref.current, value, onChange, def.id, def.mode, arg);
   };
 
   return (
     <div>
       <div className="flex flex-wrap gap-1 mb-1">
-        {MARKUP_TAGS.map((t) => (
+        {MARKUP_TAGS.filter((t) => t.id !== "c").map((t) => (
           <button
             key={t.id}
             type="button"
             onClick={() => applyTag(t)}
             className="text-[9px] px-1.5 py-0.5 rounded bg-[var(--op-6)] text-[var(--op-40)] hover:text-[var(--op-70)] hover:bg-[var(--op-10)] mono"
-            title={t.paired ? `Выделите текст и нажмите, чтобы обернуть в ${t.label}` : `Вставить ${t.label} в курсор`}
+            title={t.mode === "wrap" ? `Выделите текст и нажмите, чтобы обернуть в ${t.label}` : `Вставится перед выделенным текстом: ${t.label}`}
           >
             {t.label}
           </button>
         ))}
+        <ColorTagButton getEl={() => ref.current} value={value} onChange={onChange} />
       </div>
       <textarea
         ref={ref}
@@ -100,12 +183,7 @@ function FlagSetRow({
         placeholder="флаг"
         className="input text-[11px] py-1 flex-1 min-w-0"
       />
-      <input
-        value={fs.value}
-        onChange={(e) => onChange({ value: e.target.value })}
-        placeholder="значение"
-        className="input text-[11px] py-1 flex-1 min-w-0"
-      />
+      <FlagValueInput value={fs.value} onChange={(v) => onChange({ value: v })} className="flex-1" />
       <button onClick={onRemove} className="opacity-40 hover:opacity-100 shrink-0">
         <X size={11} />
       </button>
@@ -221,7 +299,7 @@ function ChoiceRow({
   const removeFlagSet = (i: number) => patch({ flagSets: choice.flagSets.filter((_, idx) => idx !== i) });
 
   return (
-    <div className="relative rounded-md border border-[var(--op-7)] p-2 space-y-1.5 bg-[var(--op-3)]">
+    <div className="relative rounded-md border border-[var(--op-7)] p-2 pr-5 space-y-1.5 bg-[var(--op-3)]">
       <div className="flex items-center gap-1.5">
         <input value={choice.text} onChange={(e) => patch({ text: e.target.value })} placeholder="текст выбора" className="input text-xs py-1 flex-1 min-w-0" />
         <button onClick={() => deleteDialogueChoice(dialogue.id, node.id, choice.id)} className="opacity-40 hover:opacity-100 hover:text-red-300 shrink-0">
@@ -242,32 +320,26 @@ function ChoiceRow({
 
       {targetNode ? (
         <div className="flex items-center gap-1.5 text-[11px] text-teal-300">
-          <span
-            ref={(el) => registerAnchor(`choice:${choice.id}`, el)}
-            className="p-2 -m-2 shrink-0 cursor-crosshair grid place-items-center hover:bg-teal-400/10 rounded-full transition-colors"
-            onMouseDown={(e) => onLinkDragStart(`choice:${choice.id}`, e)}
-            title="Перетяните на другую ноду, чтобы изменить связь"
-          >
-            <span className="block w-2.5 h-2.5 rounded-full bg-teal-400" />
-          </span>
           → ветка {targetNode.lines[0]?.speaker || targetNode.id}
           <button onClick={() => setChoiceTarget(dialogue.id, node.id, choice.id, undefined)} className="opacity-50 hover:opacity-100 ml-auto">
             <X size={11} />
           </button>
         </div>
       ) : (
-        <div className="flex items-center gap-1.5 text-[10px] text-[var(--op-35)]">
-          <span
-            ref={(el) => registerAnchor(`choice:${choice.id}`, el)}
-            className="p-2 -m-2 shrink-0 cursor-crosshair grid place-items-center hover:bg-teal-400/10 rounded-full transition-colors"
-            onMouseDown={(e) => onLinkDragStart(`choice:${choice.id}`, e)}
-            title="Перетяните на другую ноду"
-          >
-            <span className="block w-2.5 h-2.5 rounded-full border border-dashed border-teal-400/60" />
-          </span>
-          перетяните кружок на другую ноду — ветка
-        </div>
+        <div className="text-[10px] text-[var(--op-35)]">перетяните точку справа на другую ноду — ветка</div>
       )}
+
+      {/* Connector "port" docked to the right edge of the choice box — was previously inline
+          with the text, easy to miss/misclick; now it's a consistent, larger handle sitting
+          on the card's edge, matching common node-editor conventions (output on the right). */}
+      <span
+        ref={(el) => registerAnchor(`choice:${choice.id}`, el)}
+        onMouseDown={(e) => onLinkDragStart(`choice:${choice.id}`, e)}
+        title={targetNode ? "Перетяните, чтобы изменить связь" : "Перетяните на другую ноду (или в пустое место — создастся новая)"}
+        className="absolute top-1/2 -translate-y-1/2 -right-2 p-2.5 -m-2.5 cursor-crosshair grid place-items-center hover:bg-teal-400/15 rounded-full transition-colors z-10"
+      >
+        <span className={`block w-3 h-3 rounded-full ${targetNode ? "bg-teal-400" : "border-2 border-dashed border-teal-400/70"}`} />
+      </span>
     </div>
   );
 }
@@ -383,7 +455,7 @@ export function DialogueNodeCard({
               onMouseDown={(e) => onLinkDragStart(`cont:${node.id}`, e)}
               className="text-center text-[10px] text-amber-300/70 bg-amber-500/5 border border-dashed border-amber-500/30 rounded-md py-1.5 cursor-crosshair hover:bg-amber-500/10"
             >
-              ▼ продолжение — перетяните вниз к другой ноде
+              ▼ продолжение — перетяните к другой ноде (или в пустое место — создастся новая)
             </div>
           )
         ) : (
