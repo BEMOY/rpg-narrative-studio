@@ -1,7 +1,16 @@
 import { useEffect, useState } from "react";
-import { Plus, LogOut, Copy, KeyRound, FolderOpen } from "lucide-react";
+import { Plus, LogOut, Copy, KeyRound, FolderOpen, Pencil, Trash2 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
-import { createInvite, createProject, listMyInvites, listProjects, type InviteRow, type ProjectRow } from "../cloud/projects";
+import {
+  createInvite,
+  createProject,
+  deleteProject,
+  listMyInvites,
+  listProjects,
+  renameProject,
+  type InviteRow,
+  type ProjectRow,
+} from "../cloud/projects";
 import type { RarityObject } from "../types/database";
 
 const DEFAULT_RARITIES: RarityObject[] = [
@@ -42,6 +51,29 @@ export function ProjectsHome({ onOpen }: { onOpen: (row: ProjectRow) => void }) 
       alert(e?.message ?? String(e));
     } finally {
       setCreating(false);
+    }
+  };
+
+  const rename = async (p: ProjectRow, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const name = prompt("Новое название проекта:", p.name);
+    if (!name || name === p.name) return;
+    try {
+      await renameProject(p.id, name);
+      await refresh();
+    } catch (err: any) {
+      alert(err?.message ?? String(err));
+    }
+  };
+
+  const remove = async (p: ProjectRow, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!confirm(`Удалить проект «${p.name}»? Это необратимо.`)) return;
+    try {
+      await deleteProject(p.id);
+      await refresh();
+    } catch (err: any) {
+      alert(err?.message ?? String(err));
     }
   };
 
@@ -107,12 +139,34 @@ export function ProjectsHome({ onOpen }: { onOpen: (row: ProjectRow) => void }) 
         <div className="grid gap-3.5" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))" }}>
           {projects === null && <div className="text-white/30 text-sm">Загрузка…</div>}
           {projects?.map((p) => (
-            <button key={p.id} onClick={() => onOpen(p)} className="glass rounded-lg p-5 text-left hover:-translate-y-0.5 hover:border-white/20 transition-transform">
+            <div
+              key={p.id}
+              onClick={() => onOpen(p)}
+              role="button"
+              tabIndex={0}
+              className="group relative glass rounded-lg p-5 text-left hover:-translate-y-0.5 hover:border-white/20 transition-transform cursor-pointer"
+            >
+              <div className="absolute top-3 right-3 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                <button
+                  onClick={(e) => rename(p, e)}
+                  className="p-1.5 rounded-md bg-black/40 backdrop-blur-sm text-white/50 hover:text-white/90 hover:bg-black/60"
+                  title="Переименовать"
+                >
+                  <Pencil size={12} />
+                </button>
+                <button
+                  onClick={(e) => remove(p, e)}
+                  className="p-1.5 rounded-md bg-black/40 backdrop-blur-sm text-white/50 hover:text-red-300 hover:bg-black/60"
+                  title="Удалить"
+                >
+                  <Trash2 size={12} />
+                </button>
+              </div>
               <FolderOpen size={20} className="text-accent mb-3" />
-              <div className="text-sm font-medium text-white/90 truncate">{p.name}</div>
+              <div className="text-sm font-medium text-white/90 truncate pr-10">{p.name}</div>
               <div className="text-xs text-white/40 mt-1">{(p.data?.entries?.length ?? 0)} объектов</div>
               <div className="text-[11px] text-white/25 mt-2">обновлён {new Date(p.updated_at).toLocaleString()}</div>
-            </button>
+            </div>
           ))}
           <button
             onClick={newProject}

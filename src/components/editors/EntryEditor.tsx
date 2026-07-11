@@ -1,7 +1,9 @@
-import { Trash2, Plus, X } from "lucide-react";
+import { Trash2, Plus, X, Upload, ImageOff } from "lucide-react";
+import { useRef, useState } from "react";
 import type { Entry, EquipSlot, Relationship } from "../../types/database";
 import { canHaveStats, hasRelationship, isEquip, isQuest } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
+import { resizeImageFile } from "../../lib/image";
 
 const SLOTS: EquipSlot[] = ["head", "body", "weapon", "offhand"];
 const RELATIONSHIPS: Relationship[] = ["friend", "neutral", "enemy"];
@@ -30,6 +32,9 @@ export function EntryEditor({ entry }: { entry: Entry }) {
           />
         </Field>
       </Section>
+
+      <VisualSection entry={entry} />
+      <TagsSection entry={entry} />
 
       {isEquip(entry.category) && (
         <Section title="Slot & Rarity">
@@ -68,16 +73,6 @@ export function EntryEditor({ entry }: { entry: Entry }) {
           <Field label="Quest Item">
             <input type="checkbox" checked={entry.quest ?? false} onChange={(e) => updateEntry(entry.id, { quest: e.target.checked })} />
           </Field>
-          {entry.category === "equipment" && (
-            <Field label="Overlay (engine symbol)">
-              <input
-                className="input mono"
-                value={entry.overlay ?? ""}
-                placeholder="none"
-                onChange={(e) => updateEntry(entry.id, { overlay: e.target.value || undefined })}
-              />
-            </Field>
-          )}
         </Section>
       )}
 
@@ -130,6 +125,119 @@ export function EntryEditor({ entry }: { entry: Entry }) {
         </button>
       </div>
     </div>
+  );
+}
+
+function VisualSection({ entry }: { entry: Entry }) {
+  const updateEntry = useProjectStore((s) => s.updateEntry);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+
+  const onFile = async (file: File | undefined) => {
+    if (!file) return;
+    setBusy(true);
+    try {
+      const dataUrl = await resizeImageFile(file);
+      updateEntry(entry.id, { image: dataUrl });
+    } catch {
+      alert("Не удалось загрузить картинку — попробуйте другой файл.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Section title="Visual">
+      <div className="flex items-center gap-4">
+        <div className="w-20 h-20 rounded-md overflow-hidden bg-white/5 border border-white/10 shrink-0 grid place-items-center">
+          {entry.image ? (
+            <img src={entry.image} alt="" className="w-full h-full object-cover" />
+          ) : (
+            <ImageOff size={18} className="text-white/20" />
+          )}
+        </div>
+        <div className="flex flex-col gap-2">
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => onFile(e.target.files?.[0])}
+          />
+          <button
+            onClick={() => fileRef.current?.click()}
+            disabled={busy}
+            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md glass hover:bg-white/10 disabled:opacity-50"
+          >
+            <Upload size={12} /> {busy ? "Загрузка…" : "Загрузить картинку"}
+          </button>
+          {entry.image && (
+            <button
+              onClick={() => updateEntry(entry.id, { image: undefined })}
+              className="text-xs text-white/40 hover:text-white/70 text-left"
+            >
+              Убрать — показывать иконку категории
+            </button>
+          )}
+        </div>
+      </div>
+      {isEquip(entry.category) && (
+        <Field label="Overlay (engine symbol)">
+          <input
+            className="input mono"
+            value={entry.overlay ?? ""}
+            placeholder="none"
+            onChange={(e) => updateEntry(entry.id, { overlay: e.target.value || undefined })}
+          />
+        </Field>
+      )}
+    </Section>
+  );
+}
+
+function TagsSection({ entry }: { entry: Entry }) {
+  const updateEntry = useProjectStore((s) => s.updateEntry);
+  const [draft, setDraft] = useState("");
+  const tags = entry.tags ?? [];
+
+  const addTag = () => {
+    const t = draft.trim();
+    if (!t || tags.includes(t)) {
+      setDraft("");
+      return;
+    }
+    updateEntry(entry.id, { tags: [...tags, t] });
+    setDraft("");
+  };
+
+  const removeTag = (t: string) => updateEntry(entry.id, { tags: tags.filter((x) => x !== t) });
+
+  return (
+    <Section title="Tags">
+      <div className="flex flex-wrap gap-1.5">
+        {tags.map((t) => (
+          <span key={t} className="flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-white/8 border border-white/10 text-white/70">
+            {t}
+            <button onClick={() => removeTag(t)} className="opacity-50 hover:opacity-100">
+              <X size={10} />
+            </button>
+          </span>
+        ))}
+        <input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === ",") {
+              e.preventDefault();
+              addTag();
+            }
+          }}
+          onBlur={addTag}
+          placeholder="добавить тег…"
+          className="bg-transparent outline-none text-xs text-white/70 placeholder:text-white/25 px-1 py-1 min-w-[100px]"
+        />
+      </div>
+    </Section>
   );
 }
 

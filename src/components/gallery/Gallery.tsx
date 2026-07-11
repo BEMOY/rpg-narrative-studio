@@ -112,7 +112,13 @@ export function Gallery() {
     if (activeCategory !== "all") l = l.filter((e) => e.category === activeCategory);
     if (query.trim()) {
       const q = query.toLowerCase();
-      l = l.filter((e) => e.name.toLowerCase().includes(q) || e.id.toLowerCase().includes(q));
+      l = l.filter(
+        (e) =>
+          e.name.toLowerCase().includes(q) ||
+          e.id.toLowerCase().includes(q) ||
+          e.description.toLowerCase().includes(q) ||
+          (e.tags ?? []).some((t) => t.toLowerCase().includes(q))
+      );
     }
     return l;
   }, [entries, activeCategory, query]);

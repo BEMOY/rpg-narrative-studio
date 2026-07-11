@@ -40,6 +40,11 @@ export async function deleteProject(id: string): Promise<void> {
   if (error) throw error;
 }
 
+export async function renameProject(id: string, name: string): Promise<void> {
+  const { error } = await supabase.from("projects").update({ name }).eq("id", id);
+  if (error) throw error;
+}
+
 // Invites — see migration invite_gated_auth. Any signed-in user may mint codes for friends.
 export async function createInvite(): Promise<string> {
   const code = Array.from({ length: 10 }, () => "abcdefghjkmnpqrstuvwxyz23456789"[Math.floor(Math.random() * 32)]).join("");
