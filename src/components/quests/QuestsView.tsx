@@ -19,11 +19,13 @@ import {
   LockOpen,
   Ban,
   CircleCheck,
+  ToggleLeft,
 } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { ResizablePanel } from "../common/ResizablePanel";
 import { CAT_COLOR, isQuest, type Entry } from "../../types/database";
 import { compileQuestsScript, objectiveProgress } from "../../lib/questCompile";
+import { FlagsManagerModal } from "../dialogue/FlagsManagerModal";
 
 // ---- roadmap graph (quest ↔ dialogue ↔ flag), adapted from GraphView.tsx's force layout ----
 
@@ -293,6 +295,8 @@ function QuestNodeCard({
   status,
   on,
   onToggle,
+  onSetAllObjectives,
+  onToggleObjective,
   entryById,
 }: {
   entry?: Entry;
@@ -301,6 +305,8 @@ function QuestNodeCard({
   status: QuestStatus;
   on: boolean;
   onToggle: () => void;
+  onSetAllObjectives: (done: boolean) => void;
+  onToggleObjective: (index: number) => void;
   entryById: Map<string, Entry>;
 }) {
   const objectives = entry?.objectives ?? [];
@@ -318,15 +324,10 @@ function QuestNodeCard({
       <LockOpen size={12} />
     );
   const cardStatusColor = statusColor(status, color);
-  // Auto-completed (every objective finished) or locked/blocked quests have nothing left to
-  // simulate manually — the toggle is disabled rather than letting the user fight the derived
-  // status back and forth.
-  const autoCompleted = objectives.length > 0 && objectives.every((o) => {
-    const current = o.current ?? (o.done ? 1 : 0);
-    const max = o.max ?? 1;
-    return current >= max;
-  });
-  const toggleDisabled = status === "locked" || status === "blocked" || autoCompleted;
+  // Locked/blocked quests have nothing to simulate until their prerequisites are resolved —
+  // the toggle is disabled. An already-completed (all objectives done) quest can still be
+  // toggled OFF, though: that's the "undo" path, and it resets every objective's checkbox too.
+  const toggleDisabled = status === "locked" || status === "blocked";
 
   return (
     <div
@@ -354,13 +355,23 @@ function QuestNodeCard({
               const max = o.max ?? 1;
               const done = current >= max;
               return (
-                <div key={i} className="flex items-center gap-1 text-[10px]" style={{ color: done ? "#7cc98a" : "var(--op-45)" }}>
+                <button
+                  key={i}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onToggleObjective(i);
+                  }}
+                  title={done ? "Снять галочку с подцели" : "Отметить подцель выполненной"}
+                  className="w-full flex items-center gap-1 text-[10px] text-left hover:opacity-80"
+                  style={{ color: done ? "#7cc98a" : "var(--op-45)" }}
+                >
                   {done ? <CircleCheck size={10} className="shrink-0" /> : <span className="w-2.5 h-2.5 rounded-full border border-current shrink-0" />}
                   <span className="truncate flex-1">{o.text || `Цель ${i + 1}`}</span>
                   <span className="mono opacity-70 shrink-0">
                     {current}/{max}
                   </span>
-                </div>
+                </button>
               );
             })}
           </div>
@@ -406,15 +417,19 @@ function QuestNodeCard({
             onMouseDown={(e) => e.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation();
-              if (!toggleDisabled) onToggle();
+              if (toggleDisabled) return;
+              if (objectives.length > 0) onSetAllObjectives(!on);
+              else onToggle();
             }}
             title={
               toggleDisabled
                 ? status === "locked"
                   ? "Заперт — сначала выполните квест(ы)-предпосылки"
-                  : status === "blocked"
-                  ? "Заблокирован завершённым квестом"
-                  : "Уже завершён по подцелям"
+                  : "Заблокирован завершённым квестом"
+                : objectives.length > 0
+                ? on
+                  ? "Снять отметку со всех подцелей"
+                  : "Отметить все подцели выполненными"
                 : "Симуляция: считать этот квест пройденным"
             }
             className={`relative w-8 h-[16px] rounded-full transition-colors duration-300 shrink-0 ${toggleDisabled ? "cursor-not-allowed opacity-50" : ""}`}
@@ -441,6 +456,8 @@ function RoadmapGraph({
   statuses,
   simCompleted,
   onToggleCompleted,
+  onSetAllObjectives,
+  onToggleObjective,
 }: {
   nodes: RoadmapNode[];
   edges: RoadmapEdge[];
@@ -452,6 +469,8 @@ function RoadmapGraph({
   statuses: Map<string, QuestStatus>;
   simCompleted: Set<string>;
   onToggleCompleted: (questId: string) => void;
+  onSetAllObjectives: (questId: string, done: boolean) => void;
+  onToggleObjective: (questId: string, index: number) => void;
 }) {
   const posRef = useRef<Map<string, NodePos>>(new Map());
   const pinnedRef = useRef<Set<string>>(new Set());
@@ -499,6 +518,27 @@ function RoadmapGraph({
     let frame = 0;
     let raf = 0;
     const ids = nodes.map((n) => n.id);
+
+    // Deterministic per-node phase/frequency for the idle bob — using Math.random() per FRAME
+    // (as before) produced independent, uncorrelated impulses every tick, which reads as
+    // trembling/jittering rather than a gentle sway. A fixed sine wave per node is perfectly
+    // smooth and, being derived from the id itself, stays stable across effect re-runs instead
+    // of resetting to a new random seed every time.
+    function hashSeed(id: string): number {
+      let h = 0;
+      for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+      return h;
+    }
+    const jitterSeed = new Map<string, { phaseX: number; phaseY: number; freqX: number; freqY: number }>();
+    for (const id of ids) {
+      const h = hashSeed(id);
+      jitterSeed.set(id, {
+        phaseX: ((h % 1000) / 1000) * Math.PI * 2,
+        phaseY: (((h >>> 8) % 1000) / 1000) * Math.PI * 2,
+        freqX: 0.006 + (h % 5) * 0.0015,
+        freqY: 0.006 + ((h >>> 4) % 5) * 0.0015,
+      });
+    }
 
     const degree = new Map<string, number>();
     for (const e of edges) {
@@ -584,10 +624,13 @@ function RoadmapGraph({
           const anchor = anchorRef.current.get(id) ?? p;
           p.vx += (anchor.x - p.x) * 0.03;
           p.vy += (anchor.y - p.y) * 0.03;
-          p.vx += (Math.random() - 0.5) * IDLE_JITTER;
-          p.vy += (Math.random() - 0.5) * IDLE_JITTER;
-          p.vx *= 0.82;
-          p.vy *= 0.82;
+          const pinnedSeed = jitterSeed.get(id);
+          if (pinnedSeed) {
+            p.vx += Math.sin(frame * pinnedSeed.freqX + pinnedSeed.phaseX) * IDLE_JITTER * 0.5;
+            p.vy += Math.sin(frame * pinnedSeed.freqY + pinnedSeed.phaseY) * IDLE_JITTER * 0.5;
+          }
+          p.vx *= 0.9;
+          p.vy *= 0.9;
           const speed = Math.hypot(p.vx, p.vy);
           if (speed > MAX_VELOCITY) {
             p.vx = (p.vx / speed) * MAX_VELOCITY;
@@ -607,11 +650,14 @@ function RoadmapGraph({
         }
         p.vy += (HEIGHT / 2 - p.y) * 0.0006;
         if (frame > MAX_SETTLE_FRAMES) {
-          p.vx += (Math.random() - 0.5) * IDLE_JITTER;
-          p.vy += (Math.random() - 0.5) * IDLE_JITTER;
+          const seed = jitterSeed.get(id);
+          if (seed) {
+            p.vx += Math.sin(frame * seed.freqX + seed.phaseX) * IDLE_JITTER * 0.5;
+            p.vy += Math.sin(frame * seed.freqY + seed.phaseY) * IDLE_JITTER * 0.5;
+          }
         }
-        p.vx *= 0.82;
-        p.vy *= 0.82;
+        p.vx *= 0.9;
+        p.vy *= 0.9;
         const speed = Math.hypot(p.vx, p.vy);
         if (speed > MAX_VELOCITY) {
           p.vx = (p.vx / speed) * MAX_VELOCITY;
@@ -894,6 +940,8 @@ function RoadmapGraph({
                       status={status}
                       on={on}
                       onToggle={() => onToggleCompleted(n.entryId!)}
+                      onSetAllObjectives={(done) => onSetAllObjectives(n.entryId!, done)}
+                      onToggleObjective={(i) => onToggleObjective(n.entryId!, i)}
                       entryById={entryById}
                     />
                   </div>
@@ -1089,12 +1137,15 @@ export function QuestsView() {
   const showDialogues = useProjectStore((s) => s.showDialogues);
   const setActiveDialogue = useProjectStore((s) => s.setActiveDialogue);
   const entries = useProjectStore((s) => s.project.entries);
+  const updateEntry = useProjectStore((s) => s.updateEntry);
   const { nodes, edges, quests } = useQuestRoadmap();
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
+  const [flagsOpen, setFlagsOpen] = useState(false);
   // "What if this quest were completed?" — a purely local, ephemeral simulation (not tied to
-  // any real save data) so the writer can toggle quests done/undone and instantly see, via the
-  // unlocks/blocks edges, what that would open up or lock elsewhere in the quest web.
+  // any real save data), used ONLY for quests with no objectives at all (nothing else to
+  // represent "done" with). Quests that DO have objectives are driven by their real,
+  // persisted current/max data instead — see setAllObjectivesDone/toggleObjective below.
   const [simCompleted, setSimCompleted] = useState<Set<string>>(new Set());
   const toggleCompleted = (questId: string) =>
     setSimCompleted((prev) => {
@@ -1104,6 +1155,26 @@ export function QuestsView() {
       return next;
     });
   const statuses = useMemo(() => computeQuestStatuses(quests, simCompleted), [quests, simCompleted]);
+
+  // Real, persisted objective edits — clicking a subtask checkbox on a quest card, or flipping
+  // the quest's own "пройден" toggle when it has objectives, writes straight back to the entry
+  // (via updateEntry) instead of just simulating, since objectives are genuine Codex data.
+  const toggleObjective = (entryId: string, index: number) => {
+    const entry = entries.find((e) => e.id === entryId);
+    const o = entry?.objectives?.[index];
+    if (!o) return;
+    const max = o.max ?? 1;
+    const current = o.current ?? (o.done ? 1 : 0);
+    const nextDone = current < max;
+    const nextObjectives = entry!.objectives!.map((obj, i) => (i === index ? { ...obj, current: nextDone ? max : 0, done: nextDone } : obj));
+    updateEntry(entryId, { objectives: nextObjectives });
+  };
+  const setAllObjectivesDone = (entryId: string, done: boolean) => {
+    const entry = entries.find((e) => e.id === entryId);
+    if (!entry?.objectives?.length) return;
+    const nextObjectives = entry.objectives.map((o) => ({ ...o, current: done ? o.max ?? 1 : 0, done }));
+    updateEntry(entryId, { objectives: nextObjectives });
+  };
 
   const mainQuests = quests.filter((q) => q.category === "main_quest");
   const sideQuests = quests.filter((q) => q.category === "side_quest");
@@ -1120,7 +1191,14 @@ export function QuestsView() {
         <div className="flex items-center gap-2 px-4 py-4 border-b border-[var(--op-10)] shrink-0">
           <ScrollText size={18} className="text-[var(--op-70)]" />
           <span className="text-lg font-medium text-[#ece4d2]">Квесты</span>
-          <span className="text-xs mono text-[var(--op-30)] bg-[var(--op-5)] border border-[var(--op-10)] rounded-full px-2 py-0.5">
+          <button
+            onClick={() => setFlagsOpen(true)}
+            title="Флаги диалогов"
+            className="w-7 h-7 grid place-items-center rounded-md glass hover:bg-[var(--op-10)] text-[var(--op-60)]"
+          >
+            <ToggleLeft size={13} />
+          </button>
+          <span className="text-xs mono text-[var(--op-30)] bg-[var(--op-5)] border border-[var(--op-10)] rounded-full px-2 py-0.5 ml-auto">
             {quests.length}
           </span>
         </div>
@@ -1198,11 +1276,14 @@ export function QuestsView() {
             statuses={statuses}
             simCompleted={simCompleted}
             onToggleCompleted={toggleCompleted}
+            onSetAllObjectives={setAllObjectivesDone}
+            onToggleObjective={toggleObjective}
           />
         </div>
       </div>
 
       {exportOpen && <QuestsExportModal entries={entries} onClose={() => setExportOpen(false)} />}
+      {flagsOpen && <FlagsManagerModal onClose={() => setFlagsOpen(false)} />}
     </div>
   );
 }

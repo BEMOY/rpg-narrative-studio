@@ -203,6 +203,16 @@ export interface RarityObject {
 
 export type DialogueFlagType = "bool" | "number";
 
+// Registered per flag (see Flags manager) — missing entries default to type "bool", default
+// "false". Lets flag-value pickers show the exact right control (on/off switch or a
+// slider+number field within [0, max]) instead of a generic true/false/number select, and lets
+// the manager itself display/edit each flag's own default value.
+export interface DialogueFlagDef {
+  type: DialogueFlagType;
+  default: string; // "true"/"false" for bool, a numeric string for number
+  max?: number; // number type only — slider upper bound (lower bound is always 0)
+}
+
 export interface Project {
   name: string;
   entries: Entry[];
@@ -211,10 +221,7 @@ export interface Project {
   dialogueFolders: DialogueFolder[];
   dialogues: Dialogue[];
   dialogueFlags: string[];
-  // Per-flag value type (bool vs number), keyed by flag name — missing entries default to
-  // "bool" (matches the common flag_set(name, true/false) convention). Lets flag-value pickers
-  // show a plain on/off switch or a number input instead of a generic true/false/number select.
-  dialogueFlagTypes: Record<string, DialogueFlagType>;
+  dialogueFlagDefs: Record<string, DialogueFlagDef>;
   colorStyles: DialogueColorStyle[];
 }
 

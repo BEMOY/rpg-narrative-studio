@@ -146,14 +146,25 @@ export function EntryEditor({ entry, onDone }: { entry: Entry; onDone: () => voi
 
 function ChapterSection({ entry }: { entry: Entry }) {
   const chapters = useProjectStore((s) => s.project.chapters);
+  const entries = useProjectStore((s) => s.project.entries);
   const updateEntry = useProjectStore((s) => s.updateEntry);
   const addChapter = useProjectStore((s) => s.addChapter);
+  const removeChapter = useProjectStore((s) => s.removeChapter);
 
   const addNew = () => {
     const name = prompt("Название главы:");
     if (!name) return;
     addChapter(name.trim());
     updateEntry(entry.id, { chapter: name.trim() });
+  };
+
+  const removeCurrent = () => {
+    const name = entry.chapter;
+    if (!name) return;
+    const count = entries.filter((e) => e.chapter === name).length;
+    const warn = count > 1 ? ` Записей с этой главой: ${count} — у всех она будет снята.` : "";
+    if (!confirm(`Удалить главу «${name}» из проекта?${warn}`)) return;
+    removeChapter(name);
   };
 
   return (
@@ -178,6 +189,14 @@ function ChapterSection({ entry }: { entry: Entry }) {
             className="w-9 h-9 shrink-0 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]"
           >
             <Plus size={14} />
+          </button>
+          <button
+            onClick={removeCurrent}
+            disabled={!entry.chapter}
+            title={entry.chapter ? `Удалить главу «${entry.chapter}» из проекта` : "Сначала выберите главу"}
+            className="w-9 h-9 shrink-0 grid place-items-center rounded-md glass hover:bg-[var(--op-10)] hover:text-red-300 disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            <Trash2 size={14} />
           </button>
         </div>
       </Field>
@@ -335,17 +354,27 @@ function QuestPanel({ entry }: { entry: Entry }) {
     setDependencies(dependencies.map((d, idx) => (idx === i ? { ...d, ...p } : d)));
   const removeDependency = (i: number) => setDependencies(dependencies.filter((_, idx) => idx !== i));
 
+  // The type dropdown IS the entry's category here — main/side quest type and
+  // main_quest/side_quest category would otherwise drift apart (e.g. an entry filed under
+  // "Побочные квесты" but labeled type:"main" in the exported quest_define()), which is
+  // confusing with no upside. Switching the type now moves the entry between the two Codex
+  // categories too. ("story" removed — there's no matching Category, so it could never be
+  // synced the same way; only main/side actually exist as real Codex categories.)
+  const displayType = questType === "story" ? "main" : questType;
+
   return (
     <Section title="Квест (quest_define)">
       <Field label="Тип (type)">
         <select
           className="input"
-          value={questType}
-          onChange={(e) => updateEntry(entry.id, { questType: e.target.value as "main" | "side" | "story" })}
+          value={displayType}
+          onChange={(e) => {
+            const next = e.target.value as "main" | "side";
+            updateEntry(entry.id, { questType: next, category: next === "side" ? "side_quest" : "main_quest" });
+          }}
         >
           <option value="main">main</option>
           <option value="side">side</option>
-          <option value="story">story</option>
         </select>
       </Field>
 
@@ -400,33 +429,36 @@ function QuestPanel({ entry }: { entry: Entry }) {
       <div>
         <div className="text-sm text-[var(--op-50)] mb-2">Награды (rewards)</div>
         <div className="grid grid-cols-3 gap-2 mb-2">
-          <Field label="Монеты">
+          <div>
+            <div className="text-xs text-[var(--op-45)] mb-1">Монеты</div>
             <input
               type="number"
-              className="input"
+              className="input w-full"
               value={rewards.coins ?? ""}
               placeholder="—"
               onChange={(e) => patchRewards({ coins: e.target.value === "" ? undefined : Number(e.target.value) })}
             />
-          </Field>
-          <Field label="XP">
+          </div>
+          <div>
+            <div className="text-xs text-[var(--op-45)] mb-1">XP</div>
             <input
               type="number"
-              className="input"
+              className="input w-full"
               value={rewards.xp ?? ""}
               placeholder="—"
               onChange={(e) => patchRewards({ xp: e.target.value === "" ? undefined : Number(e.target.value) })}
             />
-          </Field>
-          <Field label="Симпатия">
+          </div>
+          <div>
+            <div className="text-xs text-[var(--op-45)] mb-1">Симпатия</div>
             <input
               type="number"
-              className="input"
+              className="input w-full"
               value={rewards.affinity ?? ""}
               placeholder="—"
               onChange={(e) => patchRewards({ affinity: e.target.value === "" ? undefined : Number(e.target.value) })}
             />
-          </Field>
+          </div>
         </div>
         <div className="space-y-1.5">
           {items.map((it, i) => (

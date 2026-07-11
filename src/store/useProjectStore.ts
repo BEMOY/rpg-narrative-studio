@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Category, Dialogue, DialogueChoice, DialogueColorStyle, DialogueFlagType, DialogueLine, DialogueNode, Entry, Project } from "../types/database";
+import type { Category, Dialogue, DialogueChoice, DialogueColorStyle, DialogueFlagDef, DialogueLine, DialogueNode, Entry, Project } from "../types/database";
 import { sampleProject } from "../data/sampleProject";
 import { saveProjectData } from "../cloud/projects";
 import { createChoice, createDialogue as makeDialogue, createLine, createNode, normalizeDialogue } from "../lib/dialogueDefaults";
@@ -42,6 +42,7 @@ interface ProjectState {
   deleteEntries: (ids: string[]) => void;
   toggleCategoryVisibility: (c: Category) => void;
   addChapter: (name: string) => void;
+  removeChapter: (name: string) => void;
 
   // ---- dialogues ----
   setActiveDialogue: (id: string | null) => void;
@@ -65,8 +66,8 @@ interface ProjectState {
   deleteDialogueChoice: (dialogueId: string, nodeId: string, choiceId: string) => void;
   setNodeContinuation: (dialogueId: string, nodeId: string, targetNodeId: string | undefined) => void;
   setChoiceTarget: (dialogueId: string, nodeId: string, choiceId: string, targetNodeId: string | undefined) => void;
-  addDialogueFlag: (name: string, type?: DialogueFlagType) => void;
-  setDialogueFlagType: (name: string, type: DialogueFlagType) => void;
+  addDialogueFlag: (name: string, def?: Partial<DialogueFlagDef>) => void;
+  setDialogueFlagDef: (name: string, patch: Partial<DialogueFlagDef>) => void;
   renameDialogueFlag: (oldName: string, newName: string) => void;
   removeDialogueFlag: (name: string) => void;
   setColorStyle: (style: DialogueColorStyle) => void;
@@ -98,7 +99,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       dialogueFolders: data.dialogueFolders ?? [],
       dialogues: (data.dialogues ?? []).map(normalizeDialogue),
       dialogueFlags: data.dialogueFlags ?? [],
-      dialogueFlagTypes: data.dialogueFlagTypes ?? {},
+      dialogueFlagDefs: data.dialogueFlagDefs ?? {},
       colorStyles: data.colorStyles ?? [],
       entries: data.entries.map((e) => ({ ...e, tags: e.tags ?? [], references: e.references ?? [] })),
     };
@@ -218,6 +219,19 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const trimmed = name.trim();
     if (!trimmed) return;
     set((s) => (s.project.chapters.includes(trimmed) ? s : { project: { ...s.project, chapters: [...s.project.chapters, trimmed] } }));
+    triggerAutosavePulse(set);
+  },
+
+  removeChapter: (name) => {
+    set((s) => ({
+      project: {
+        ...s.project,
+        chapters: s.project.chapters.filter((c) => c !== name),
+        // entries filed under the removed chapter fall back to "без главы" rather than
+        // pointing at a chapter name that no longer exists anywhere in the project
+        entries: s.project.entries.map((e) => (e.chapter === name ? { ...e, chapter: undefined } : e)),
+      },
+    }));
     triggerAutosavePulse(set);
   },
 
@@ -491,9 +505,11 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     triggerAutosavePulse(set);
   },
 
-  addDialogueFlag: (name, type = "bool") => {
+  addDialogueFlag: (name, def) => {
     const trimmed = name.trim();
     if (!trimmed) return;
+    const type = def?.type ?? "bool";
+    const fullDef = { type, default: def?.default ?? (type === "bool" ? "false" : "0"), max: def?.max ?? (type === "number" ? 100 : undefined) };
     set((s) =>
       s.project.dialogueFlags.includes(trimmed)
         ? s
@@ -501,17 +517,20 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
             project: {
               ...s.project,
               dialogueFlags: [...s.project.dialogueFlags, trimmed],
-              dialogueFlagTypes: { ...s.project.dialogueFlagTypes, [trimmed]: s.project.dialogueFlagTypes[trimmed] ?? type },
+              dialogueFlagDefs: { ...s.project.dialogueFlagDefs, [trimmed]: s.project.dialogueFlagDefs[trimmed] ?? fullDef },
             },
           }
     );
     triggerAutosavePulse(set);
   },
 
-  setDialogueFlagType: (name, type) => {
-    set((s) => ({
-      project: { ...s.project, dialogueFlagTypes: { ...s.project.dialogueFlagTypes, [name]: type } },
-    }));
+  setDialogueFlagDef: (name, patch) => {
+    set((s) => {
+      const current = s.project.dialogueFlagDefs[name] ?? { type: "bool" as const, default: "false" };
+      return {
+        project: { ...s.project, dialogueFlagDefs: { ...s.project.dialogueFlagDefs, [name]: { ...current, ...patch } } },
+      };
+    });
     triggerAutosavePulse(set);
   },
 
@@ -519,16 +538,16 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const trimmed = newName.trim();
     if (!trimmed || trimmed === oldName) return;
     set((s) => {
-      const nextTypes = { ...s.project.dialogueFlagTypes };
-      if (oldName in nextTypes) {
-        nextTypes[trimmed] = nextTypes[oldName];
-        delete nextTypes[oldName];
+      const nextDefs = { ...s.project.dialogueFlagDefs };
+      if (oldName in nextDefs) {
+        nextDefs[trimmed] = nextDefs[oldName];
+        delete nextDefs[oldName];
       }
       return {
         project: {
           ...s.project,
           dialogueFlags: s.project.dialogueFlags.map((f) => (f === oldName ? trimmed : f)),
-          dialogueFlagTypes: nextTypes,
+          dialogueFlagDefs: nextDefs,
           // keep every condition/flag-set that referenced the old name pointed at the new one
           dialogues: s.project.dialogues.map((d) => ({
             ...d,
@@ -550,10 +569,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
   removeDialogueFlag: (name) => {
     set((s) => {
-      const nextTypes = { ...s.project.dialogueFlagTypes };
-      delete nextTypes[name];
+      const nextDefs = { ...s.project.dialogueFlagDefs };
+      delete nextDefs[name];
       return {
-        project: { ...s.project, dialogueFlags: s.project.dialogueFlags.filter((f) => f !== name), dialogueFlagTypes: nextTypes },
+        project: { ...s.project, dialogueFlags: s.project.dialogueFlags.filter((f) => f !== name), dialogueFlagDefs: nextDefs },
       };
     });
     triggerAutosavePulse(set);

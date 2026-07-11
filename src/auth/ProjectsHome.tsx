@@ -91,7 +91,7 @@ export function ProjectsHome({ onOpen }: { onOpen: (row: ProjectRow) => void }) 
         dialogueFolders: [],
         dialogues: [],
         dialogueFlags: [],
-        dialogueFlagTypes: {},
+        dialogueFlagDefs: {},
         colorStyles: [],
       });
       onOpen(row);

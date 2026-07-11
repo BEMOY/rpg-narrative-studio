@@ -1,10 +1,9 @@
 import { useLayoutEffect, useRef, useState } from "react";
-import { Plus, ZoomIn, ZoomOut, Maximize2, Flag, Palette, Play, FileDown, FileUp, FileCode, Share2 } from "lucide-react";
+import { Plus, ZoomIn, ZoomOut, Maximize2, Palette, Play, FileDown, FileUp, FileCode, Share2 } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { PortalMenu } from "../common/PortalMenu";
 import type { Dialogue } from "../../types/database";
 import { DialogueNodeCard } from "./DialogueNodeCard";
-import { FlagsManagerModal } from "./FlagsManagerModal";
 import { ColorStylesManagerModal } from "./ColorStylesManagerModal";
 import { TestPlayModal } from "./TestPlayModal";
 import { GmlExportModal } from "./GmlExportModal";
@@ -33,7 +32,6 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
   const [zoom, setZoom] = useState(0.85);
   const [pan, setPan] = useState({ x: 60, y: 40 });
   const [, bump] = useState(0);
-  const [flagsOpen, setFlagsOpen] = useState(false);
   const [colorStylesOpen, setColorStylesOpen] = useState(false);
   const [testOpen, setTestOpen] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
@@ -233,9 +231,6 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
         <button onClick={() => setTestOpen(true)} className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md glass hover:bg-[var(--op-10)]">
           <Play size={12} /> Тест
         </button>
-        <button onClick={() => setFlagsOpen(true)} className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md glass hover:bg-[var(--op-10)]">
-          <Flag size={12} /> Флаги
-        </button>
         <button onClick={() => setColorStylesOpen(true)} className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md glass hover:bg-[var(--op-10)]">
           <Palette size={12} /> Стили
         </button>
@@ -385,7 +380,6 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
         ))}
       </datalist>
 
-      {flagsOpen && <FlagsManagerModal onClose={() => setFlagsOpen(false)} />}
       {colorStylesOpen && <ColorStylesManagerModal onClose={() => setColorStylesOpen(false)} />}
       {testOpen && <TestPlayModal dialogue={dialogue} onClose={() => setTestOpen(false)} />}
       {gmlOpen && <GmlExportModal dialogue={dialogue} entries={entries} colorStyles={colorStyles} onClose={() => setGmlOpen(false)} />}

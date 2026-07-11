@@ -197,7 +197,7 @@ function FlagSetRow({
   onRemove: () => void;
 }) {
   const addDialogueFlag = useProjectStore((s) => s.addDialogueFlag);
-  const dialogueFlagTypes = useProjectStore((s) => s.project.dialogueFlagTypes);
+  const dialogueFlagDefs = useProjectStore((s) => s.project.dialogueFlagDefs);
   return (
     <div className="flex items-center gap-1">
       <input
@@ -208,7 +208,7 @@ function FlagSetRow({
         placeholder="флаг"
         className="input text-[11px] py-1 flex-1 min-w-0"
       />
-      <FlagValueInput value={fs.value} onChange={(v) => onChange({ value: v })} className="flex-1" flagType={dialogueFlagTypes[fs.key]} />
+      <FlagValueInput value={fs.value} onChange={(v) => onChange({ value: v })} className="flex-1" flagType={dialogueFlagDefs[fs.key]?.type} />
       <button onClick={onRemove} className="opacity-40 hover:opacity-100 shrink-0">
         <X size={11} />
       </button>
