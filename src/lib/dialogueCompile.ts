@@ -25,7 +25,7 @@
 //  - Quest conditions -> quest_status("<id>") ==/!= "<value>". Entry has/not_has ->
 //    item_has("<id>") / !item_has("<id>"). Flag conditions -> flag_get("<key>") ==/!= <value>.
 
-import type { Dialogue, DialogueChoice, DialogueCondition, DialogueLine, Entry } from "../types/database";
+import type { Dialogue, DialogueChoice, DialogueColorStyle, DialogueCondition, DialogueLine, Entry } from "../types/database";
 
 export function slugify(raw: string): string {
   const cleaned = raw
@@ -304,6 +304,50 @@ export function compileDialogueToLines(dialogue: Dialogue, entries: Entry[]): st
 
   const body = `lines = ${renderPagesArrayLiteral(dialogue.startNodeId, new Set(), 0)};`;
   return header + "\n" + body + "\n";
+}
+
+// ---------------------------------------------------------------------------------
+// colors script — colors_init()-equivalent generated from the project's registered color
+// styles (mirrors global.colors[$ name] = {...}, consumed by the user's own color_lookup() /
+// color_eval() / color_eval_glyph()). [c=name] tags in exported dialogue text just pass the
+// name through as a string, so this script is what actually makes those names resolve in-game.
+// ---------------------------------------------------------------------------------
+
+function gmlColorLiteral(hex: string): string {
+  const h = (hex || "#ffffff").replace("#", "").trim();
+  const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : (h + "ffffff").slice(0, 6);
+  const num = parseInt(full, 16) || 0xffffff;
+  const r = (num >> 16) & 255;
+  const g = (num >> 8) & 255;
+  const b = num & 255;
+  return `make_colour_rgb(${r}, ${g}, ${b})`;
+}
+
+export function compileColorStylesScript(styles: DialogueColorStyle[]): string {
+  const header =
+    "// Сгенерировано RPG Narrative Studio — аналог инициализации global.colors для\n" +
+    "// color_lookup()/color_eval()/color_eval_glyph(). Ключи — это то же имя, что в [c=имя]\n" +
+    "// тегах экспортированных диалогов, так что оба экспорта всегда согласованы.\n\n";
+
+  if (styles.length === 0) {
+    return (
+      header +
+      "function colors_init() {\n" +
+      "    global.colors = {};\n" +
+      "    // Пока нет зарегистрированных стилей — добавьте их в разделе «Стили» редактора диалогов.\n" +
+      "}\n"
+    );
+  }
+
+  const lines = styles.map((s) => {
+    const parts: string[] = [`mode: ${gmlString(s.mode)}`];
+    if (s.mode !== "rainbow") parts.push(`a: ${gmlColorLiteral(s.a)}`);
+    if (s.mode === "gradient" || s.mode === "pulse" || s.mode === "gradient_anim") parts.push(`b: ${gmlColorLiteral(s.b)}`);
+    if (s.mode !== "solid" && s.mode !== "gradient") parts.push(`speed: ${s.speed}`);
+    return `    global.colors[$ ${gmlString(s.name)}] = { ${parts.join(", ")} };`;
+  });
+
+  return header + "function colors_init() {\n    global.colors = {};\n\n" + lines.join("\n") + "\n}\n";
 }
 
 // ---------------------------------------------------------------------------------

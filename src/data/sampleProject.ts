@@ -221,4 +221,5 @@ export const sampleProject: Project = {
   dialogueFolders: [],
   dialogues: [],
   dialogueFlags: [],
+  colorStyles: [],
 };

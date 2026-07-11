@@ -170,6 +170,26 @@ export interface Project {
   dialogueFolders: DialogueFolder[];
   dialogues: Dialogue[];
   dialogueFlags: string[];
+  colorStyles: DialogueColorStyle[];
+}
+
+// Mirrors the real engine's color_lookup()/color_eval()/color_eval_glyph() system
+// (global.colors[$ name] = { mode, a, b, speed }) — confirmed by the user's own pasted GML:
+//  - "solid": always color `a`.
+//  - "gradient": static blend of a->b across the letters of the [c=...] span (no animation).
+//  - "pulse": whole span pulses between a and b together, driven by time only.
+//  - "gradient_anim": blend factor depends on BOTH letter position and time (a moving band).
+//  - "rainbow": built-in HSV cycle depending on letter position + time (no a/b needed).
+// `a`/`b` are stored here as CSS hex so the Studio can preview them; the exporter turns them
+// into make_colour_rgb(r,g,b) when generating a colors_init()-equivalent script.
+export type ColorStyleMode = "solid" | "gradient" | "pulse" | "gradient_anim" | "rainbow";
+
+export interface DialogueColorStyle {
+  name: string; // the key used in [c=name] tags AND in global.colors[$ name]
+  mode: ColorStyleMode;
+  a: string; // CSS hex color
+  b: string; // CSS hex color (ignored for "solid"/"rainbow")
+  speed: number; // matches _spec.speed in color_eval — multiplies current_time
 }
 
 // --- Map Editor (Phase 1) — see docs/13_Asset_System.md / 12_Editors.md conventions ---

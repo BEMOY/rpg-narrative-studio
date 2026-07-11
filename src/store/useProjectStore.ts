@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Category, Dialogue, DialogueChoice, DialogueLine, DialogueNode, Entry, Project } from "../types/database";
+import type { Category, Dialogue, DialogueChoice, DialogueColorStyle, DialogueLine, DialogueNode, Entry, Project } from "../types/database";
 import { sampleProject } from "../data/sampleProject";
 import { saveProjectData } from "../cloud/projects";
 import { createChoice, createDialogue as makeDialogue, createLine, createNode, normalizeDialogue } from "../lib/dialogueDefaults";
@@ -67,6 +67,8 @@ interface ProjectState {
   addDialogueFlag: (name: string) => void;
   renameDialogueFlag: (oldName: string, newName: string) => void;
   removeDialogueFlag: (name: string) => void;
+  setColorStyle: (style: DialogueColorStyle) => void;
+  removeColorStyle: (name: string) => void;
   importDialogue: (dialogue: Dialogue, folderId: string | null) => void;
 }
 
@@ -94,6 +96,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       dialogueFolders: data.dialogueFolders ?? [],
       dialogues: (data.dialogues ?? []).map(normalizeDialogue),
       dialogueFlags: data.dialogueFlags ?? [],
+      colorStyles: data.colorStyles ?? [],
       entries: data.entries.map((e) => ({ ...e, tags: e.tags ?? [], references: e.references ?? [] })),
     };
     set({ projectId: id, project: safe, openTabs: [], activeTabIndex: -1, activeCategory: "all", activeDialogueId: null });
@@ -520,6 +523,26 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     set((s) => ({
       project: { ...s.project, dialogueFlags: s.project.dialogueFlags.filter((f) => f !== name) },
     }));
+    triggerAutosavePulse(set);
+  },
+
+  setColorStyle: (style) => {
+    const trimmed = style.name.trim();
+    if (!trimmed) return;
+    set((s) => {
+      const existing = s.project.colorStyles.findIndex((c) => c.name === trimmed);
+      const next = { ...style, name: trimmed };
+      const colorStyles =
+        existing >= 0
+          ? s.project.colorStyles.map((c, i) => (i === existing ? next : c))
+          : [...s.project.colorStyles, next];
+      return { project: { ...s.project, colorStyles } };
+    });
+    triggerAutosavePulse(set);
+  },
+
+  removeColorStyle: (name) => {
+    set((s) => ({ project: { ...s.project, colorStyles: s.project.colorStyles.filter((c) => c.name !== name) } }));
     triggerAutosavePulse(set);
   },
 

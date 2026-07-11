@@ -6,8 +6,8 @@ import { SearchSelect } from "./SearchSelect";
 import { MarkupText } from "./MarkupText";
 import { PortalMenu } from "../common/PortalMenu";
 import { FlagValueInput } from "./FlagValueInput";
-import type { Dialogue, DialogueChoice, DialogueLine, DialogueNode, DialogueSide } from "../../types/database";
-import { MARKUP_TAGS, NAMED_COLORS } from "../../lib/dialogueMarkup";
+import type { ColorStyleMode, Dialogue, DialogueChoice, DialogueLine, DialogueNode, DialogueSide } from "../../types/database";
+import { MARKUP_TAGS, FALLBACK_COLOR_GUESSES, mixHex } from "../../lib/dialogueMarkup";
 
 // Applies a markup tag around the current selection (or right before it, for "prefix" tags)
 // in a plain <textarea>. Shared between the generic tag-button row and the dedicated color
@@ -49,7 +49,15 @@ function insertMarkup(
   });
 }
 
-const COLOR_PRESETS = Object.keys(NAMED_COLORS);
+
+// Static CSS approximation of a color style for a small swatch button (the real, exact
+// per-glyph/animated rendering only happens in the live line preview and test-play mode,
+// which run the actual color_eval_glyph-equivalent formula against a ticking clock).
+function swatchPreviewStyle(mode: ColorStyleMode, a: string, b: string): React.CSSProperties {
+  if (mode === "solid") return { background: a || "#ffffff" };
+  if (mode === "rainbow") return { backgroundImage: "linear-gradient(90deg, #ff5f6d, #ffc371, #47e0a1, #5b8def, #c56cf0)" };
+  return { backgroundImage: `linear-gradient(90deg, ${a || "#fff"}, ${mixHex(a, b, 0.5)}, ${b || a || "#fff"})` };
+}
 
 function ColorTagButton({
   getEl,
@@ -62,6 +70,7 @@ function ColorTagButton({
 }) {
   const [open, setOpen] = useState(false);
   const btnRef = useRef<HTMLButtonElement>(null);
+  const colorStyles = useProjectStore((s) => s.project.colorStyles);
 
   const apply = (colorName: string) => {
     insertMarkup(getEl(), value, onChange, "c", "wrap", colorName);
@@ -80,20 +89,32 @@ function ColorTagButton({
         <Palette size={9} /> [c=…]
       </button>
       <PortalMenu anchorRef={btnRef} open={open} onClose={() => setOpen(false)}>
-        <div className="w-52 p-2">
-          <div className="text-[10px] uppercase tracking-wider text-[var(--op-35)] mb-1.5">Готовые стили</div>
+        <div className="w-56 p-2">
+          {colorStyles.length > 0 && (
+            <>
+              <div className="text-[10px] uppercase tracking-wider text-[var(--op-35)] mb-1.5">Ваши стили (Стили…)</div>
+              <div className="grid grid-cols-4 gap-1.5 mb-2">
+                {colorStyles.map((c) => (
+                  <button
+                    key={c.name}
+                    onClick={() => apply(c.name)}
+                    title={`${c.name} (${c.mode})`}
+                    className="w-full aspect-square rounded-md border border-[var(--op-15)] hover:scale-105 transition-transform"
+                    style={swatchPreviewStyle(c.mode, c.a, c.b)}
+                  />
+                ))}
+              </div>
+            </>
+          )}
+          <div className="text-[10px] uppercase tracking-wider text-[var(--op-35)] mb-1.5">Примерные (не зарегистрированы)</div>
           <div className="grid grid-cols-4 gap-1.5 mb-2">
-            {COLOR_PRESETS.map((name) => (
+            {Object.keys(FALLBACK_COLOR_GUESSES).map((name) => (
               <button
                 key={name}
                 onClick={() => apply(name)}
                 title={name}
                 className="w-full aspect-square rounded-md border border-[var(--op-15)] hover:scale-105 transition-transform"
-                style={
-                  name === "rainbow"
-                    ? { backgroundImage: "linear-gradient(90deg, #ff5f6d, #ffc371, #47e0a1, #5b8def, #c56cf0)" }
-                    : { background: NAMED_COLORS[name] }
-                }
+                style={{ background: FALLBACK_COLOR_GUESSES[name] }}
               />
             ))}
           </div>
@@ -104,7 +125,7 @@ function ColorTagButton({
               className="w-8 h-8 rounded-md border border-[var(--op-15)] bg-transparent cursor-pointer shrink-0"
               onChange={(e) => apply(e.target.value)}
             />
-            <span className="text-[10px] text-[var(--op-35)]">Выберите — применится к выделению</span>
+            <span className="text-[10px] text-[var(--op-35)]">Выберите — применится к выделению (как обычный сплошной цвет)</span>
           </div>
         </div>
       </PortalMenu>
@@ -114,6 +135,7 @@ function ColorTagButton({
 
 function LineTextEditor({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const ref = useRef<HTMLTextAreaElement>(null);
+  const colorStyles = useProjectStore((s) => s.project.colorStyles);
 
   // Applying an effect: select a range of text first, then click the effect's name — "wrap"
   // tags (wave/shake/c=.../speed) wrap the selection in [tag]...[/tag]; "prefix" (pause, a
@@ -156,7 +178,7 @@ function LineTextEditor({ value, onChange }: { value: string; onChange: (v: stri
       />
       {value.trim() && (
         <div className="mt-1 px-2 py-1.5 rounded bg-black/25 text-[11px] leading-relaxed">
-          <MarkupText text={value} />
+          <MarkupText text={value} styles={colorStyles} />
         </div>
       )}
     </div>

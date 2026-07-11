@@ -1,10 +1,11 @@
 import { useLayoutEffect, useRef, useState } from "react";
-import { Plus, ZoomIn, ZoomOut, Maximize2, Flag, Play, FileDown, FileUp, FileCode, Share2 } from "lucide-react";
+import { Plus, ZoomIn, ZoomOut, Maximize2, Flag, Palette, Play, FileDown, FileUp, FileCode, Share2 } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { PortalMenu } from "../common/PortalMenu";
 import type { Dialogue } from "../../types/database";
 import { DialogueNodeCard } from "./DialogueNodeCard";
 import { FlagsManagerModal } from "./FlagsManagerModal";
+import { ColorStylesManagerModal } from "./ColorStylesManagerModal";
 import { TestPlayModal } from "./TestPlayModal";
 import { GmlExportModal } from "./GmlExportModal";
 
@@ -21,6 +22,7 @@ type AnchorKey = string; // "in:<nodeId>" | "cont:<nodeId>" | "choice:<choiceId>
 export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
   const dialogueFlags = useProjectStore((s) => s.project.dialogueFlags);
   const entries = useProjectStore((s) => s.project.entries);
+  const colorStyles = useProjectStore((s) => s.project.colorStyles);
   const updateDialogueNode = useProjectStore((s) => s.updateDialogueNode);
   const addDialogueNode = useProjectStore((s) => s.addDialogueNode);
   const setDialogueStartNode = useProjectStore((s) => s.setDialogueStartNode);
@@ -32,6 +34,7 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
   const [pan, setPan] = useState({ x: 60, y: 40 });
   const [, bump] = useState(0);
   const [flagsOpen, setFlagsOpen] = useState(false);
+  const [colorStylesOpen, setColorStylesOpen] = useState(false);
   const [testOpen, setTestOpen] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const [gmlOpen, setGmlOpen] = useState(false);
@@ -233,6 +236,9 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
         <button onClick={() => setFlagsOpen(true)} className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md glass hover:bg-[var(--op-10)]">
           <Flag size={12} /> Флаги
         </button>
+        <button onClick={() => setColorStylesOpen(true)} className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md glass hover:bg-[var(--op-10)]">
+          <Palette size={12} /> Стили
+        </button>
         <div className="relative">
           <input ref={importInputRef} type="file" accept="application/json,.json" className="hidden" onChange={(e) => importJson(e.target.files?.[0])} />
           <button
@@ -380,8 +386,9 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
       </datalist>
 
       {flagsOpen && <FlagsManagerModal onClose={() => setFlagsOpen(false)} />}
+      {colorStylesOpen && <ColorStylesManagerModal onClose={() => setColorStylesOpen(false)} />}
       {testOpen && <TestPlayModal dialogue={dialogue} onClose={() => setTestOpen(false)} />}
-      {gmlOpen && <GmlExportModal dialogue={dialogue} entries={entries} onClose={() => setGmlOpen(false)} />}
+      {gmlOpen && <GmlExportModal dialogue={dialogue} entries={entries} colorStyles={colorStyles} onClose={() => setGmlOpen(false)} />}
     </div>
   );
 }

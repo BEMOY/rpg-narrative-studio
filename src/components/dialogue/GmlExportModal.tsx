@@ -1,23 +1,26 @@
 import { useMemo, useRef, useState } from "react";
 import { X, Copy, Check, Download, TriangleAlert } from "lucide-react";
-import type { Dialogue, Entry } from "../../types/database";
-import { compileDialogueToGML, compileDialogueToLines, compileSpeakersScript } from "../../lib/dialogueCompile";
+import type { Dialogue, DialogueColorStyle, Entry } from "../../types/database";
+import { compileDialogueToGML, compileDialogueToLines, compileSpeakersScript, compileColorStylesScript } from "../../lib/dialogueCompile";
 
-type Mode = "register" | "lines" | "speakers";
+type Mode = "register" | "lines" | "speakers" | "colors";
 
 const MODE_LABEL: Record<Mode, string> = {
   register: "dialogue_register",
   lines: "lines = [...]",
   speakers: "speakers-скрипт",
+  colors: "colors-скрипт",
 };
 
 export function GmlExportModal({
   dialogue,
   entries,
+  colorStyles,
   onClose,
 }: {
   dialogue: Dialogue;
   entries: Entry[];
+  colorStyles: DialogueColorStyle[];
   onClose: () => void;
 }) {
   const [mode, setMode] = useState<Mode>("register");
@@ -56,12 +59,14 @@ export function GmlExportModal({
           ? compileDialogueToGML(dialogue, entries)
           : mode === "lines"
           ? compileDialogueToLines(dialogue, entries)
-          : compileSpeakersScript(entries);
+          : mode === "speakers"
+          ? compileSpeakersScript(entries)
+          : compileColorStylesScript(colorStyles);
       return { code: c, error: null as string | null };
     } catch (e: any) {
       return { code: "", error: e?.message ?? String(e) };
     }
-  }, [mode, dialogue, entries]);
+  }, [mode, dialogue, entries, colorStyles]);
 
   const copy = async () => {
     try {
@@ -73,7 +78,8 @@ export function GmlExportModal({
     }
   };
 
-  const fileBase = mode === "speakers" ? "speakers_init" : dialogue.name.replace(/[^\w\-а-яА-Я ]/g, "_");
+  const fileBase =
+    mode === "speakers" ? "speakers_init" : mode === "colors" ? "colors_init" : dialogue.name.replace(/[^\w\-а-яА-Я ]/g, "_");
   const download = () => {
     const blob = new Blob([code], { type: "text/plain" });
     const url = URL.createObjectURL(blob);
@@ -141,6 +147,8 @@ export function GmlExportModal({
               <div>
                 {mode === "speakers"
                   ? "Плейсхолдеры для пустых полей — замените спрайты/звуки на свои GameMaker-ассеты."
+                  : mode === "colors"
+                  ? "Цвета экспортируются через make_colour_rgb(...) — точное совпадение с любым hex, никаких догадок."
                   : "Проверьте вручную: ключи спикеров должны совпадать с вашим speaker_define(), а id квестов/объектов — с тем, что принимают ваши quest_status()/item_has()."}
               </div>
             </div>

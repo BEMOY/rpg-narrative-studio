@@ -22,6 +22,7 @@ const BASE_MS_PER_CHAR = 26;
 
 export function TestPlayModal({ dialogue, onClose }: { dialogue: Dialogue; onClose: () => void }) {
   const entries = useProjectStore((s) => s.project.entries);
+  const colorStyles = useProjectStore((s) => s.project.colorStyles);
   const [nodeId, setNodeId] = useState(dialogue.startNodeId);
   const [lineIdx, setLineIdx] = useState(0);
   const [state, setState] = useState<DialogueTestState>({ flags: {}, entryFlags: {} });
@@ -220,7 +221,7 @@ export function TestPlayModal({ dialogue, onClose }: { dialogue: Dialogue; onClo
                   >
                     {currentLine ? (
                       <>
-                        <MarkupText text={currentLine.text} revealCount={revealCount} />
+                        <MarkupText text={currentLine.text} revealCount={revealCount} styles={colorStyles} />
                         {phase === "done" && <span className="dlg-caret ml-1 inline-block text-[var(--op-40)]">▾</span>}
                       </>
                     ) : (
