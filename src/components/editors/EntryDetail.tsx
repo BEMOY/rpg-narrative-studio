@@ -235,12 +235,14 @@ function LocationMapBlock({ entry }: { entry: Entry }) {
       </div>
       {editorOpen && <MapEditorModal entry={entry} onClose={() => setEditorOpen(false)} />}
 
-      <div className="text-[10px] text-[var(--op-30)] mb-2">Или прикрепите готовую картинку карты:</div>
+      <div className="text-[10px] uppercase tracking-wider text-[var(--op-30)] mb-2 pt-1 border-t border-[var(--op-7)]">
+        Обложка картой (необязательно) — отдельная картинка поверх превью, если не хотите показывать карту из редактора
+      </div>
       <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => onFile(e.target.files?.[0])} />
       {entry.mapImage ? (
         <div className="space-y-2">
           <div className="rounded-lg overflow-hidden border border-[var(--op-10)]">
-            <img src={entry.mapImage} alt="Карта" className="w-full max-h-[360px] object-contain bg-[var(--op-5)]" />
+            <img src={entry.mapImage} alt="Обложка" className="w-full max-h-[360px] object-contain bg-[var(--op-5)]" />
           </div>
           <div className="flex gap-2">
             <button
@@ -248,7 +250,7 @@ function LocationMapBlock({ entry }: { entry: Entry }) {
               disabled={busy}
               className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md glass hover:bg-[var(--op-10)] disabled:opacity-50"
             >
-              <Upload size={12} /> {busy ? "Загрузка…" : "Заменить карту"}
+              <Upload size={12} /> {busy ? "Загрузка…" : "Заменить обложку"}
             </button>
             <button
               onClick={() => updateEntry(entry.id, { mapImage: undefined })}
@@ -262,10 +264,10 @@ function LocationMapBlock({ entry }: { entry: Entry }) {
         <button
           onClick={() => fileRef.current?.click()}
           disabled={busy}
-          className="w-full rounded-lg border border-dashed border-[var(--op-15)] py-10 flex flex-col items-center justify-center gap-2 text-[var(--op-30)] hover:text-[var(--op-60)] hover:border-[var(--op-30)] transition-colors"
+          className="w-full rounded-lg border border-dashed border-[var(--op-15)] py-4 flex items-center justify-center gap-2 text-[var(--op-30)] hover:text-[var(--op-60)] hover:border-[var(--op-30)] transition-colors"
         >
-          <MapIcon size={24} />
-          <span className="text-sm">{busy ? "Загрузка…" : "Карта пока пустая — создать карту"}</span>
+          <Upload size={14} />
+          <span className="text-xs">{busy ? "Загрузка…" : "Обложка не задана — загрузить картинку"}</span>
         </button>
       )}
     </Block>

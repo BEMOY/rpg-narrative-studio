@@ -1,4 +1,4 @@
-import type { MapData, MapFreehandLayer, MapObjectLayer, MapPaletteColor, MapTileLayer, MapZoneLayer } from "../types/database";
+import type { MapData, MapFreehandLayer, MapImageLayer, MapObjectLayer, MapPaletteColor, MapTileLayer, MapZoneLayer } from "../types/database";
 
 export function cellKey(x: number, y: number): string {
   return `${x}:${y}`;
@@ -76,6 +76,10 @@ export function normalizeMap(raw: MapData): MapData {
 
 export function createFreehandLayer(): MapFreehandLayer {
   return { id: nextId("layer"), kind: "freehand", name: "Рисование", visible: true, locked: false, opacity: 1, bitmap: null };
+}
+
+export function createImageLayer(): MapImageLayer {
+  return { id: nextId("layer"), kind: "image", name: "Картинки", visible: true, locked: false, opacity: 1, images: [] };
 }
 
 export const ZONE_TAGS: { tag: string; label: string; color: string }[] = [

@@ -12,7 +12,7 @@ export function Inspector() {
   const entry = activeTab ? entries.find((e) => e.id === activeTab.id) : undefined;
 
   return (
-    <div className="w-[360px] glass shrink-0 flex flex-col overflow-hidden">
+    <div className="w-full h-full glass flex flex-col overflow-hidden">
       <div className="flex border-b border-[var(--op-10)] text-xs">
         {TABS.map((t) => (
           <button

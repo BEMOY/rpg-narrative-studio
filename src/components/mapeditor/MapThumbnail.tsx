@@ -54,6 +54,16 @@ export function MapThumbnail({ map, entries }: { map: MapData; entries: Entry[] 
           );
         }
 
+        if (layer.kind === "image") {
+          return (
+            <g key={layer.id} opacity={layer.opacity}>
+              {layer.images.map((im) => (
+                <image key={im.id} href={im.src} x={im.x} y={im.y} width={im.w} height={im.h} preserveAspectRatio="xMidYMid meet" />
+              ))}
+            </g>
+          );
+        }
+
         if (layer.kind === "object") {
           return (
             <g key={layer.id} opacity={layer.opacity}>
@@ -90,6 +100,7 @@ export function mapHasContent(map: MapData | undefined): boolean {
     if (l.kind === "object") return l.objects.length > 0;
     if (l.kind === "zone") return l.zones.length > 0;
     if (l.kind === "freehand") return Boolean(l.bitmap);
+    if (l.kind === "image") return l.images.length > 0;
     return false;
   });
 }

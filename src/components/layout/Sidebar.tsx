@@ -24,7 +24,7 @@ export function Sidebar() {
   const isActive = (c: Category | "all") => activeTabIndex === -1 && activeCategory === c;
 
   return (
-    <div className="w-[280px] glass shrink-0 flex flex-col overflow-hidden">
+    <div className="w-full h-full glass flex flex-col overflow-hidden">
       <div className="px-3 py-3 text-xs uppercase tracking-wider text-[var(--op-35)]">Database</div>
       <div className="flex-1 overflow-y-auto px-2 pb-4 space-y-0.5">
         <button

@@ -18,8 +18,11 @@ import {
   Unlock,
   Plus,
   Trash2,
-  Download,
+  Share2,
+  FileDown,
+  FileUp,
   Search,
+  Image as ImageIcon,
   ChevronUp,
   ChevronDown,
   Grid3x3,
@@ -30,6 +33,8 @@ import type {
   Entry,
   MapData,
   MapFreehandLayer,
+  MapImageInstance,
+  MapImageLayer,
   MapLayer,
   MapObjectInstance,
   MapObjectLayer,
@@ -39,10 +44,21 @@ import type {
 } from "../../types/database";
 import { CAT_COLOR, CAT_LABEL, CAT_ORDER } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
-import { cellKey, createDefaultMap, createFreehandLayer, nextId, normalizeMap, parseCellKey, ZONE_TAGS } from "../../lib/mapDefaults";
+import { resizeImageFile } from "../../lib/image";
+import { ResizablePanel } from "../common/ResizablePanel";
+import {
+  cellKey,
+  createDefaultMap,
+  createFreehandLayer,
+  createImageLayer,
+  nextId,
+  normalizeMap,
+  parseCellKey,
+  ZONE_TAGS,
+} from "../../lib/mapDefaults";
 
 type Tool = "paint" | "erase" | "fill" | "zone" | "select" | "draw" | "pan";
-type Selection = { kind: "object"; id: string } | { kind: "zone"; id: string } | null;
+type Selection = { kind: "object"; id: string } | { kind: "zone"; id: string } | { kind: "image"; id: string } | null;
 type Rect = { x: number; y: number; w: number; h: number };
 
 const MAX_HISTORY = 50;
@@ -65,12 +81,16 @@ function isZone(l: MapLayer): l is MapZoneLayer {
 function isFreehand(l: MapLayer): l is MapFreehandLayer {
   return l.kind === "freehand";
 }
+function isImageLayer(l: MapLayer): l is MapImageLayer {
+  return l.kind === "image";
+}
 
 const LAYER_KIND_LABEL: Record<MapLayer["kind"], string> = {
   tile: "Тайлы",
   object: "Объекты",
   zone: "Зоны",
   freehand: "Рисование",
+  image: "Картинки",
 };
 
 export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () => void }) {
@@ -102,6 +122,13 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
   const [renameDraft, setRenameDraft] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [addColorDraft, setAddColorDraft] = useState({ color: "#888888", label: "" });
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const importInputRef = useRef<HTMLInputElement>(null);
+  const [addLayerMenuOpen, setAddLayerMenuOpen] = useState(false);
+  const imageUploadRef = useRef<HTMLInputElement>(null);
+  const [imageUploadBusy, setImageUploadBusy] = useState(false);
+  const imageDragRef = useRef<{ id: string; startClientX: number; startClientY: number; startX: number; startY: number } | null>(null);
+  const imageResizeRef = useRef<{ id: string; startClientX: number; startClientY: number; startW: number; startH: number } | null>(null);
 
   const stageRef = useRef<HTMLDivElement>(null);
   const freehandCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -187,6 +214,11 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
     if (active && isFreehand(active)) return active;
     return map.layers.find(isFreehand);
   };
+  const effectiveImageLayer = (): MapImageLayer | undefined => {
+    const active = findLayer(activeLayerId);
+    if (active && isImageLayer(active)) return active;
+    return map.layers.find(isImageLayer);
+  };
 
   const addLayer = (kind: MapLayer["kind"]) => {
     setMap((prev) => {
@@ -198,7 +230,8 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
         layer = { id: nextId("layer"), kind: "object", name: `Объекты ${count}`, visible: true, locked: false, opacity: 1, objects: [] };
       else if (kind === "zone")
         layer = { id: nextId("layer"), kind: "zone", name: `Зоны ${count}`, visible: true, locked: false, opacity: 0.5, zones: [] };
-      else layer = { ...createFreehandLayer(), name: `Рисование ${count}` };
+      else if (kind === "freehand") layer = { ...createFreehandLayer(), name: `Рисование ${count}` };
+      else layer = { ...createImageLayer(), name: `Картинки ${count}` };
       next.layers.push(layer);
       setActiveLayerId(layer.id);
       return next;
@@ -261,6 +294,39 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
   // ---- canvas settings ----
   const resizeCanvas = (patch: Partial<Pick<MapData, "width" | "height" | "gridSize">>) => {
     setMap((prev) => ({ ...cloneMap(prev), ...patch }), false);
+  };
+
+  // ---- image layer ----
+  const uploadImage = async (file: File | undefined) => {
+    if (!file) return;
+    const layer = effectiveImageLayer();
+    if (!layer || layer.locked) return;
+    setImageUploadBusy(true);
+    try {
+      const dataUrl = await resizeImageFile(file);
+      const w = Math.min(6, map.width / 2);
+      const h = w;
+      const inst: MapImageInstance = {
+        id: nextId("img"),
+        src: dataUrl,
+        x: Math.max(0, map.width / 2 - w / 2),
+        y: Math.max(0, map.height / 2 - h / 2),
+        w,
+        h,
+      };
+      snapshot();
+      setMapState((prev) => {
+        const next = cloneMap(prev);
+        const l = next.layers.find((x) => x.id === layer.id);
+        if (l && isImageLayer(l)) l.images.push(inst);
+        return next;
+      });
+      setSelection({ kind: "image", id: inst.id });
+    } catch {
+      alert("Не удалось загрузить картинку — попробуйте другой файл.");
+    } finally {
+      setImageUploadBusy(false);
+    }
   };
 
   // ---- geometry ----
@@ -492,6 +558,38 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
           }
           return next;
         }, false);
+        return;
+      }
+      if (imageDragRef.current) {
+        const d = imageDragRef.current;
+        const dx = (e.clientX - d.startClientX) / (map.gridSize * zoom);
+        const dy = (e.clientY - d.startClientY) / (map.gridSize * zoom);
+        setMap((prev) => {
+          const next = cloneMap(prev);
+          const l = next.layers.find((x) => x.id === effectiveImageLayer()?.id);
+          const img = l && isImageLayer(l) ? l.images.find((im) => im.id === d.id) : undefined;
+          if (img) {
+            img.x = d.startX + dx;
+            img.y = d.startY + dy;
+          }
+          return next;
+        }, false);
+        return;
+      }
+      if (imageResizeRef.current) {
+        const d = imageResizeRef.current;
+        const dw = (e.clientX - d.startClientX) / (map.gridSize * zoom);
+        const dh = (e.clientY - d.startClientY) / (map.gridSize * zoom);
+        setMap((prev) => {
+          const next = cloneMap(prev);
+          const l = next.layers.find((x) => x.id === effectiveImageLayer()?.id);
+          const img = l && isImageLayer(l) ? l.images.find((im) => im.id === d.id) : undefined;
+          if (img) {
+            img.w = Math.max(0.3, d.startW + dw);
+            img.h = Math.max(0.3, d.startH + dh);
+          }
+          return next;
+        }, false);
       }
     };
     const onUp = () => {
@@ -499,6 +597,8 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
       paintingRef.current = false;
       objectDragRef.current = null;
       zoneDragRef.current = null;
+      imageDragRef.current = null;
+      imageResizeRef.current = null;
 
       if (zoneDrawRef.current && draftZoneRect) {
         const tag = zoneTag;
@@ -625,9 +725,12 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
       if (selection.kind === "object") {
         const l = next.layers.find(isObject);
         if (l) l.objects = l.objects.filter((o) => o.id !== selection.id);
-      } else {
+      } else if (selection.kind === "zone") {
         const l = next.layers.find(isZone);
         if (l) l.zones = l.zones.filter((z) => z.id !== selection.id);
+      } else if (selection.kind === "image") {
+        const l = next.layers.find(isImageLayer);
+        if (l) l.images = l.images.filter((im) => im.id !== selection.id);
       }
       return next;
     });
@@ -642,12 +745,36 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
     a.download = `${entry.id}_map.json`;
     a.click();
     URL.revokeObjectURL(url);
+    setExportMenuOpen(false);
+  };
+
+  const importJson = async (file: File | undefined) => {
+    if (!file) return;
+    setExportMenuOpen(false);
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.layers) || typeof parsed.width !== "number" || typeof parsed.height !== "number") {
+        throw new Error("shape");
+      }
+      if (!confirm("Импорт заменит текущую карту этим файлом. Продолжить? (можно будет отменить через Undo)")) return;
+      const imported = normalizeMap(parsed as MapData);
+      snapshot();
+      setMapState(imported);
+      setActiveLayerId(imported.layers[0]?.id ?? "");
+      setSelection(null);
+      setSelectionRect(null);
+    } catch {
+      alert("Не удалось прочитать файл — это должен быть JSON, экспортированный из этого редактора карт.");
+    }
   };
 
   const objLayerForRender = map.layers.find(isObject);
   const selectedObject = selection?.kind === "object" ? objLayerForRender?.objects.find((o) => o.id === selection.id) : undefined;
   const znLayerForSel = map.layers.find(isZone);
   const selectedZone = selection?.kind === "zone" ? znLayerForSel?.zones.find((z) => z.id === selection.id) : undefined;
+  const imgLayerForSel = map.layers.find(isImageLayer);
+  const selectedImage = selection?.kind === "image" ? imgLayerForSel?.images.find((im) => im.id === selection.id) : undefined;
 
   const filteredEntries = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -703,12 +830,44 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
             <ZoomIn size={14} />
           </button>
           <div className="w-px h-5 bg-[var(--op-10)] mx-1" />
-          <button
-            onClick={exportJson}
-            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md glass hover:bg-[var(--op-10)]"
-          >
-            <Download size={12} /> Экспорт JSON
-          </button>
+          <div className="relative">
+            <input
+              ref={importInputRef}
+              type="file"
+              accept="application/json,.json"
+              className="hidden"
+              onChange={(e) => importJson(e.target.files?.[0])}
+            />
+            <button
+              onClick={() => setExportMenuOpen((v) => !v)}
+              title="Экспорт / импорт карты"
+              className={`w-8 h-8 grid place-items-center rounded-md hover:bg-[var(--op-10)] ${exportMenuOpen ? "text-accent" : "text-[var(--op-50)]"}`}
+            >
+              <Share2 size={15} />
+            </button>
+            {exportMenuOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setExportMenuOpen(false)} />
+                <div className="absolute right-0 top-10 z-50 w-48 glass rounded-lg p-1.5 space-y-0.5 shadow-xl">
+                  <button
+                    onClick={exportJson}
+                    className="w-full flex items-center gap-2 px-2.5 py-2 rounded-md text-sm text-[var(--op-80)] hover:bg-[var(--op-7)]"
+                  >
+                    <FileDown size={14} /> Экспорт JSON
+                  </button>
+                  <button
+                    onClick={() => {
+                      setExportMenuOpen(false);
+                      importInputRef.current?.click();
+                    }}
+                    className="w-full flex items-center gap-2 px-2.5 py-2 rounded-md text-sm text-[var(--op-80)] hover:bg-[var(--op-7)]"
+                  >
+                    <FileUp size={14} /> Импорт JSON
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
           <button onClick={onClose} className="w-8 h-8 grid place-items-center rounded-md hover:bg-[var(--op-10)] ml-1">
             <X size={16} />
           </button>
@@ -754,7 +913,8 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
 
         <div className="flex-1 flex overflow-hidden">
           {/* Left rail: tools + layers + palette */}
-          <div className="w-[250px] border-r border-[var(--op-10)] flex flex-col overflow-y-auto shrink-0">
+          <ResizablePanel panelKey="map-editor-left" side="left" defaultWidth={250} min={180} max={420}>
+          <div className="border-r border-[var(--op-10)] flex flex-col overflow-y-auto h-full">
             <div className="p-3 border-b border-[var(--op-10)]">
               <div className="text-xs uppercase tracking-wider text-[var(--op-35)] mb-2">Инструмент</div>
               <div className="grid grid-cols-4 gap-1.5">
@@ -867,25 +1027,67 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
                   очистить.
                 </div>
               )}
+
+              {activeLayer && isImageLayer(activeLayer) && (
+                <div className="mt-3 space-y-2">
+                  <input
+                    ref={imageUploadRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(e) => uploadImage(e.target.files?.[0])}
+                  />
+                  <button
+                    onClick={() => imageUploadRef.current?.click()}
+                    disabled={imageUploadBusy}
+                    className="w-full flex items-center justify-center gap-1.5 text-xs px-3 py-1.5 rounded-md glass hover:bg-[var(--op-10)] disabled:opacity-50"
+                  >
+                    <ImageIcon size={12} /> {imageUploadBusy ? "Загрузка…" : "Добавить картинку"}
+                  </button>
+                  <div className="text-[10px] text-[var(--op-30)] leading-relaxed">
+                    Картинка не привязана к сетке — тяните за неё, чтобы двигать, и за уголок, чтобы менять размер.
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="p-3 border-b border-[var(--op-10)]">
-              <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center justify-between mb-2 relative">
                 <div className="text-xs uppercase tracking-wider text-[var(--op-35)]">Слои</div>
-                <div className="flex items-center gap-1">
-                  <button onClick={() => addLayer("tile")} title="Добавить слой тайлов" className="opacity-50 hover:opacity-100 text-[10px] px-1">
-                    +Тайлы
-                  </button>
-                  <button onClick={() => addLayer("object")} title="Добавить слой объектов" className="opacity-50 hover:opacity-100 text-[10px] px-1">
-                    +Объекты
-                  </button>
-                  <button onClick={() => addLayer("zone")} title="Добавить слой зон" className="opacity-50 hover:opacity-100 text-[10px] px-1">
-                    +Зоны
-                  </button>
-                  <button onClick={() => addLayer("freehand")} title="Добавить слой рисования" className="opacity-50 hover:opacity-100 text-[10px] px-1">
-                    +Рис.
-                  </button>
-                </div>
+                <button
+                  onClick={() => setAddLayerMenuOpen((v) => !v)}
+                  className="opacity-60 hover:opacity-100 text-[var(--op-60)]"
+                  title="Добавить слой"
+                >
+                  <Plus size={13} />
+                </button>
+                {addLayerMenuOpen && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setAddLayerMenuOpen(false)} />
+                    <div className="absolute right-0 top-6 z-50 w-40 glass rounded-lg p-1 space-y-0.5 shadow-xl">
+                      {(
+                        [
+                          ["tile", "Слой тайлов"],
+                          ["object", "Слой объектов"],
+                          ["zone", "Слой зон"],
+                          ["freehand", "Слой рисования"],
+                          ["image", "Слой картинок"],
+                        ] as [MapLayer["kind"], string][]
+                      ).map(([kind, label]) => (
+                        <button
+                          key={kind}
+                          onClick={() => {
+                            addLayer(kind);
+                            setAddLayerMenuOpen(false);
+                          }}
+                          className="w-full text-left px-2 py-1.5 rounded-md text-xs text-[var(--op-70)] hover:bg-[var(--op-7)]"
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
               </div>
               <div className="space-y-1">
                 {[...map.layers].reverse().map((l, revIdx) => {
@@ -1044,6 +1246,7 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
               </div>
             </div>
           </div>
+          </ResizablePanel>
 
           {/* Canvas viewport */}
           <div
@@ -1220,6 +1423,60 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
                     />
                   ) : null;
                 }
+
+                if (isImageLayer(layer)) {
+                  return (
+                    <div key={layer.id} style={{ position: "absolute", inset: 0, opacity: layer.opacity }}>
+                      {layer.images.map((img) => (
+                        <div
+                          key={img.id}
+                          onMouseDown={(e) => {
+                            e.stopPropagation();
+                            if (layer.locked) return;
+                            setActiveLayerId(layer.id);
+                            setSelection({ kind: "image", id: img.id });
+                            imageDragRef.current = { id: img.id, startClientX: e.clientX, startClientY: e.clientY, startX: img.x, startY: img.y };
+                            snapshot();
+                          }}
+                          style={{
+                            position: "absolute",
+                            left: img.x * map.gridSize,
+                            top: img.y * map.gridSize,
+                            width: img.w * map.gridSize,
+                            height: img.h * map.gridSize,
+                            border: selection?.kind === "image" && selection.id === img.id ? "2px solid white" : "1px solid rgba(0,0,0,0.25)",
+                            cursor: layer.locked ? "default" : "grab",
+                            boxShadow: "0 1px 6px rgba(0,0,0,0.35)",
+                          }}
+                        >
+                          <img src={img.src} alt="" draggable={false} style={{ width: "100%", height: "100%", objectFit: "contain", pointerEvents: "none" }} />
+                          {!layer.locked && (
+                            <div
+                              onMouseDown={(e) => {
+                                e.stopPropagation();
+                                setActiveLayerId(layer.id);
+                                setSelection({ kind: "image", id: img.id });
+                                imageResizeRef.current = { id: img.id, startClientX: e.clientX, startClientY: e.clientY, startW: img.w, startH: img.h };
+                                snapshot();
+                              }}
+                              style={{
+                                position: "absolute",
+                                right: -4,
+                                bottom: -4,
+                                width: 10,
+                                height: 10,
+                                borderRadius: 3,
+                                background: "white",
+                                border: "1px solid rgba(0,0,0,0.4)",
+                                cursor: "nwse-resize",
+                              }}
+                            />
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  );
+                }
                 return null;
               })}
 
@@ -1256,7 +1513,8 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
           </div>
 
           {/* Right rail: properties */}
-          <div className="w-[260px] border-l border-[var(--op-10)] overflow-y-auto shrink-0 p-3">
+          <ResizablePanel panelKey="map-editor-right" side="right" defaultWidth={260} min={200} max={440}>
+          <div className="border-l border-[var(--op-10)] overflow-y-auto h-full p-3">
             {!selection && !selectionRect && (
               <div className="text-xs text-[var(--op-30)] leading-relaxed">
                 Кликните объект или зону на карте, чтобы отредактировать свойства. Перетащите запись слева, чтобы разместить её как
@@ -1313,7 +1571,25 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
                 onDelete={deleteSelection}
               />
             )}
+
+            {selectedImage && (
+              <ImageProperties
+                key={selectedImage.id}
+                image={selectedImage}
+                onChange={(patch) =>
+                  setMap((prev) => {
+                    const next = cloneMap(prev);
+                    const l = next.layers.find(isImageLayer);
+                    const im = l?.images.find((x) => x.id === selectedImage.id);
+                    if (im) Object.assign(im, patch);
+                    return next;
+                  }, false)
+                }
+                onDelete={deleteSelection}
+              />
+            )}
           </div>
+          </ResizablePanel>
         </div>
       </div>
     </div>
@@ -1496,6 +1772,76 @@ function ZoneProperties({
         className="w-full flex items-center justify-center gap-1.5 text-xs px-3 py-1.5 rounded-md border border-red-500/30 text-red-300 hover:bg-red-500/10"
       >
         <Trash2 size={12} /> Удалить зону
+      </button>
+    </div>
+  );
+}
+
+function ImageProperties({
+  image,
+  onChange,
+  onDelete,
+}: {
+  image: MapImageInstance;
+  onChange: (patch: Partial<MapImageInstance>) => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="text-xs uppercase tracking-wider text-[var(--op-35)]">Картинка</div>
+      <div className="rounded-md overflow-hidden border border-[var(--op-10)] bg-[var(--op-5)]">
+        <img src={image.src} alt="" className="w-full max-h-32 object-contain" />
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <label className="text-xs text-[var(--op-40)]">
+          X
+          <input
+            type="number"
+            step={0.1}
+            className="input mt-1"
+            value={Math.round(image.x * 100) / 100}
+            onChange={(e) => onChange({ x: Number(e.target.value) })}
+          />
+        </label>
+        <label className="text-xs text-[var(--op-40)]">
+          Y
+          <input
+            type="number"
+            step={0.1}
+            className="input mt-1"
+            value={Math.round(image.y * 100) / 100}
+            onChange={(e) => onChange({ y: Number(e.target.value) })}
+          />
+        </label>
+        <label className="text-xs text-[var(--op-40)]">
+          Ширина
+          <input
+            type="number"
+            step={0.1}
+            min={0.3}
+            className="input mt-1"
+            value={Math.round(image.w * 100) / 100}
+            onChange={(e) => onChange({ w: Math.max(0.3, Number(e.target.value)) })}
+          />
+        </label>
+        <label className="text-xs text-[var(--op-40)]">
+          Высота
+          <input
+            type="number"
+            step={0.1}
+            min={0.3}
+            className="input mt-1"
+            value={Math.round(image.h * 100) / 100}
+            onChange={(e) => onChange({ h: Math.max(0.3, Number(e.target.value)) })}
+          />
+        </label>
+      </div>
+      <div className="text-[10px] text-[var(--op-30)]">Не привязано к сетке — можно тянуть и менять размер прямо на холсте.</div>
+      <button
+        onClick={onDelete}
+        className="w-full flex items-center justify-center gap-1.5 text-xs px-3 py-1.5 rounded-md border border-red-500/30 text-red-300 hover:bg-red-500/10"
+      >
+        <Trash2 size={12} /> Удалить картинку
       </button>
     </div>
   );

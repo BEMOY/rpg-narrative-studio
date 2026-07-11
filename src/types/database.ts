@@ -204,7 +204,23 @@ export interface MapFreehandLayer extends MapLayerBase {
   bitmap: string | null; // data URL (PNG), full canvas size (width*gridSize x height*gridSize at creation time)
 }
 
-export type MapLayer = MapTileLayer | MapObjectLayer | MapZoneLayer | MapFreehandLayer;
+// Freely placed/resized pictures (decorations, backgrounds, reference art) — position and size
+// are stored in fractional cell units so they are NOT locked to the grid like tile/object layers.
+export interface MapImageInstance {
+  id: string;
+  src: string; // data URL
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface MapImageLayer extends MapLayerBase {
+  kind: "image";
+  images: MapImageInstance[];
+}
+
+export type MapLayer = MapTileLayer | MapObjectLayer | MapZoneLayer | MapFreehandLayer | MapImageLayer;
 
 export interface MapPaletteColor {
   color: string;
