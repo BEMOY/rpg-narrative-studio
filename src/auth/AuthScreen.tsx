@@ -1,18 +1,36 @@
 import { useState } from "react";
 import { KeyRound } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
+import { isValidUsername, normalizeUsername, usernameToEmail } from "../lib/username";
+
+function extractMessage(err: any): string {
+  // Supabase/PostgREST errors show up in different shapes depending on where they failed —
+  // try every field before giving up, and log the raw thing so it's inspectable in devtools.
+  console.error("auth error:", err);
+  const msg = err?.message || err?.error_description || err?.msg || err?.error || "";
+  if (msg) return String(msg);
+  try {
+    const s = JSON.stringify(err);
+    return s && s !== "{}" ? s : "Неизвестная ошибка (см. консоль браузера, F12 → Console).";
+  } catch {
+    return "Неизвестная ошибка (см. консоль браузера, F12 → Console).";
+  }
+}
 
 function friendlyError(message: string): string {
   if (message.includes("invalid_or_used_invite")) return "Код приглашения неверный или уже использован.";
   if (message.includes("invite_required")) return "Нужен код приглашения.";
-  if (message.includes("Invalid login credentials")) return "Неверный email или пароль.";
-  if (message.includes("User already registered")) return "Такой email уже зарегистрирован — войдите вместо регистрации.";
+  if (message.includes("Invalid login credentials")) return "Неверный ник или пароль.";
+  if (message.includes("User already registered") || message.includes("already registered"))
+    return "Такой ник уже занят — войдите вместо регистрации.";
+  if (message.includes("Email not confirmed")) return "Аккаунт создан, но подтверждение email включено на сервере — отключите его в Supabase (Authentication → Sign In / Providers → Email → Confirm email = off) и попробуйте войти снова.";
+  if (message.includes("Password should be")) return "Пароль слишком простой/короткий (минимум 6 символов).";
   return message;
 }
 
 export function AuthScreen() {
   const [mode, setMode] = useState<"signin" | "signup">("signin");
-  const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [inviteCode, setInviteCode] = useState("");
   const [loading, setLoading] = useState(false);
@@ -21,9 +39,16 @@ export function AuthScreen() {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
     setError(null);
     setInfo(null);
+
+    if (!isValidUsername(username)) {
+      setError("Ник должен быть от 3 до 32 символов (латиница, цифры, _ . -).");
+      return;
+    }
+
+    setLoading(true);
+    const email = usernameToEmail(username);
     try {
       if (mode === "signin") {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
@@ -32,13 +57,17 @@ export function AuthScreen() {
         const { error, data } = await supabase.auth.signUp({
           email,
           password,
-          options: { data: { invite_code: inviteCode.trim() } },
+          options: { data: { invite_code: inviteCode.trim(), username: normalizeUsername(username) } },
         });
         if (error) throw error;
-        if (!data.session) setInfo("Проверьте почту — нужно подтвердить email, чтобы войти.");
+        if (!data.session) {
+          setInfo(
+            "Аккаунт создан, но сессия не открылась автоматически — вероятно, на сервере ещё включено подтверждение email. Отключите его в Supabase (Authentication → Sign In / Providers → Email → Confirm email) и войдите вручную."
+          );
+        }
       }
     } catch (err: any) {
-      setError(friendlyError(err?.message ?? String(err)));
+      setError(friendlyError(extractMessage(err)));
     } finally {
       setLoading(false);
     }
@@ -55,12 +84,14 @@ export function AuthScreen() {
 
         <form onSubmit={submit} className="space-y-3">
           <input
-            type="email"
             required
-            placeholder="email"
+            placeholder="ник (например B3MOY)"
             className="input"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
           />
           <input
             type="password"

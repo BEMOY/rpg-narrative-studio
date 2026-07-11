@@ -17,7 +17,7 @@ export function ProjectsHome({ onOpen }: { onOpen: (row: ProjectRow) => void }) 
   const [invites, setInvites] = useState<InviteRow[]>([]);
   const [showInvites, setShowInvites] = useState(false);
   const [creating, setCreating] = useState(false);
-  const [email, setEmail] = useState<string>("");
+  const [username, setUsername] = useState<string>("");
 
   const refresh = async () => {
     setProjects(await listProjects());
@@ -25,7 +25,10 @@ export function ProjectsHome({ onOpen }: { onOpen: (row: ProjectRow) => void }) 
 
   useEffect(() => {
     refresh();
-    supabase.auth.getUser().then(({ data }) => setEmail(data.user?.email ?? ""));
+    supabase.auth.getUser().then(({ data }) => {
+      const meta = data.user?.user_metadata as { username?: string } | undefined;
+      setUsername(meta?.username ?? data.user?.email?.split("@")[0] ?? "");
+    });
   }, []);
 
   const newProject = async () => {
@@ -63,7 +66,7 @@ export function ProjectsHome({ onOpen }: { onOpen: (row: ProjectRow) => void }) 
       <div className="max-w-4xl mx-auto">
         <div className="flex items-center gap-3 mb-8">
           <div className="text-xl font-semibold">Ваши проекты</div>
-          <div className="text-xs text-white/30">{email}</div>
+          <div className="text-xs text-white/30">@{username}</div>
           <div className="flex-1" />
           <button onClick={openInvites} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md glass hover:bg-white/10">
             <KeyRound size={14} /> Пригласить друга
