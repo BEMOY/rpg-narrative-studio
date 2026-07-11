@@ -1,10 +1,26 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { X, Play, RotateCcw } from "lucide-react";
+import { X, Play, RotateCcw, Lock } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
-import type { Dialogue, DialogueCondition } from "../../types/database";
+import type { Dialogue, DialogueCondition, Entry } from "../../types/database";
 import { evalCondition, type DialogueTestState } from "../../lib/dialogueEval";
 import { parseDialogueMarkup, resolveGmlColor } from "../../lib/dialogueMarkup";
 import { MarkupText } from "./MarkupText";
+
+const QUEST_STATUS_LABEL: Record<string, string> = { not_started: "не начат", active: "активен", done: "выполнен" };
+
+// Player-facing (short) description of why a locked choice is locked — shown next to the lock
+// icon instead of just hiding the choice outright.
+function describeCondition(cond: DialogueCondition | undefined, entries: Entry[]): string {
+  if (!cond || !cond.key) return "";
+  if (cond.kind === "flag") return `${cond.key} ${cond.op === "neq" ? "≠" : "="} ${cond.value ?? ""}`;
+  if (cond.kind === "quest") {
+    const e = entries.find((x) => x.id === cond.key);
+    const label = QUEST_STATUS_LABEL[cond.value ?? "active"] ?? cond.value ?? "";
+    return `${e?.name ?? cond.key}: ${label}`;
+  }
+  const e = entries.find((x) => x.id === cond.key);
+  return `${cond.op === "has" ? "нужен: " : "не должно быть: "}${e?.name ?? cond.key}`;
+}
 
 // Collects every distinct entry-kind condition used anywhere in the dialogue so the tester
 // can manually flip "has / not_has" toggles for them — there's no real per-playthrough
@@ -36,8 +52,21 @@ export function TestPlayModal({ dialogue, onClose }: { dialogue: Dialogue; onClo
   const node = dialogue.nodes.find((n) => n.id === nodeId);
   const visibleLines = (node?.lines ?? []).filter((l) => evalCondition(l.condition, state, entries));
   const currentLine = visibleLines[lineIdx];
-  const visibleChoices = (node?.choices ?? []).filter((c) => evalCondition(c.condition, state, entries));
+  // Choices are never hidden by their condition anymore — they render disabled/locked instead
+  // (see the render block below), so the player can see what's gating them.
+  const allChoices = node?.choices ?? [];
+  const choiceMet = useMemo(
+    () => new Map(allChoices.map((c) => [c.id, evalCondition(c.condition, state, entries)])),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [allChoices, state, entries]
+  );
   const atLastLine = lineIdx >= visibleLines.length - 1;
+
+  // A line whose own condition fails but which has an explicit fallback node set redirects the
+  // whole conversation there instead of being silently skipped — first match wins, in the
+  // node's own line order.
+  const redirectLine = (node?.lines ?? []).find((l) => l.condition && l.elseNodeId && !evalCondition(l.condition, state, entries));
+  const redirectTarget = redirectLine?.elseNodeId;
 
   const speakerEntry = currentLine?.speakerEntryId ? entries.find((e) => e.id === currentLine.speakerEntryId) : undefined;
   const speakerData = speakerEntry?.dialogueSpeaker;
@@ -68,6 +97,7 @@ export function TestPlayModal({ dialogue, onClose }: { dialogue: Dialogue; onClo
   const pickChoice = (choiceId: string) => {
     const choice = node?.choices.find((c) => c.id === choiceId);
     if (!choice) return;
+    if (!(choiceMet.get(choiceId) ?? true)) return; // locked — ignore
     if (choice.flagSets.length) {
       setState((s) => {
         const flags = { ...s.flags };
@@ -113,20 +143,24 @@ export function TestPlayModal({ dialogue, onClose }: { dialogue: Dialogue; onClo
 
   useEffect(() => setFocusedChoice(0), [nodeId, lineIdx]);
 
-  const choosing = !ended && !!node && atLastLine && phase === "done" && visibleChoices.length > 0;
+  // Choices only ever show once at least one line actually displayed (an all-conditions-failed
+  // node just falls through to continueTo/redirect silently, per the "don't show choices for
+  // content that never appeared" rule), and never alongside an active line-level redirect.
+  const choosing = !ended && !!node && atLastLine && phase === "done" && !redirectTarget && visibleLines.length > 0 && allChoices.length > 0;
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (choosing) {
         if (e.key === "ArrowDown") {
           e.preventDefault();
-          setFocusedChoice((f) => (f + 1) % visibleChoices.length);
+          setFocusedChoice((f) => (f + 1) % allChoices.length);
         } else if (e.key === "ArrowUp") {
           e.preventDefault();
-          setFocusedChoice((f) => (f - 1 + visibleChoices.length) % visibleChoices.length);
+          setFocusedChoice((f) => (f - 1 + allChoices.length) % allChoices.length);
         } else if (e.key === "Enter") {
           e.preventDefault();
-          pickChoice(visibleChoices[focusedChoice]?.id);
+          const c = allChoices[focusedChoice];
+          if (c && (choiceMet.get(c.id) ?? true)) pickChoice(c.id);
         }
         return;
       }
@@ -153,7 +187,11 @@ export function TestPlayModal({ dialogue, onClose }: { dialogue: Dialogue; onClo
       advanceLine();
       return;
     }
-    if (visibleChoices.length === 0) {
+    if (redirectTarget) {
+      goToNode(redirectTarget);
+      return;
+    }
+    if (allChoices.length === 0 || visibleLines.length === 0) {
       goToNode(node.continueTo);
     }
   };
@@ -239,31 +277,45 @@ export function TestPlayModal({ dialogue, onClose }: { dialogue: Dialogue; onClo
                 {phase === "typing" ? "Печатает…" : "Далее"}
               </button>
             )}
-            {!ended && node && atLastLine && visibleChoices.length > 0 && phase === "done" && (
+            {!ended && node && atLastLine && choosing && (
               <div className="space-y-1.5">
-                {visibleChoices.map((c, i) => (
-                  <button
-                    key={c.id}
-                    onClick={() => pickChoice(c.id)}
-                    onMouseEnter={() => setFocusedChoice(i)}
-                    className={`dlg-choice-enter w-full text-left text-sm px-3 py-2 rounded-md flex items-center gap-2 transition-colors ${
-                      i === focusedChoice ? "bg-accent/25 text-[var(--op-95)]" : "bg-[var(--op-6)] hover:bg-[var(--op-10)] text-[var(--op-80)]"
-                    }`}
-                    style={{ animationDelay: `${i * 40}ms` }}
-                  >
-                    <span className={`text-accent ${i === focusedChoice ? "opacity-100" : "opacity-0"}`}>▶</span>
-                    {c.text || "…"}
-                  </button>
-                ))}
+                {allChoices.map((c, i) => {
+                  const met = choiceMet.get(c.id) ?? true;
+                  return (
+                    <button
+                      key={c.id}
+                      onClick={() => met && pickChoice(c.id)}
+                      onMouseEnter={() => setFocusedChoice(i)}
+                      disabled={!met}
+                      title={!met ? describeCondition(c.condition, entries) : undefined}
+                      className={`dlg-choice-enter w-full text-left text-sm px-3 py-2 rounded-md flex items-center gap-2 transition-colors ${
+                        !met
+                          ? "bg-[var(--op-3)] text-[var(--op-30)] cursor-not-allowed"
+                          : i === focusedChoice
+                          ? "bg-accent/25 text-[var(--op-95)]"
+                          : "bg-[var(--op-6)] hover:bg-[var(--op-10)] text-[var(--op-80)]"
+                      }`}
+                      style={{ animationDelay: `${i * 40}ms` }}
+                    >
+                      <span className={`text-accent shrink-0 ${i === focusedChoice && met ? "opacity-100" : "opacity-0"}`}>▶</span>
+                      <span className="flex-1 truncate">{c.text || "…"}</span>
+                      {!met && (
+                        <span className="flex items-center gap-1 text-[10px] text-[var(--op-40)] shrink-0">
+                          <Lock size={11} /> {describeCondition(c.condition, entries)}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
             )}
-            {!ended && node && atLastLine && visibleChoices.length === 0 && (
+            {!ended && node && atLastLine && !choosing && (
               <button
-                onClick={() => goToNode(node.continueTo)}
-                disabled={!node.continueTo || phase === "typing"}
+                onClick={() => goToNode(redirectTarget ?? node.continueTo)}
+                disabled={(!redirectTarget && !node.continueTo) || phase === "typing"}
                 className="w-full text-sm py-2 rounded-md bg-accent/80 hover:bg-accent disabled:opacity-40"
               >
-                {phase === "typing" ? "Печатает…" : node.continueTo ? "Далее" : "Конец диалога"}
+                {phase === "typing" ? "Печатает…" : redirectTarget || node.continueTo ? "Далее" : "Конец диалога"}
               </button>
             )}
             {ended && (

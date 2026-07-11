@@ -23,7 +23,7 @@ import {
 import { useProjectStore } from "../../store/useProjectStore";
 import { ResizablePanel } from "../common/ResizablePanel";
 import { CAT_COLOR, isQuest, type Entry } from "../../types/database";
-import { compileQuestsScript } from "../../lib/questCompile";
+import { compileQuestsScript, objectiveProgress } from "../../lib/questCompile";
 
 // ---- roadmap graph (quest ↔ dialogue ↔ flag), adapted from GraphView.tsx's force layout ----
 
@@ -52,17 +52,49 @@ interface NodePos {
   vy: number;
 }
 
-const WIDTH = 2000;
-const HEIGHT = 1300;
-const IDEAL_LEN = 170;
-const REPULSION = 22000;
+const WIDTH = 3400;
+const HEIGHT = 1900;
+const IDEAL_LEN = 300;
+const REPULSION = 34000;
 const MAX_SETTLE_FRAMES = 220;
 const IDLE_JITTER = 0.14;
-const MIN_REPULSE_DIST = 55;
+const MIN_REPULSE_DIST = 70;
 const MAX_VELOCITY = 18;
 
 const DIALOGUE_COLOR = "#7f9bd1";
 const FLAG_COLOR = "#b08a5a";
+
+// DAG-style left-to-right layering for quest nodes: quests with no incoming "unlocks"
+// prerequisite sit in column 0; anything they unlock sits one column to the right, and so on —
+// so the whole dependency web visually reads left-to-right instead of a tangled physics blob.
+const COLUMN_BASE_X = 260;
+const COLUMN_SPACING = 340;
+
+function computeQuestDepths(quests: Entry[]): Map<string, number> {
+  const ids = new Set(quests.map((q) => q.id));
+  const incoming = new Map<string, string[]>(); // questId -> source quest ids that unlock it
+  for (const q of quests) {
+    for (const dep of q.questDependencies ?? []) {
+      if (dep.kind !== "unlocks" || !dep.questId || !ids.has(dep.questId)) continue;
+      if (!incoming.has(dep.questId)) incoming.set(dep.questId, []);
+      incoming.get(dep.questId)!.push(q.id);
+    }
+  }
+  const depth = new Map<string, number>();
+  const visiting = new Set<string>();
+  function resolve(id: string): number {
+    if (depth.has(id)) return depth.get(id)!;
+    if (visiting.has(id)) return 0; // dependency cycle — bail out rather than recurse forever
+    visiting.add(id);
+    const sources = incoming.get(id) ?? [];
+    const d = sources.length === 0 ? 0 : Math.max(...sources.map(resolve)) + 1;
+    visiting.delete(id);
+    depth.set(id, d);
+    return d;
+  }
+  for (const q of quests) resolve(q.id);
+  return depth;
+}
 
 function clamp(v: number, lo: number, hi: number) {
   return Math.max(lo, Math.min(hi, v));
@@ -85,6 +117,23 @@ const STATUS_LABEL: Record<QuestStatus, string> = {
   available: "доступен",
 };
 
+function statusColor(status: QuestStatus, categoryColor: string): string {
+  return status === "completed" ? "#7cc98a" : status === "blocked" ? "#e0716f" : status === "locked" ? "var(--op-40)" : categoryColor;
+}
+
+// A quest with objectives where every one has reached its max is done in every practical
+// sense (matches quest_check_complete() in the real engine) — it counts as "completed" in the
+// roadmap even if nobody flipped its toggle by hand. A quest with zero objectives has nothing
+// to finish automatically, so it stays governed purely by the manual toggle.
+function objectivesAllDone(entry: Entry): boolean {
+  const objs = entry.objectives ?? [];
+  if (objs.length === 0) return false;
+  return objs.every((o) => {
+    const { current, max } = objectiveProgress(o);
+    return current >= max;
+  });
+}
+
 // Dependencies are declared FROM the source quest's perspective ("on completing this quest,
 // quest X unlocks/blocks") — see QuestPanel in EntryEditor.tsx. To know quest B's own status we
 // need the reverse index: who points AT B, and with which kind.
@@ -100,19 +149,26 @@ function computeQuestStatuses(quests: Entry[], simCompleted: Set<string>): Map<s
       map.get(dep.questId)!.push(q.id);
     }
   }
+  // Completion (manual toggle OR every objective finished) is resolved for every quest first,
+  // since later quests' unlocked/blocked status depends on OTHER quests' completion, not just
+  // their own toggle.
+  const completed = new Set<string>();
+  for (const q of quests) {
+    if (simCompleted.has(q.id) || objectivesAllDone(q)) completed.add(q.id);
+  }
   const statuses = new Map<string, QuestStatus>();
   for (const q of quests) {
-    if (simCompleted.has(q.id)) {
+    if (completed.has(q.id)) {
       statuses.set(q.id, "completed");
       continue;
     }
     const blockers = blockedBy.get(q.id) ?? [];
-    if (blockers.some((id) => simCompleted.has(id))) {
+    if (blockers.some((id) => completed.has(id))) {
       statuses.set(q.id, "blocked");
       continue;
     }
     const gates = unlockedBy.get(q.id) ?? [];
-    if (gates.length > 0 && !gates.every((id) => simCompleted.has(id))) {
+    if (gates.length > 0 && !gates.every((id) => completed.has(id))) {
       statuses.set(q.id, "locked");
       continue;
     }
@@ -237,6 +293,7 @@ function QuestNodeCard({
   status,
   on,
   onToggle,
+  entryById,
 }: {
   entry?: Entry;
   label: string;
@@ -244,10 +301,12 @@ function QuestNodeCard({
   status: QuestStatus;
   on: boolean;
   onToggle: () => void;
+  entryById: Map<string, Entry>;
 }) {
   const objectives = entry?.objectives ?? [];
   const rewards = entry?.rewards;
-  const hasRewards = !!(rewards && (rewards.coins || rewards.xp || rewards.affinity || rewards.items?.length));
+  const items = rewards?.items ?? [];
+  const hasRewards = !!(rewards && (rewards.coins || rewards.xp || rewards.affinity || items.length));
   const statusIcon =
     status === "completed" ? (
       <CircleCheck size={12} />
@@ -258,14 +317,23 @@ function QuestNodeCard({
     ) : (
       <LockOpen size={12} />
     );
-  const statusColor = status === "completed" ? "#7cc98a" : status === "blocked" ? "#e0716f" : status === "locked" ? "var(--op-40)" : color;
+  const cardStatusColor = statusColor(status, color);
+  // Auto-completed (every objective finished) or locked/blocked quests have nothing left to
+  // simulate manually — the toggle is disabled rather than letting the user fight the derived
+  // status back and forth.
+  const autoCompleted = objectives.length > 0 && objectives.every((o) => {
+    const current = o.current ?? (o.done ? 1 : 0);
+    const max = o.max ?? 1;
+    return current >= max;
+  });
+  const toggleDisabled = status === "locked" || status === "blocked" || autoCompleted;
 
   return (
     <div
-      className="w-[178px] rounded-lg shadow-lg border-2 transition-all duration-300 overflow-hidden group-hover:scale-[1.03]"
+      className="w-[190px] rounded-lg shadow-lg border-2 transition-all duration-300 overflow-hidden group-hover:scale-[1.03]"
       style={{
         background: "var(--popover-bg)",
-        borderColor: statusColor,
+        borderColor: cardStatusColor,
         opacity: status === "locked" || status === "blocked" ? 0.7 : 1,
         filter: status === "locked" ? "grayscale(0.6)" : "none",
       }}
@@ -280,12 +348,25 @@ function QuestNodeCard({
       </div>
       <div className="px-2 py-1.5 space-y-1.5">
         {objectives.length > 0 && (
-          <div className="text-[10px] text-[var(--op-40)]">
-            {objectives.length} {objectives.length === 1 ? "цель" : "целей"}
+          <div className="space-y-0.5">
+            {objectives.map((o, i) => {
+              const current = o.current ?? (o.done ? 1 : 0);
+              const max = o.max ?? 1;
+              const done = current >= max;
+              return (
+                <div key={i} className="flex items-center gap-1 text-[10px]" style={{ color: done ? "#7cc98a" : "var(--op-45)" }}>
+                  {done ? <CircleCheck size={10} className="shrink-0" /> : <span className="w-2.5 h-2.5 rounded-full border border-current shrink-0" />}
+                  <span className="truncate flex-1">{o.text || `Цель ${i + 1}`}</span>
+                  <span className="mono opacity-70 shrink-0">
+                    {current}/{max}
+                  </span>
+                </div>
+              );
+            })}
           </div>
         )}
         {hasRewards && (
-          <div className="flex items-center gap-2 text-[10px] text-[var(--op-45)]">
+          <div className="flex items-center gap-2 flex-wrap text-[10px] text-[var(--op-45)]">
             {!!rewards?.coins && (
               <span className="flex items-center gap-0.5">
                 <Coins size={10} /> {rewards.coins}
@@ -301,21 +382,42 @@ function QuestNodeCard({
                 <Heart size={10} /> {rewards.affinity}
               </span>
             )}
-            {!!rewards?.items?.length && <span className="opacity-70">+{rewards.items.length} предм.</span>}
+            {items.map((it, i) => {
+              const linked = entryById.get(it.id);
+              return linked?.image ? (
+                <span key={i} className="flex items-center gap-0.5" title={`${linked.name} ×${it.count}`}>
+                  <img src={linked.image} alt="" className="w-4 h-4 rounded object-cover" style={{ imageRendering: "pixelated" }} />
+                  <span className="opacity-70">×{it.count}</span>
+                </span>
+              ) : (
+                <span key={i} className="opacity-70" title={linked?.name}>
+                  +{it.count} {linked?.name ?? "предм."}
+                </span>
+              );
+            })}
           </div>
         )}
         <div className="flex items-center justify-between gap-1.5 pt-0.5">
-          <span className="flex items-center gap-1 text-[10px] transition-colors duration-300" style={{ color: statusColor }}>
+          <span className="flex items-center gap-1 text-[10px] transition-colors duration-300" style={{ color: cardStatusColor }}>
             {statusIcon} {STATUS_LABEL[status]}
           </span>
           <button
+            disabled={toggleDisabled}
             onMouseDown={(e) => e.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation();
-              onToggle();
+              if (!toggleDisabled) onToggle();
             }}
-            title="Симуляция: считать этот квест пройденным"
-            className="relative w-8 h-[16px] rounded-full transition-colors duration-300 shrink-0"
+            title={
+              toggleDisabled
+                ? status === "locked"
+                  ? "Заперт — сначала выполните квест(ы)-предпосылки"
+                  : status === "blocked"
+                  ? "Заблокирован завершённым квестом"
+                  : "Уже завершён по подцелям"
+                : "Симуляция: считать этот квест пройденным"
+            }
+            className={`relative w-8 h-[16px] rounded-full transition-colors duration-300 shrink-0 ${toggleDisabled ? "cursor-not-allowed opacity-50" : ""}`}
             style={{ background: on ? "#7cc98a" : "var(--op-15)" }}
           >
             <span
@@ -363,6 +465,14 @@ function RoadmapGraph({
 
   const nodeIds = useMemo(() => new Set(nodes.map((n) => n.id)), [nodes]);
 
+  const quests = useMemo(() => entries.filter((e) => isQuest(e.category)), [entries]);
+  const depths = useMemo(() => computeQuestDepths(quests), [quests]);
+  const columnXById = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const q of quests) m.set(`q:${q.id}`, COLUMN_BASE_X + (depths.get(q.id) ?? 0) * COLUMN_SPACING);
+    return m;
+  }, [quests, depths]);
+
   useEffect(() => {
     const pos = posRef.current;
     for (const key of Array.from(pos.keys())) {
@@ -370,12 +480,20 @@ function RoadmapGraph({
     }
     nodes.forEach((n, i) => {
       if (!pos.has(n.id)) {
-        const angle = (i / Math.max(1, nodes.length)) * Math.PI * 2;
-        const r = 300 + ((i * 67) % 220);
-        pos.set(n.id, { x: WIDTH / 2 + Math.cos(angle) * r, y: HEIGHT / 2 + Math.sin(angle) * r, vx: 0, vy: 0 });
+        const colX = columnXById.get(n.id);
+        if (colX != null) {
+          // Seed quest nodes near their dependency-depth column right away so the layout
+          // reads left-to-right from the very first frame instead of starting from a random
+          // ring and slowly drifting into columns.
+          pos.set(n.id, { x: colX, y: HEIGHT / 2 + (((i * 137) % 800) - 400), vx: 0, vy: 0 });
+        } else {
+          const angle = (i / Math.max(1, nodes.length)) * Math.PI * 2;
+          const r = 300 + ((i * 67) % 220);
+          pos.set(n.id, { x: WIDTH / 2 + Math.cos(angle) * r, y: HEIGHT / 2 + Math.sin(angle) * r, vx: 0, vy: 0 });
+        }
       }
     });
-  }, [nodes, nodeIds]);
+  }, [nodes, nodeIds, columnXById]);
 
   useEffect(() => {
     let frame = 0;
@@ -479,7 +597,14 @@ function RoadmapGraph({
           p.y = clamp(p.y + p.vy, 40, HEIGHT - 40);
           continue;
         }
-        p.vx += (WIDTH / 2 - p.x) * 0.0006;
+        const colX = columnXById.get(id);
+        if (colX != null) {
+          // Quest node, unpinned — pulled toward its dependency-depth column instead of the
+          // canvas center, so prerequisites end up left of whatever they unlock.
+          p.vx += (colX - p.x) * 0.01;
+        } else {
+          p.vx += (WIDTH / 2 - p.x) * 0.0006;
+        }
         p.vy += (HEIGHT / 2 - p.y) * 0.0006;
         if (frame > MAX_SETTLE_FRAMES) {
           p.vx += (Math.random() - 0.5) * IDLE_JITTER;
@@ -501,7 +626,7 @@ function RoadmapGraph({
     }
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [nodes, edges]);
+  }, [nodes, edges, columnXById]);
 
   const onNodePointerDown = (n: RoadmapNode, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -587,7 +712,7 @@ function RoadmapGraph({
     return s;
   }, [hoveredId, edges]);
 
-  const nodeKindById = useMemo(() => new Map(nodes.map((n) => [n.id, n.kind])), [nodes]);
+  const nodeById = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
   const entryById = useMemo(() => new Map(entries.map((e) => [e.id, e])), [entries]);
 
   const pos = posRef.current;
@@ -637,6 +762,16 @@ function RoadmapGraph({
                 <marker id="quest-graph-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
                   <path d="M0,0 L8,4 L0,8 Z" fill="var(--op-30)" />
                 </marker>
+                <marker id="quest-graph-arrow-green" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+                  <path d="M0,0 L8,4 L0,8 Z" fill="#7cc98a" />
+                </marker>
+                {/* Marching-ants flow for dependency edges whose source quest is now (simulated)
+                    complete — a static line can't read as "this connection is now live", so it
+                    animates instead. */}
+                <style>{`
+                  @keyframes quest-dep-flow { to { stroke-dashoffset: -24; } }
+                  .quest-dep-flow { animation: quest-dep-flow 0.7s linear infinite; }
+                `}</style>
               </defs>
               {edges.map((e, i) => {
                 const a = pos.get(e.from);
@@ -651,16 +786,35 @@ function RoadmapGraph({
                 // Quest cards are much bigger than the small circular dialogue/flag nodes —
                 // trim the line further back so it meets the card's edge instead of cutting
                 // through its middle.
-                const rFrom = nodeKindById.get(e.from) === "quest" ? 78 : 26;
-                const rTo = nodeKindById.get(e.to) === "quest" ? 78 : 26;
+                const rFrom = nodeById.get(e.from)?.kind === "quest" ? 78 : 26;
+                const rTo = nodeById.get(e.to)?.kind === "quest" ? 78 : 26;
                 const x1 = a.x + nx * rFrom;
                 const y1 = a.y + ny * rFrom;
                 const x2 = b.x - nx * (rTo + 8);
                 const y2 = b.y - ny * (rTo + 8);
                 const mx = (a.x + b.x) / 2;
                 const my = (a.y + b.y) / 2;
-                const stroke = e.styleKind === "unlock" ? "#7cc98a" : e.styleKind === "block" ? "#e0716f" : "var(--op-30)";
-                const dash = e.styleKind === "block" ? "5 3" : undefined;
+
+                // Dependency edges (unlocks/blocks) reflect the SOURCE quest's own completion —
+                // pending (source not yet done): a static striped line in the source quest's own
+                // card color ("under the quest's border color"); once the source is completed:
+                // a solid green line that visibly flows toward the target.
+                let stroke = "var(--op-30)";
+                let dash: string | undefined;
+                let flowing = false;
+                if (e.styleKind) {
+                  const sourceNode = nodeById.get(e.from);
+                  const sourceStatus = sourceNode?.entryId ? statuses.get(sourceNode.entryId) : undefined;
+                  const sourceDone = sourceStatus === "completed";
+                  if (sourceDone) {
+                    stroke = "#7cc98a";
+                    dash = "7 5";
+                    flowing = true;
+                  } else {
+                    stroke = sourceNode ? statusColor(sourceStatus ?? "available", sourceNode.color) : "#cda559";
+                    dash = "3 4";
+                  }
+                }
                 return (
                   <g key={i} opacity={dim ? 0.1 : 0.9} className="transition-opacity duration-300">
                     <line
@@ -669,9 +823,12 @@ function RoadmapGraph({
                       x2={x2}
                       y2={y2}
                       stroke={stroke}
-                      strokeWidth={e.styleKind ? 1.8 : 1.4}
+                      strokeWidth={e.styleKind ? 2 : 1.4}
                       strokeDasharray={dash}
-                      markerEnd="url(#quest-graph-arrow)"
+                      strokeLinecap={e.styleKind ? "round" : undefined}
+                      className={flowing ? "quest-dep-flow" : undefined}
+                      style={{ transition: "stroke 0.3s ease" }}
+                      markerEnd={flowing ? "url(#quest-graph-arrow-green)" : "url(#quest-graph-arrow)"}
                     />
                     {e.note && (
                       <g transform={`translate(${mx}, ${my})`}>
@@ -710,7 +867,10 @@ function RoadmapGraph({
               if (n.kind === "quest" && n.entryId) {
                 const entry = entryById.get(n.entryId);
                 const status = statuses.get(n.entryId) ?? "available";
-                const on = simCompleted.has(n.entryId);
+                // Reflect the DERIVED status on the toggle, not just the raw manual set — a
+                // quest whose objectives are all finished should show as "on" even before
+                // anyone touches its toggle.
+                const on = status === "completed";
                 return (
                   <div
                     key={n.id}
@@ -727,7 +887,15 @@ function RoadmapGraph({
                     className="cursor-pointer select-none group transition-opacity duration-300"
                     title={n.label}
                   >
-                    <QuestNodeCard entry={entry} label={n.label} color={n.color} status={status} on={on} onToggle={() => onToggleCompleted(n.entryId!)} />
+                    <QuestNodeCard
+                      entry={entry}
+                      label={n.label}
+                      color={n.color}
+                      status={status}
+                      on={on}
+                      onToggle={() => onToggleCompleted(n.entryId!)}
+                      entryById={entryById}
+                    />
                   </div>
                 );
               }
@@ -791,7 +959,7 @@ function QuestListRow({
   const objectives = entry.objectives ?? [];
   const rewards = entry.rewards;
   const hasRewards = !!(rewards && (rewards.coins || rewards.xp || rewards.affinity || rewards.items?.length));
-  const statusColor = status === "completed" ? "#7cc98a" : status === "blocked" ? "#e0716f" : status === "locked" ? "var(--op-40)" : undefined;
+  const dotColor = status === "completed" ? "#7cc98a" : status === "blocked" ? "#e0716f" : status === "locked" ? "var(--op-40)" : undefined;
   return (
     <button
       onClick={() => onOpen(entry.id)}
@@ -809,7 +977,7 @@ function QuestListRow({
         {status && status !== "available" && (
           <span
             className="w-1.5 h-1.5 rounded-full shrink-0 transition-colors duration-300"
-            style={{ background: statusColor }}
+            style={{ background: dotColor }}
             title={STATUS_LABEL[status]}
           />
         )}

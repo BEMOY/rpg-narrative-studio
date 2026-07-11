@@ -8,7 +8,7 @@ import type { Entry, Objective, QuestRewards } from "../types/database";
 import { isQuest } from "../types/database";
 import { slugify, gmlString } from "./dialogueCompile";
 
-function objectiveProgress(o: Objective): { current: number; max: number } {
+export function objectiveProgress(o: Objective): { current: number; max: number } {
   return { current: o.current ?? (o.done ? 1 : 0), max: o.max ?? 1 };
 }
 

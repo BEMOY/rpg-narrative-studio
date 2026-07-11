@@ -284,6 +284,22 @@ function LineBlock({
         <ConditionEditor value={line.condition} onChange={(c) => patch({ condition: c })} label="показывать реплику если…" />
       </div>
 
+      {line.condition && (
+        <div className="flex items-center gap-1.5">
+          <span className="text-[10px] text-[var(--op-35)] shrink-0">если условие НЕ выполнено → перейти к ноде:</span>
+          <div className="flex-1 min-w-0">
+            <SearchSelect
+              value={line.elseNodeId}
+              onChange={(id) => patch({ elseNodeId: id })}
+              options={dialogue.nodes.map((n) => ({ id: n.id, label: n.lines[0]?.text?.slice(0, 30) || n.id }))}
+              placeholder="не задано (просто пропустить)"
+              searchPlaceholder="Поиск ноды…"
+              clearLabel="— не задано —"
+            />
+          </div>
+        </div>
+      )}
+
       <label className="flex items-center gap-1.5 text-[10px] text-[var(--op-45)]">
         <input type="checkbox" checked={line.noSkip} onChange={(e) => patch({ noSkip: e.target.checked })} />
         непропускаемая (нельзя проскипать печать)

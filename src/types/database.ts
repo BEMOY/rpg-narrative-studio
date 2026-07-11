@@ -368,6 +368,10 @@ export interface DialogueLine {
   text: string;
   condition?: DialogueCondition;
   noSkip: boolean;
+  // Optional escape hatch: if `condition` fails, jump the whole conversation to this node
+  // instead of just silently skipping the line — lets the writer branch to an alternative
+  // node/reply for the "condition not met" case rather than only being able to omit content.
+  elseNodeId?: string;
 }
 
 // Direct quest-system calls a choice can trigger — confirmed against the real scr_quests.gml
