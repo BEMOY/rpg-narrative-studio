@@ -16,6 +16,7 @@ import {
   Box,
   BookOpen,
   Search,
+  Check,
 } from "lucide-react";
 import type { Category, Entry, StatPreset } from "../../types/database";
 import { CAT_COLOR, CAT_LABEL, CAT_ORDER, isQuest, hasRelationship, canHaveStats, isEquip } from "../../types/database";
@@ -26,6 +27,7 @@ import { MapEditorModal } from "../mapeditor/MapEditorModal";
 import { MapThumbnail, mapHasContent } from "../mapeditor/MapThumbnail";
 import { RarityBadge } from "../common/RarityBadge";
 import { statIcon } from "../../lib/statIcons";
+import { SLOT_LABEL, SLOT_ICON } from "../../lib/equipSlot";
 
 const CAT_ICON: Record<Category, React.ComponentType<any>> = {
   character: User,
@@ -111,6 +113,47 @@ export function EntryDetail({ entry, onEdit }: { entry: Entry; onEdit: () => voi
       <Block title="Обзор">
         <p className="text-sm text-[var(--op-70)] whitespace-pre-wrap leading-relaxed">{entry.description || "—"}</p>
       </Block>
+
+      {isEquip(entry.category) && entry.slot && (
+        <Block title="Слот экипировки">
+          <div className="flex items-center gap-3">
+            <span className="w-12 h-12 shrink-0 rounded-lg grid place-items-center bg-[var(--op-8)] text-accent">
+              {(() => {
+                const SlotIcon = SLOT_ICON[entry.slot];
+                return <SlotIcon size={22} />;
+              })()}
+            </span>
+            <span className="text-sm text-[var(--op-80)]">{SLOT_LABEL[entry.slot]}</span>
+          </div>
+        </Block>
+      )}
+
+      {(entry.category === "item" || entry.category === "equipment") && (
+        <Block title="Экономика">
+          <div className="grid grid-cols-2 gap-4 mb-3">
+            <div>
+              <div className="text-xs text-[var(--op-40)] mb-1">Цена</div>
+              <div className="text-sm text-[var(--op-90)] mono">{entry.value ?? 0}</div>
+            </div>
+            <div>
+              <div className="text-xs text-[var(--op-40)] mb-1">Размер стака</div>
+              <div className="text-sm text-[var(--op-90)] mono">{entry.stack ?? 1}</div>
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5 text-sm text-[var(--op-70)]">
+            <span
+              className="w-3.5 h-3.5 rounded-[4px] border grid place-items-center shrink-0"
+              style={{
+                background: entry.quest ? "rgb(var(--accent-rgb) / 0.8)" : "var(--op-5)",
+                borderColor: entry.quest ? "rgb(var(--accent-rgb))" : "var(--op-20)",
+              }}
+            >
+              {entry.quest && <Check size={10} className="text-[var(--popover-bg)]" strokeWidth={3} />}
+            </span>
+            Квестовый предмет
+          </div>
+        </Block>
+      )}
 
       {hasRelationship(entry.category) && entry.relationship && (
         <Block title="Отношение">

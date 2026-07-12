@@ -1,4 +1,4 @@
-import { Trash2, Plus, X, Upload, ImageOff, ChevronDown, Sword, Shield, HardHat, Gem } from "lucide-react";
+import { Trash2, Plus, X, Upload, ImageOff, ChevronDown } from "lucide-react";
 import { useRef, useState } from "react";
 import type { DialogueSide, DialogueSpeakerData, Entry, EquipSlot, Objective, QuestDependency, QuestDependencyKind, QuestRewards, Relationship } from "../../types/database";
 import { canHaveStats, hasRelationship, isEquip, isQuest } from "../../types/database";
@@ -10,10 +10,9 @@ import { nextId } from "../../lib/mapDefaults";
 import { statIcon } from "../../lib/statIcons";
 import { EquipmentPresetsModal } from "./EquipmentPresetsModal";
 import type { StatPreset } from "../../types/database";
+import { SLOTS, SLOT_LABEL, SLOT_ICON } from "../../lib/equipSlot";
 
-const SLOTS: EquipSlot[] = ["weapon", "body", "head", "offhand"];
-const SLOT_LABEL: Record<EquipSlot, string> = { weapon: "Оружие", body: "Броня", head: "Шлем", offhand: "Аксессуар" };
-const SLOT_ICON: Record<EquipSlot, React.ComponentType<any>> = { weapon: Sword, body: Shield, head: HardHat, offhand: Gem };
+
 const RELATIONSHIPS: Relationship[] = ["friend", "neutral", "enemy"];
 const SUGGESTED_STATS = ["attack", "defense", "magic", "speed", "luck", "crit", "dodge", "capacity", "level", "xp", "xp_max"];
 
