@@ -24,6 +24,7 @@ const DIALOGUES_TOUR: TourStep[] = [
 const CANVAS_W = 4000;
 const CANVAS_H = 3000;
 export const NODE_WIDTH = 340;
+const MIN_ZOOM = 0.01; // 1% — same reasoning as the Quests roadmap graph's resetView: a large dialogue should still fully zoom-to-fit instead of clipping
 
 function clamp(v: number, lo: number, hi: number) {
   return Math.max(lo, Math.min(hi, v));
@@ -323,7 +324,7 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
 
   const onWheel = (e: React.WheelEvent) => {
     const rect = stageRef.current?.parentElement?.getBoundingClientRect();
-    const newZoom = clamp(zoom + (e.deltaY > 0 ? -0.08 : 0.08), 0.2, 2);
+    const newZoom = clamp(zoom + (e.deltaY > 0 ? -0.08 : 0.08), MIN_ZOOM, 2);
     if (!rect) {
       setZoom(newZoom);
       return;
@@ -333,6 +334,44 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
     const ratio = newZoom / zoom;
     setPan((p) => ({ x: mouseX - (mouseX - p.x) * ratio, y: mouseY - (mouseY - p.y) * ratio }));
     setZoom(newZoom);
+  };
+
+  // Auto-center + zoom-to-fit over every node's actual measured box (see the `box:<nodeId>`
+  // anchors registered alongside each node in the render below) — same approach as the Quests
+  // roadmap graph's resetView, replacing the old fixed "just snap back to 85%/(60,40)" behavior
+  // that ignored where the nodes actually were.
+  const resetView = () => {
+    const viewport = stageRef.current?.parentElement;
+    const rect = viewport?.getBoundingClientRect();
+    if (!rect || rect.width === 0 || dialogue.nodes.length === 0) {
+      setZoom(0.85);
+      setPan({ x: 60, y: 40 });
+      return;
+    }
+    const pad = 140;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const n of dialogue.nodes) {
+      const p = posFor(n.id);
+      const box = anchorPos.get(`box:${n.id}`);
+      const w = box?.w ?? NODE_WIDTH;
+      const h = box?.h ?? 220;
+      minX = Math.min(minX, p.x);
+      maxX = Math.max(maxX, p.x + w);
+      minY = Math.min(minY, p.y);
+      maxY = Math.max(maxY, p.y + h);
+    }
+    minX -= pad;
+    maxX += pad;
+    minY -= pad;
+    maxY += pad;
+    const boxW = Math.max(1, maxX - minX);
+    const boxH = Math.max(1, maxY - minY);
+    const fitZoom = clamp(Math.min(rect.width / boxW, rect.height / boxH), MIN_ZOOM, 2);
+    setZoom(fitZoom);
+    setPan({ x: rect.width / 2 - ((minX + maxX) / 2) * fitZoom, y: rect.height / 2 - ((minY + maxY) / 2) * fitZoom });
   };
 
   // ---- link creation drag: from a choice dot / continuation bar to another node ----
@@ -478,21 +517,14 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
           </PortalMenu>
         </div>
         <div className="flex-1" />
-        <button onClick={() => setZoom((z) => clamp(z - 0.15, 0.2, 2))} className="w-8 h-8 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]">
+        <button onClick={() => setZoom((z) => clamp(z - 0.15, MIN_ZOOM, 2))} className="w-8 h-8 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]">
           <ZoomOut size={13} />
         </button>
-        <span className="text-xs mono text-[var(--op-40)] w-10 text-center">{Math.round(zoom * 100)}%</span>
-        <button onClick={() => setZoom((z) => clamp(z + 0.15, 0.2, 2))} className="w-8 h-8 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]">
+        <span className="text-xs mono text-[var(--op-40)] w-12 text-center">{Math.round(zoom * 100)}%</span>
+        <button onClick={() => setZoom((z) => clamp(z + 0.15, MIN_ZOOM, 2))} className="w-8 h-8 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]">
           <ZoomIn size={13} />
         </button>
-        <button
-          onClick={() => {
-            setZoom(0.85);
-            setPan({ x: 60, y: 40 });
-          }}
-          className="w-8 h-8 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]"
-          title="Сбросить вид"
-        >
+        <button onClick={resetView} className="w-8 h-8 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]" title="Сбросить вид (авто-центровка)">
           <Maximize2 size={13} />
         </button>
       </div>

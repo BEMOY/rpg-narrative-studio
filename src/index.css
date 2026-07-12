@@ -179,6 +179,20 @@ body {
   to { transform: scale(1); opacity: 1; }
 }
 
+/* Ripple rings emanating from a quest card's border when it's focused from the left list
+   (see QuestsView.tsx's focusRequest handling) — two rings staggered by a short delay so it
+   reads as an outward pulse rather than a single flash, purely decorative/pointer-events:none. */
+@keyframes quest-focus-ripple-kf {
+  0% { transform: scale(1); opacity: 0.9; }
+  100% { transform: scale(1.35); opacity: 0; }
+}
+.quest-focus-ripple {
+  animation: quest-focus-ripple-kf 0.9s ease-out both;
+}
+.quest-focus-ripple-2 {
+  animation: quest-focus-ripple-kf 0.9s ease-out 0.18s both;
+}
+
 /* --- Dialogue text-effect markup (mirrors the engine's dlg_parse tags) --- */
 @keyframes dlg-wave-kf {
   0%, 100% { transform: translateY(0); }

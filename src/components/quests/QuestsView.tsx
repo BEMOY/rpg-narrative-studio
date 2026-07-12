@@ -181,12 +181,31 @@ function computeQuestStatuses(quests: Entry[], simCompleted: Set<string>): Map<s
       map.get(dep.questId)!.push(q.id);
     }
   }
-  // Completion (manual toggle OR every objective finished) is resolved for every quest first,
-  // since later quests' unlocked/blocked status depends on OTHER quests' completion, not just
-  // their own toggle.
+  // Completion (manual "what-if" toggle OR every real objective finished) is resolved for
+  // every quest first, since later quests' unlocked/blocked status depends on OTHER quests'
+  // completion, not just their own toggle. A quest that's ONLY "completed" via the ephemeral
+  // simCompleted toggle (never via real objective data) is re-validated against its own
+  // "unlocks" gates every time — so turning a parent's simulation toggle back OFF immediately
+  // un-completes any downstream quest that was only simulated-complete because of it, cascading
+  // as many levels deep as the dependency chain goes. A quest genuinely completed through real
+  // objective progress is never second-guessed here, no matter what its prerequisites are doing
+  // in the sandbox. ("blocks" dependencies need no equivalent cascade: "blocked" isn't stored
+  // state at all, it's derived fresh below from whatever `completed` ends up being.)
   const completed = new Set<string>();
   for (const q of quests) {
-    if (simCompleted.has(q.id) || objectivesAllDone(q)) completed.add(q.id);
+    if (objectivesAllDone(q)) completed.add(q.id);
+  }
+  let growing = true;
+  while (growing) {
+    growing = false;
+    for (const q of quests) {
+      if (completed.has(q.id) || !simCompleted.has(q.id)) continue;
+      const gates = unlockedBy.get(q.id) ?? [];
+      if (gates.length === 0 || gates.every((id) => completed.has(id))) {
+        completed.add(q.id);
+        growing = true;
+      }
+    }
   }
   const statuses = new Map<string, QuestStatus>();
   for (const q of quests) {
@@ -323,13 +342,17 @@ export function useDialogueQuestLinks(quests: Entry[], dialogues: Dialogue[]) {
             addUnique(ensure(byObjective, `${loc.questId}:${loc.index}`).checks, ref);
           }
         }
-        for (const choice of n.choices) {
-          for (const qa of choice.questActions ?? []) {
-            if (!qa.questId || !questIds.has(qa.questId)) continue;
-            addUnique(ensure(byQuest, qa.questId).completes, ref);
-            if (qa.kind === "advance" && qa.objectiveIndex != null) {
-              addUnique(ensure(byObjective, `${qa.questId}:${qa.objectiveIndex}`).completes, ref);
-            }
+        // Quest actions can live on a CHOICE (fires when picked) or, since the "+ действие с
+        // квестом" button was added to individual replicas too (see LineBlock in
+        // DialogueNodeCard.tsx), directly on a LINE (fires the moment it's shown) — both count
+        // as "completes" here, scanned together so neither surface silently drops out of the
+        // quest card's badges/dots.
+        const allQuestActions = [...n.lines.flatMap((l) => l.questActions ?? []), ...n.choices.flatMap((c) => c.questActions ?? [])];
+        for (const qa of allQuestActions) {
+          if (!qa.questId || !questIds.has(qa.questId)) continue;
+          addUnique(ensure(byQuest, qa.questId).completes, ref);
+          if (qa.kind === "advance" && qa.objectiveIndex != null) {
+            addUnique(ensure(byObjective, `${qa.questId}:${qa.objectiveIndex}`).completes, ref);
           }
         }
       }
@@ -626,6 +649,7 @@ function RoadmapGraph({
   focusRequest,
   flagDefs,
   onSetObjectiveValue,
+  chapters,
 }: {
   nodes: RoadmapNode[];
   edges: RoadmapEdge[];
@@ -645,6 +669,7 @@ function RoadmapGraph({
   focusRequest: { nodeId: string; token: number } | null;
   flagDefs: Record<string, DialogueFlagDef>;
   onSetObjectiveValue: (questId: string, index: number, value: number) => void;
+  chapters: string[];
 }) {
   const posRef = useRef<Map<string, NodePos>>(new Map());
   const pinnedRef = useRef<Set<string>>(new Set());
@@ -663,6 +688,7 @@ function RoadmapGraph({
   const [zoom, setZoom] = useState(0.65);
   const [pan, setPan] = useState({ x: 30, y: 20 });
   const [gridEnabled, setGridEnabled] = useState(false);
+  const [rippleNodeId, setRippleNodeId] = useState<string | null>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const GRID_SIZE = 40;
   const snapToGrid = (v: number) => Math.round(v / GRID_SIZE) * GRID_SIZE;
@@ -676,6 +702,39 @@ function RoadmapGraph({
     for (const q of quests) m.set(`q:${q.id}`, COLUMN_BASE_X + (depths.get(q.id) ?? 0) * COLUMN_SPACING);
     return m;
   }, [quests, depths]);
+
+  // Chapter "swimlanes" — dependency columns already separate quests horizontally by
+  // prerequisite depth; this adds a second, vertical grouping by chapter so the roadmap reads
+  // as "chapter 1's quests up top, chapter 2's below it" etc, while dependency arrows still
+  // draw freely across lanes (a quest can obviously unlock something in a later chapter). Only
+  // chapters that actually have a quest get a lane — an empty chapter in project.chapters
+  // wouldn't need its own band. "" is the synthetic bucket for quests with no chapter set.
+  const chapterKeyByQuestId = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const q of quests) m.set(q.id, q.chapter && chapters.includes(q.chapter) ? q.chapter : "");
+    return m;
+  }, [quests, chapters]);
+  const chapterOrder = useMemo(() => {
+    const used = new Set(chapterKeyByQuestId.values());
+    const ordered = chapters.filter((c) => used.has(c));
+    if (used.has("")) ordered.push("");
+    return ordered;
+  }, [chapters, chapterKeyByQuestId]);
+  const CHAPTER_BAND_PAD = 90;
+  const chapterBand = useMemo(() => {
+    const m = new Map<string, { top: number; bottom: number; center: number; label: string }>();
+    const n = chapterOrder.length;
+    if (n === 0) return m;
+    const usableH = HEIGHT - CHAPTER_BAND_PAD * 2;
+    const bandH = usableH / n;
+    chapterOrder.forEach((key, i) => {
+      const top = CHAPTER_BAND_PAD + i * bandH;
+      m.set(key, { top, bottom: top + bandH, center: top + bandH / 2, label: key || "Без главы" });
+    });
+    return m;
+  }, [chapterOrder]);
+  const CHAPTER_COLORS = ["#8b7bff", "#5fc9c9", "#e0a95f", "#6fb35c", "#d65a6b", "#5b8dff", "#c98ae0"];
+  const chapterColor = (key: string) => CHAPTER_COLORS[Math.max(0, chapterOrder.indexOf(key)) % CHAPTER_COLORS.length];
 
   useEffect(() => {
     const pos = posRef.current;
@@ -870,10 +929,16 @@ function RoadmapGraph({
         const colX = columnXById.get(id);
         if (colX != null) {
           // Quest node, unpinned — pulled toward its dependency-depth column instead of the
-          // canvas center, so prerequisites end up left of whatever they unlock. Quests stay
-          // in the vertical middle band.
+          // canvas center, so prerequisites end up left of whatever they unlock. Vertically it's
+          // pulled toward its OWN chapter's swimlane instead of a flat mid-canvas band, so
+          // quests naturally cluster by chapter (dependency arrows still draw freely across
+          // lanes when a quest unlocks something in a different chapter).
+          const questId = id.startsWith("q:") ? id.slice(2) : id;
+          const chKey = chapterKeyByQuestId.get(questId);
+          const band = chKey != null ? chapterBand.get(chKey) : undefined;
+          const questTargetY = band ? band.center : HEIGHT / 2;
           p.vx += (colX - p.x) * 0.01;
-          p.vy += (HEIGHT / 2 - p.y) * 0.0006;
+          p.vy += (questTargetY - p.y) * 0.0006;
         } else {
           p.vx += (WIDTH / 2 - p.x) * 0.0006;
           const kind = kindById.get(id);
@@ -1059,6 +1124,12 @@ function RoadmapGraph({
     setZoom(targetZoom);
     setPan({ x: rect.width / 2 - p.x * targetZoom, y: rect.height / 2 - p.y * targetZoom });
     setHoveredId(focusRequest.nodeId);
+    // A couple of ripple rings pulse outward from the card's border so it's obvious at a
+    // glance which quest just got selected — the pan/zoom alone can be subtle if the node was
+    // already mostly on screen.
+    setRippleNodeId(focusRequest.nodeId);
+    const t = setTimeout(() => setRippleNodeId(null), 1000);
+    return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusRequest]);
 
@@ -1126,6 +1197,22 @@ function RoadmapGraph({
               transformOrigin: "0 0",
             }}
           >
+            {chapterOrder.map((key) => {
+              const band = chapterBand.get(key);
+              if (!band) return null;
+              const color = chapterColor(key);
+              return (
+                <div key={`chband-${key}`} className="absolute pointer-events-none" style={{ left: 0, top: band.top, width: WIDTH, height: band.bottom - band.top }}>
+                  <div className="absolute inset-0" style={{ background: `${color}0d`, borderTop: `1px solid ${color}33`, borderBottom: `1px solid ${color}33` }} />
+                  <div
+                    className="absolute left-3 top-2 text-[11px] uppercase tracking-wider font-medium px-2 py-0.5 rounded-full"
+                    style={{ color, background: `${color}1a`, border: `1px solid ${color}40` }}
+                  >
+                    {band.label}
+                  </div>
+                </div>
+              );
+            })}
             {gridEnabled && (
               <div
                 className="absolute inset-0 pointer-events-none"
@@ -1344,6 +1431,12 @@ function RoadmapGraph({
                         >
                           <X size={20} strokeWidth={3} style={{ color: "#e0716f" }} />
                         </div>
+                      </div>
+                    )}
+                    {rippleNodeId === n.id && (
+                      <div className="absolute -inset-1.5 pointer-events-none rounded-lg">
+                        <div className="quest-focus-ripple absolute inset-0 rounded-lg border-2" style={{ borderColor: n.color }} />
+                        <div className="quest-focus-ripple-2 absolute inset-0 rounded-lg border-2" style={{ borderColor: n.color }} />
                       </div>
                     )}
                   </div>
@@ -1753,6 +1846,7 @@ export function QuestsView() {
             focusRequest={focusRequest}
             flagDefs={dialogueFlagDefs}
             onSetObjectiveValue={setObjectiveValue}
+            chapters={project.chapters}
           />
         </div>
       </div>

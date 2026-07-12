@@ -48,6 +48,14 @@ import { resizeImageFile } from "../../lib/image";
 import { usePasteImage } from "../../lib/usePasteImage";
 import { ResizablePanel } from "../common/ResizablePanel";
 import { PortalMenu } from "../common/PortalMenu";
+import { Tour, type TourStep } from "../tour/Tour";
+
+const MAP_EDITOR_TOUR: TourStep[] = [
+  { target: '[data-tour="mapeditor-tools"]', title: "Инструменты", body: "Кисть и заливка красят тайлы, ластик стирает, «Зона» рисует прямоугольные области, «Перо» — попиксельный режим, «Панорама» двигает холст." },
+  { target: '[data-tour="mapeditor-layers"]', title: "Слои", body: "Карта строится из слоёв тайлов/зон/меток — рисуйте раздельно, скрывайте и переупорядочивайте по надобности." },
+  { target: '[data-tour="mapeditor-palette"]', title: "Палитра и объекты", body: "Здесь же — палитра цветов для рисования и список записей Codex, которые можно перетащить на карту как метки." },
+  { target: '[data-tour="mapeditor-canvas"]', title: "Холст", body: "Колесо мыши — зум, инструмент «Панорама» (или средняя кнопка) — сдвиг вида. Ctrl+Z/Y — отмена/повтор." },
+];
 import {
   cellKey,
   createDefaultMap,
@@ -963,6 +971,7 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
               </div>
             </PortalMenu>
           </div>
+          <Tour tourId="mapeditor" steps={MAP_EDITOR_TOUR} />
           <button onClick={onClose} className="w-8 h-8 grid place-items-center rounded-md hover:bg-[var(--op-10)] ml-1">
             <X size={16} />
           </button>
@@ -1018,7 +1027,7 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
           <div className="border-r border-[var(--op-10)] flex flex-col h-full overflow-hidden">
             <div className="p-3 border-b border-[var(--op-10)] shrink-0 overflow-y-auto max-h-[46vh]">
               <div className="text-xs uppercase tracking-wider text-[var(--op-35)] mb-2">Инструмент</div>
-              <div className="grid grid-cols-4 gap-1.5">
+              <div data-tour="mapeditor-tools" className="grid grid-cols-4 gap-1.5">
                 <ToolBtn icon={Paintbrush} active={tool === "paint"} onClick={() => setTool("paint")} title="Кисть" />
                 <ToolBtn icon={Eraser} active={tool === "erase"} onClick={() => setTool("erase")} title="Ластик" />
                 <ToolBtn icon={PaintBucket} active={tool === "fill"} onClick={() => setTool("fill")} title="Заливка" />
@@ -1152,7 +1161,7 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
               )}
             </div>
 
-            <div className="p-3 border-b border-[var(--op-10)] shrink-0">
+            <div data-tour="mapeditor-layers" className="p-3 border-b border-[var(--op-10)] shrink-0">
               <div className="flex items-center justify-between mb-2 relative">
                 <div className="text-xs uppercase tracking-wider text-[var(--op-35)]">Слои</div>
                 <button
@@ -1292,7 +1301,7 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
               </div>
             </div>
 
-            <div className="p-3 flex-1 flex flex-col min-h-0">
+            <div data-tour="mapeditor-palette" className="p-3 flex-1 flex flex-col min-h-0">
               <div className="text-xs uppercase tracking-wider text-[var(--op-35)] mb-2">Объекты проекта</div>
               <div className="flex flex-wrap gap-1 mb-2">
                 <button
@@ -1349,6 +1358,7 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
 
           {/* Canvas viewport */}
           <div
+            data-tour="mapeditor-canvas"
             className="flex-1 relative overflow-hidden"
             style={{ background: "var(--op-5)", cursor: canvasCursor }}
             onWheel={(e) => setZoom((z) => clamp(z + (e.deltaY > 0 ? -0.1 : 0.1), 0.3, 3))}
