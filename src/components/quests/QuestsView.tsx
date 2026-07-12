@@ -373,7 +373,7 @@ export function useDialogueQuestLinks(quests: Entry[], dialogues: Dialogue[]) {
 // rounded corners) — same reasoning as PortalMenu/EquipmentPresetsModal elsewhere in this app.
 // Opens to the RIGHT of the node card (not just the dot) so it never overlaps the objective
 // text it's sitting next to, matching where there's actually open canvas space in this graph.
-function DialogueLinkDot({ refs, kind, dim }: { refs: DialogueRef[]; kind: "checks" | "completes"; dim: boolean }) {
+function DialogueLinkDot({ refs, kind, dim, zoom }: { refs: DialogueRef[]; kind: "checks" | "completes"; dim: boolean; zoom: number }) {
   const dotRef = useRef<HTMLSpanElement>(null);
   const [tooltipPos, setTooltipPos] = useState<{ x: number; y: number } | null>(null);
   if (refs.length === 0) return null;
@@ -385,7 +385,7 @@ function DialogueLinkDot({ refs, kind, dim }: { refs: DialogueRef[]; kind: "chec
     const cardEl = dotRef.current?.closest<HTMLElement>(".quest-node-card");
     const rect = (cardEl ?? dotRef.current)?.getBoundingClientRect();
     if (!rect) return;
-    setTooltipPos({ x: rect.right + 8, y: (dotRef.current?.getBoundingClientRect().top ?? rect.top) + 8 });
+    setTooltipPos({ x: rect.right + 8 * zoom, y: (dotRef.current?.getBoundingClientRect().top ?? rect.top) + 8 * zoom });
   };
 
   return (
@@ -398,9 +398,23 @@ function DialogueLinkDot({ refs, kind, dim }: { refs: DialogueRef[]; kind: "chec
       </span>
       {tooltipPos &&
         createPortal(
+          // Positioned in real screen pixels (getBoundingClientRect already reflects the
+          // graph's own pan/zoom transform), but the tooltip's own CONTENT needs an explicit
+          // scale(zoom) on top of that — unlike every other element here, this one lives
+          // outside the transformed world div (it's portaled straight to <body> to escape the
+          // card's overflow-hidden), so it doesn't inherit that transform automatically and
+          // would otherwise stay a fixed screen size while every node around it grows/shrinks.
           <span
             className="fixed pointer-events-none whitespace-nowrap rounded-md border px-2 py-1 text-[10px] z-[200]"
-            style={{ left: tooltipPos.x, top: tooltipPos.y, background: "var(--popover-bg)", borderColor: DIALOGUE_COLOR, color: "var(--op-80)" }}
+            style={{
+              left: tooltipPos.x,
+              top: tooltipPos.y,
+              transform: `scale(${zoom})`,
+              transformOrigin: "top left",
+              background: "var(--popover-bg)",
+              borderColor: DIALOGUE_COLOR,
+              color: "var(--op-80)",
+            }}
           >
             <span style={{ color: DIALOGUE_COLOR }}>{label}:</span> {refs.map((r) => r.name).join(", ")}
           </span>,
@@ -424,6 +438,7 @@ function QuestNodeCard({
   objectiveDialogueLinks,
   flagDefs,
   onSetObjectiveValue,
+  zoom,
 }: {
   entry?: Entry;
   label: string;
@@ -438,6 +453,7 @@ function QuestNodeCard({
   objectiveDialogueLinks: Map<string, QuestDialogueLinks>;
   flagDefs: Record<string, DialogueFlagDef>;
   onSetObjectiveValue: (index: number, value: number) => void;
+  zoom: number;
 }) {
   const objectives = entry?.objectives ?? [];
   const rewards = entry?.rewards;
@@ -545,8 +561,8 @@ function QuestNodeCard({
                       onMouseDown={(e) => e.stopPropagation()}
                       onClick={(e) => e.stopPropagation()}
                     >
-                      <DialogueLinkDot refs={objLinks.checks} kind="checks" dim={toggleDisabled} />
-                      <DialogueLinkDot refs={objLinks.completes} kind="completes" dim={toggleDisabled} />
+                      <DialogueLinkDot refs={objLinks.checks} kind="checks" dim={toggleDisabled} zoom={zoom} />
+                      <DialogueLinkDot refs={objLinks.completes} kind="completes" dim={toggleDisabled} zoom={zoom} />
                     </span>
                   )}
                 </div>
@@ -760,6 +776,26 @@ function RoadmapGraph({
   const CHAPTER_COLORS = ["#8b7bff", "#5fc9c9", "#e0a95f", "#6fb35c", "#d65a6b", "#5b8dff", "#c98ae0"];
   const chapterColor = (key: string) => CHAPTER_COLORS[Math.max(0, chapterOrder.indexOf(key)) % CHAPTER_COLORS.length];
 
+  // Cross-chapter quest->quest dependency edges must be excluded from the physics simulation's
+  // spring force too, not just from being DRAWN as a long line — otherwise the edge-length
+  // spring still yanks the two nodes toward each other every frame regardless of chapter,
+  // completely defeating the chapter swimlane target force (which is comparatively weak) and
+  // dragging the "child" quest's real node visually into the "parent"'s chapter band. This is
+  // the set portal rendering (further down, in the render body) also treats as
+  // "draw a portal stub instead of a direct line" — keeping both derived from the same source
+  // of truth so they can never disagree.
+  const crossChapterEdgeSet = useMemo(() => {
+    const set = new Set<string>();
+    for (const e of edges) {
+      if (!e.styleKind) continue;
+      if (!e.from.startsWith("q:") || !e.to.startsWith("q:")) continue;
+      const chFrom = chapterKeyByQuestId.get(e.from.slice(2));
+      const chTo = chapterKeyByQuestId.get(e.to.slice(2));
+      if (chFrom !== undefined && chTo !== undefined && chFrom !== chTo) set.add(`${e.from}->${e.to}`);
+    }
+    return set;
+  }, [edges, chapterKeyByQuestId]);
+
   useEffect(() => {
     const pos = posRef.current;
     for (const key of Array.from(pos.keys())) {
@@ -873,6 +909,7 @@ function RoadmapGraph({
         a.vy += fy * 0.02;
       }
       for (const e of edges) {
+        if (crossChapterEdgeSet.has(`${e.from}->${e.to}`)) continue; // see portal rendering — no direct line, so no spring pull either
         const a = pos.get(e.from);
         const b = pos.get(e.to);
         if (!a || !b) continue;
@@ -1018,7 +1055,7 @@ function RoadmapGraph({
     }
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [nodes, edges, columnXById]);
+  }, [nodes, edges, columnXById, crossChapterEdgeSet]);
 
   const onNodePointerDown = (n: RoadmapNode, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -1246,10 +1283,7 @@ function RoadmapGraph({
       });
     });
   }
-  const crossChapterEdgeKeys = new Set<string>();
-  for (const list of portalGroups.values()) {
-    for (const p of list) if (p.side === "out") crossChapterEdgeKeys.add(p.key.replace(":out", ""));
-  }
+  const crossChapterEdgeKeys = crossChapterEdgeSet;
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
@@ -1466,34 +1500,30 @@ function RoadmapGraph({
                   </g>
                 );
               })}
-              {portals
-                .filter((p) => p.side === "out")
-                .map((p) => {
-                  const a = pos.get(p.anchorNodeId);
-                  if (!a) return null;
-                  const x1 = a.x + REAL_HALF_W;
-                  const x2 = p.x - PORTAL_HALF_W - 6;
-                  const markerId = `portal-arrow-${p.key.replace(/[^a-zA-Z0-9]/g, "_")}`;
-                  return (
-                    <g key={p.key} opacity={0.85}>
-                      <defs>
-                        <marker id={markerId} viewBox="0 0 8 8" markerWidth="5" markerHeight="5" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
-                          <path d="M0,0 L8,4 L0,8 Z" fill={p.color} />
-                        </marker>
-                      </defs>
-                      <line
-                        x1={x1}
-                        y1={a.y}
-                        x2={x2}
-                        y2={p.y}
-                        stroke={p.color}
-                        strokeWidth={1.8}
-                        strokeDasharray="5 4"
-                        markerEnd={`url(#${markerId})`}
-                      />
-                    </g>
-                  );
-                })}
+              {portals.map((p) => {
+                const a = pos.get(p.anchorNodeId);
+                if (!a) return null;
+                // "out" (attached to the source): arrow runs FROM the real node TO the portal
+                // stub, same reading direction as a normal dependency edge. "in" (attached to
+                // the child, docked on its left): arrow runs FROM the portal stub INTO the real
+                // node — it's the arrival end of the same relationship, just drawn as its own
+                // short stub instead of one long line crossing chapters.
+                const x1 = p.side === "out" ? a.x + REAL_HALF_W : p.x + PORTAL_HALF_W + 6;
+                const x2 = p.side === "out" ? p.x - PORTAL_HALF_W - 6 : a.x - REAL_HALF_W;
+                const y1 = p.side === "out" ? a.y : p.y;
+                const y2 = p.side === "out" ? p.y : a.y;
+                const markerId = `portal-arrow-${p.key.replace(/[^a-zA-Z0-9]/g, "_")}`;
+                return (
+                  <g key={p.key} opacity={0.85}>
+                    <defs>
+                      <marker id={markerId} viewBox="0 0 8 8" markerWidth="5" markerHeight="5" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+                        <path d="M0,0 L8,4 L0,8 Z" fill={p.color} />
+                      </marker>
+                    </defs>
+                    <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={p.color} strokeWidth={1.8} strokeDasharray="5 4" markerEnd={`url(#${markerId})`} />
+                  </g>
+                );
+              })}
             </svg>
 
             {nodes.map((n) => {
@@ -1545,6 +1575,7 @@ function RoadmapGraph({
                       objectiveDialogueLinks={dialogueLinks.byObjective}
                       flagDefs={flagDefs}
                       onSetObjectiveValue={(i, v) => onSetObjectiveValue(n.entryId!, i, v)}
+                      zoom={zoom}
                     />
                     {blockFlash.has(n.id) && (
                       <div
