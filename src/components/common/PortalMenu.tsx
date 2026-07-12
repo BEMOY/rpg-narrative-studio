@@ -54,7 +54,15 @@ export function PortalMenu({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
-    const onScroll = () => onClose();
+    // Only an OUTSIDE scroll (e.g. the page/canvas behind the menu) should close it — a scroll
+    // happening INSIDE the menu's own content (a long list like the changelog bell, or a
+    // scrollbar drag) used to bubble up to this same capture-phase listener and close the menu
+    // out from under the very scroll gesture that was supposed to just scroll it.
+    const onScroll = (e: Event) => {
+      const target = e.target;
+      if (target instanceof Node && menuRef.current?.contains(target)) return;
+      onClose();
+    };
     window.addEventListener("mousedown", onDown, true);
     window.addEventListener("keydown", onKey);
     window.addEventListener("scroll", onScroll, true);

@@ -446,7 +446,18 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         dialogues: s.project.dialogues.map((d) =>
           d.id !== dialogueId
             ? d
-            : { ...d, nodes: d.nodes.map((n) => (n.id === nodeId ? { ...n, lines: [...n.lines, createLine()] } : n)) }
+            : {
+                ...d,
+                nodes: d.nodes.map((n) => {
+                  if (n.id !== nodeId) return n;
+                  // New replicas within the SAME node default to whoever was already talking —
+                  // most nodes are one character's lines in a row, so leaving speaker blank
+                  // every time just meant re-picking them from the dropdown over and over.
+                  const lastLine = n.lines[n.lines.length - 1];
+                  const inherited = lastLine ? { speaker: lastLine.speaker, speakerEntryId: lastLine.speakerEntryId } : undefined;
+                  return { ...n, lines: [...n.lines, createLine(inherited)] };
+                }),
+              }
         ),
       },
     }));

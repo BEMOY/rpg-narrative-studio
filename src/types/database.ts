@@ -480,6 +480,17 @@ export interface Dialogue {
   // open dialogue happened to be at (DialogueCanvas isn't remounted per-dialogue, so its pan/zoom
   // state used to just carry over unchanged — this is what made the view look "random").
   camera?: { x: number; y: number; zoom: number };
+  // Chapter + location apply to the whole dialogue "file", not to individual nodes — a
+  // conversation happens in one place at one point in the story in the overwhelming majority
+  // of cases. `chapter` mirrors Entry.chapter (a plain string matching one of project.chapters,
+  // "" / undefined = no chapter). `locationEntryId` links to an actual Entry of category
+  // "location" (reusing the existing location/map-editor entity) rather than a free-text
+  // field, so it stays consistent with everywhere else locations are referenced. The rare case
+  // of the SAME dialogue content playing out in different chapters/locations isn't modeled
+  // structurally — the writer would duplicate the dialogue for that instead, same as any other
+  // per-file metadata in this app.
+  chapter?: string;
+  locationEntryId?: string;
 }
 
 // App/Codex-wide UI preferences that aren't really "project content" (nothing here affects any

@@ -818,19 +818,52 @@ function RoadmapGraph({
     if (used.has("")) ordered.push("");
     return ordered;
   }, [chapters, chapterKeyByQuestId]);
+  // How many quests actually live in each chapter — feeds proportional band sizing right below,
+  // so a chapter with one quest doesn't reserve the same vertical space as one with twenty.
+  const questCountByChapter = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const q of quests) {
+      const key = chapterKeyByQuestId.get(q.id) ?? "";
+      m.set(key, (m.get(key) ?? 0) + 1);
+    }
+    return m;
+  }, [quests, chapterKeyByQuestId]);
   const CHAPTER_BAND_PAD = 90;
+  // Band height used to be a flat 1/n split of the canvas regardless of how many quests were
+  // actually in each chapter — a one-quest epilogue got the exact same huge band as a
+  // twenty-quest main chapter, wasting space on the light one and cramping the heavy one.
+  // Now each band's share of the fixed usable height is proportional to its own quest count
+  // (with a MIN_BAND_H floor so a light chapter never collapses to an unreadable sliver, and
+  // the leftover space after flooring is redistributed to the remaining bands by their own
+  // weight) — scales sensibly from a single quest up to a huge chapter.
   const chapterBand = useMemo(() => {
     const m = new Map<string, { top: number; bottom: number; center: number; label: string }>();
     const n = chapterOrder.length;
     if (n === 0) return m;
     const usableH = HEIGHT - CHAPTER_BAND_PAD * 2;
-    const bandH = usableH / n;
+    const MIN_BAND_H = 220;
+    const weights = chapterOrder.map((key) => Math.max(1, questCountByChapter.get(key) ?? 0));
+    const totalWeight = weights.reduce((a, b) => a + b, 0) || 1;
+    const rawHeights = weights.map((w) => (usableH * w) / totalWeight);
+    const flooredIdx = new Set<number>();
+    rawHeights.forEach((h, i) => {
+      if (h < MIN_BAND_H) flooredIdx.add(i);
+    });
+    const flooredTotal = flooredIdx.size * MIN_BAND_H;
+    const remaining = Math.max(0, usableH - flooredTotal);
+    const flexIdx = chapterOrder.map((_, i) => i).filter((i) => !flooredIdx.has(i));
+    const flexWeightSum = flexIdx.reduce((sum, i) => sum + weights[i], 0) || 1;
+    const heights = chapterOrder.map((_, i) => (flooredIdx.has(i) ? MIN_BAND_H : (remaining * weights[i]) / flexWeightSum));
+    let cursor = CHAPTER_BAND_PAD;
     chapterOrder.forEach((key, i) => {
-      const top = CHAPTER_BAND_PAD + i * bandH;
-      m.set(key, { top, bottom: top + bandH, center: top + bandH / 2, label: key || "Без главы" });
+      const bandH = heights[i];
+      const top = cursor;
+      const bottom = top + bandH;
+      m.set(key, { top, bottom, center: top + bandH / 2, label: key || "Без главы" });
+      cursor = bottom;
     });
     return m;
-  }, [chapterOrder]);
+  }, [chapterOrder, questCountByChapter]);
   const CHAPTER_COLORS = ["#8b7bff", "#5fc9c9", "#e0a95f", "#6fb35c", "#d65a6b", "#5b8dff", "#c98ae0"];
   const chapterColor = (key: string) => CHAPTER_COLORS[Math.max(0, chapterOrder.indexOf(key)) % CHAPTER_COLORS.length];
 
@@ -961,6 +994,27 @@ function RoadmapGraph({
     for (const n of nodes) kindById.set(n.id, n.kind);
     const questIds = ids.filter((id) => kindById.get(id) === "quest");
 
+    // Hard per-frame safety net: whatever the spring/repulsion/overlap-correction forces below
+    // computed, a quest node's Y can never leave its OWN chapter's band. Every previous fix to
+    // this recurring bug (excluding cross-chapter edges from the spring force, clamping stale
+    // saved positions, live-correcting pinned anchors) addressed a specific FORCE that could
+    // push a node into the wrong band, but the always-on global repulsion (every node repels
+    // every other node, completely chapter-agnostic — see the very next loop) and the
+    // hard-overlap-correction pass further down both directly move quest nodes without any
+    // chapter awareness at all, and are individually strong enough at close range to overpower
+    // the comparatively weak 0.0006 chapter-targeting pull. Rather than trying to keep tuning
+    // that arms race, this clamps the RESULT unconditionally: no matter what pushed a quest
+    // node around this frame, its y always gets snapped back inside its band's bounds before
+    // the frame ends.
+    const clampToChapterBand = (id: string, y: number) => {
+      if (kindById.get(id) !== "quest") return y;
+      const qId = id.startsWith("q:") ? id.slice(2) : id;
+      const chKey = chapterKeyByQuestId.get(qId);
+      const band = chKey != null ? chapterBand.get(chKey) : undefined;
+      if (!band) return y;
+      return clamp(y, band.top + 20, band.bottom - 20);
+    };
+
     function tick() {
       const pos = posRef.current;
       for (let i = 0; i < ids.length; i++) {
@@ -1078,7 +1132,7 @@ function RoadmapGraph({
             p.vy = 0;
           }
           p.x = clamp(p.x + p.vx, 40, WIDTH - 40);
-          p.y = clamp(p.y + p.vy, 40, HEIGHT - 40);
+          p.y = clampToChapterBand(id, clamp(p.y + p.vy, 40, HEIGHT - 40));
           continue;
         }
         const colX = columnXById.get(id);
@@ -1111,7 +1165,7 @@ function RoadmapGraph({
           p.vy = 0;
         }
         p.x = clamp(p.x + p.vx, 40, WIDTH - 40);
-        p.y = clamp(p.y + p.vy, 40, HEIGHT - 40);
+        p.y = clampToChapterBand(id, clamp(p.y + p.vy, 40, HEIGHT - 40));
       }
 
       // Hard overlap correction for quest cards specifically — they're the biggest, most
@@ -1134,11 +1188,11 @@ function RoadmapGraph({
           const ny = dy / dist;
           if (draggingRef.current?.id !== questIds[i]) {
             a.x = clamp(a.x - nx * push, 40, WIDTH - 40);
-            a.y = clamp(a.y - ny * push, 40, HEIGHT - 40);
+            a.y = clampToChapterBand(questIds[i], clamp(a.y - ny * push, 40, HEIGHT - 40));
           }
           if (draggingRef.current?.id !== questIds[j]) {
             b.x = clamp(b.x + nx * push, 40, WIDTH - 40);
-            b.y = clamp(b.y + ny * push, 40, HEIGHT - 40);
+            b.y = clampToChapterBand(questIds[j], clamp(b.y + ny * push, 40, HEIGHT - 40));
           }
         }
       }

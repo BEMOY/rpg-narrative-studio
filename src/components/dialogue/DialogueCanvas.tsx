@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Plus, ZoomIn, ZoomOut, Maximize2, Type, Settings, Play, FileDown, FileUp, FileCode, Share2, Grid2X2 } from "lucide-react";
+import { Plus, ZoomIn, ZoomOut, Maximize2, Type, Play, FileDown, FileUp, FileCode, Share2, Grid2X2, MapPin, BookMarked } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { PortalMenu } from "../common/PortalMenu";
 import type { Dialogue } from "../../types/database";
@@ -7,7 +7,7 @@ import { DialogueNodeCard } from "./DialogueNodeCard";
 import { ColorStylesManagerModal } from "./ColorStylesManagerModal";
 import { TestPlayModal } from "./TestPlayModal";
 import { GmlExportModal } from "./GmlExportModal";
-import { SettingsPanel } from "../settings/SettingsPanel";
+import { SearchSelect } from "./SearchSelect";
 import { Tour, type TourStep } from "../tour/Tour";
 
 const DIALOGUES_TOUR: TourStep[] = [
@@ -36,6 +36,17 @@ export const DLG_PORT_COLORS = {
   choice: "#2dd4bf", // teal-400
   else: "#fb923c", // orange-400
   cont: "#fbbf24", // amber-400
+} as const;
+
+// Matching radii (world-space, so they scale with zoom exactly like everything else on the
+// stage) for the endpoint dot drawn where an edge actually LANDS on its target node — mirrors
+// each port's own real DOM handle size 1:1 (choice is w-3 h-3 = 12px diameter, else is w-2 h-2
+// = 8px, cont is w-2.5 h-2.5 = 10px) so the arriving connection reads as visually "the same
+// dot" as the one it left from, not a generic small marker.
+export const DLG_PORT_RADII = {
+  choice: 6,
+  else: 4,
+  cont: 5,
 } as const;
 const MIN_ZOOM = 0.01; // 1% — same reasoning as the Quests roadmap graph's resetView: a large dialogue should still fully zoom-to-fit instead of clipping
 
@@ -133,6 +144,7 @@ type AnchorKey = string; // "in:<nodeId>" | "cont:<nodeId>" | "choice:<choiceId>
 export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
   const dialogueFlags = useProjectStore((s) => s.project.dialogueFlags);
   const entries = useProjectStore((s) => s.project.entries);
+  const chapters = useProjectStore((s) => s.project.chapters);
   const colorStyles = useProjectStore((s) => s.project.colorStyles);
   const updateDialogueNode = useProjectStore((s) => s.updateDialogueNode);
   const addDialogueNode = useProjectStore((s) => s.addDialogueNode);
@@ -178,7 +190,6 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [zoom, pan.x, pan.y, dialogue.id]);
   const [colorStylesOpen, setColorStylesOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [testOpen, setTestOpen] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const [gmlOpen, setGmlOpen] = useState(false);
@@ -544,6 +555,36 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
           onChange={(e) => renameDialogue(dialogue.id, e.target.value || dialogue.name)}
           className="bg-transparent outline-none text-sm font-medium text-[var(--op-85)] px-1.5 py-1 rounded hover:bg-[var(--op-5)] focus:bg-[var(--op-7)] min-w-[120px]"
         />
+        {/* Chapter + location apply to the WHOLE dialogue, not per-node — see Dialogue.chapter/
+            locationEntryId. Kept right next to the title since they're "file"-level metadata,
+            same spirit as the title input itself. */}
+        <div className="flex items-center gap-1 text-[11px] text-[var(--op-45)]">
+          <BookMarked size={12} className="shrink-0" />
+          <select
+            value={dialogue.chapter ?? ""}
+            onChange={(e) => updateDialogue(dialogue.id, { chapter: e.target.value || undefined })}
+            title="Глава этого диалога"
+            className="bg-transparent outline-none text-[11px] text-[var(--op-60)] hover:text-[var(--op-85)] rounded px-1 py-1 hover:bg-[var(--op-5)] max-w-[130px]"
+          >
+            <option value="">Без главы</option>
+            {chapters.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="flex items-center gap-1 min-w-[140px]">
+          <MapPin size={12} className="shrink-0 text-[var(--op-45)]" />
+          <SearchSelect
+            value={dialogue.locationEntryId}
+            onChange={(id) => updateDialogue(dialogue.id, { locationEntryId: id })}
+            options={entries.filter((e) => e.category === "location").map((e) => ({ id: e.id, label: e.name }))}
+            placeholder="локация…"
+            searchPlaceholder="Поиск локации…"
+            clearLabel="— без локации —"
+          />
+        </div>
         <button data-tour="dialogues-addnode" onClick={addNode} className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md bg-accent/80 hover:bg-accent">
           <Plus size={12} /> Нода
         </button>
@@ -552,13 +593,6 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
         </button>
         <button onClick={() => setColorStylesOpen(true)} className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md glass hover:bg-[var(--op-10)]">
           <Type size={12} /> Стили текста
-        </button>
-        <button
-          onClick={() => setSettingsOpen(true)}
-          title="Настройки: тема, обучение, сброс предупреждений"
-          className="w-8 h-8 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]"
-        >
-          <Settings size={13} />
         </button>
         <Tour tourId="dialogues" steps={DIALOGUES_TOUR} />
         <div className="relative">
@@ -660,7 +694,7 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
                   lines.push(
                     <g key={`cont-${n.id}`}>
                       <path d={curvePath(from, to)} fill="none" stroke={DLG_PORT_COLORS.cont} strokeWidth={1.6} markerEnd="url(#dlg-arrow-cont)" />
-                      <circle cx={to.x} cy={to.y} r={3} fill={DLG_PORT_COLORS.cont} />
+                      <circle cx={to.x} cy={to.y} r={DLG_PORT_RADII.cont} fill={DLG_PORT_COLORS.cont} />
                     </g>
                   );
                 }
@@ -674,7 +708,7 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
                 lines.push(
                   <g key={`choice-${c.id}`}>
                     <path d={curvePath(from, to)} fill="none" stroke={DLG_PORT_COLORS.choice} strokeWidth={1.6} markerEnd="url(#dlg-arrow-choice)" />
-                    <circle cx={to.x} cy={to.y} r={3} fill={DLG_PORT_COLORS.choice} />
+                    <circle cx={to.x} cy={to.y} r={DLG_PORT_RADII.choice} fill={DLG_PORT_COLORS.choice} />
                   </g>
                 );
               });
@@ -687,7 +721,7 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
                 lines.push(
                   <g key={`else-${l.id}`}>
                     <path d={curvePath(from, to)} fill="none" stroke={DLG_PORT_COLORS.else} strokeWidth={1.6} strokeDasharray="4 3" markerEnd="url(#dlg-arrow-else)" />
-                    <circle cx={to.x} cy={to.y} r={3} fill={DLG_PORT_COLORS.else} />
+                    <circle cx={to.x} cy={to.y} r={DLG_PORT_RADII.else} fill={DLG_PORT_COLORS.else} />
                   </g>
                 );
               });
@@ -766,7 +800,6 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
       </datalist>
 
       {colorStylesOpen && <ColorStylesManagerModal onClose={() => setColorStylesOpen(false)} />}
-      {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
       {testOpen && <TestPlayModal dialogue={dialogue} onClose={() => setTestOpen(false)} />}
       {gmlOpen && <GmlExportModal dialogue={dialogue} entries={entries} colorStyles={colorStyles} onClose={() => setGmlOpen(false)} />}
       {deleteConfirm && (

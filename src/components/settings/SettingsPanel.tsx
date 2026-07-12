@@ -182,8 +182,9 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
             </button>
           </div>
 
-          {/* ---- Delete confirmation ---- */}
+          {/* ---- Dialogue-specific settings ---- */}
           <div className="pt-4 border-t border-[var(--op-8)]">
+            <div className="text-sm font-medium text-[var(--op-80)] mb-3">Диалоги</div>
             <div className="text-xs uppercase tracking-wider text-[var(--op-35)] mb-2">Подтверждение удаления нод</div>
             <div className="text-[11px] text-[var(--op-40)] mb-2">
               {uiSettings?.skipDeleteConfirmGlobal

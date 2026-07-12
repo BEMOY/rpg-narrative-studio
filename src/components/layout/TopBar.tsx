@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
-import { Search, Play, Download, ArrowLeft } from "lucide-react";
+import { Search, Play, Download, ArrowLeft, Settings } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
-import { ThemeMenu } from "../ThemeMenu";
 import { CommandPalette } from "./CommandPalette";
+import { SettingsPanel } from "../settings/SettingsPanel";
 
 export function TopBar({ onExport }: { onExport: () => void }) {
   const projectName = useProjectStore((s) => s.project.name);
   const closeProject = useProjectStore((s) => s.closeProject);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -53,8 +54,15 @@ export function TopBar({ onExport }: { onExport: () => void }) {
       >
         <Download size={14} /> Export
       </button>
-      <ThemeMenu />
+      <button
+        onClick={() => setSettingsOpen(true)}
+        title="Настройки: тема, обучение, диалоги"
+        className="w-8 h-8 grid place-items-center rounded-md hover:bg-[var(--op-10)] text-[var(--op-50)] hover:text-[var(--op-90)] transition-colors"
+      >
+        <Settings size={15} />
+      </button>
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
+      {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
     </div>
   );
 }
