@@ -213,7 +213,7 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
   // Ctrl+C/Ctrl+X copy — a deep-cloned snapshot of the selected nodes at copy time, pasted back
   // via Ctrl+V with fresh ids (see the keydown handler below). Plain ref, not state: clipboard
   // content never needs to trigger a re-render on its own.
-  const clipboardRef = useRef<DialogueNode[] | null>(null);
+  const clipboardRef = useRef<{ nodes: DialogueNode[]; wasStartNode: string | null } | null>(null);
   const addDialogueNodesRaw = useProjectStore((s) => s.addDialogueNodesRaw);
   const livePos = useRef<Map<string, { x: number; y: number }>>(new Map());
   const [linkDrag, setLinkDrag] = useState<{ from: AnchorKey; x: number; y: number } | null>(null);
@@ -312,7 +312,11 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
         e.preventDefault();
         const snapshot = dialogue.nodes.filter((n) => selectedIds.has(n.id)).map((n) => JSON.parse(JSON.stringify(n)) as DialogueNode);
         if (snapshot.length === 0) return;
-        clipboardRef.current = snapshot;
+        // Only a CUT carries the "this was the start node" intent forward to paste — a plain
+        // copy leaves the original (and its start-node status) untouched in the dialogue, so
+        // pasting a duplicate shouldn't steal start status away from it.
+        const wasStartNode = key === "x" && snapshot.some((n) => n.id === dialogue.startNodeId) ? dialogue.startNodeId : null;
+        clipboardRef.current = { nodes: snapshot, wasStartNode };
         if (key === "x") {
           deleteDialogueNodes(dialogue.id, snapshot.map((n) => n.id));
           setSelectedIds(new Set());
@@ -322,12 +326,12 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
 
       // Paste
       const clip = clipboardRef.current;
-      if (!clip || clip.length === 0) return;
+      if (!clip || clip.nodes.length === 0) return;
       e.preventDefault();
       const idMap = new Map<string, string>();
-      clip.forEach((n) => idMap.set(n.id, nextId("node")));
+      clip.nodes.forEach((n) => idMap.set(n.id, nextId("node")));
       const PASTE_OFFSET = 48;
-      const pasted: DialogueNode[] = clip.map((n) => ({
+      const pasted: DialogueNode[] = clip.nodes.map((n) => ({
         ...n,
         id: idMap.get(n.id)!,
         x: n.x + PASTE_OFFSET,
@@ -346,10 +350,17 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
       }));
       addDialogueNodesRaw(dialogue.id, pasted);
       setSelectedIds(new Set(pasted.map((n) => n.id)));
+      // The node that was cut while it was the dialogue's start node becomes the start node
+      // again once it's pasted back — otherwise cutting the start node (e.g. to move it
+      // elsewhere on the canvas via cut/paste) silently left the dialogue with whatever
+      // fallback start node deleteDialogueNodes picked instead.
+      if (clip.wasStartNode && idMap.has(clip.wasStartNode)) {
+        setDialogueStartNode(dialogue.id, idMap.get(clip.wasStartNode)!);
+      }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [selectedIds, dialogue, deleteDialogueNodes, addDialogueNodesRaw]);
+  }, [selectedIds, dialogue, deleteDialogueNodes, addDialogueNodesRaw, setDialogueStartNode]);
 
   // WASD panning — held keys accumulate in a ref (not React state, so held-down tracking isn't
   // fighting a render cycle) and a small always-on rAF loop nudges `pan` every frame while any

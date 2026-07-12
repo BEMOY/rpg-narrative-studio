@@ -81,7 +81,7 @@ export function EntryEditor({ entry, onDone }: { entry: Entry; onDone: () => voi
         </Section>
       )}
 
-      {isEquip(entry.category) && <EquipStatsSection entry={entry} />}
+      {(isEquip(entry.category) || entry.category === "character") && <EquipStatsSection entry={entry} />}
 
       {(entry.category === "item" || entry.category === "equipment") && (
         <Section title="Economy">
@@ -110,7 +110,7 @@ export function EntryEditor({ entry, onDone }: { entry: Entry; onDone: () => voi
         </Section>
       )}
 
-      {canHaveStats(entry.category) && !isEquip(entry.category) && (
+      {canHaveStats(entry.category) && !isEquip(entry.category) && entry.category !== "character" && (
         <Section title="Stats">
           <div className="grid grid-cols-2 gap-3">
             {SUGGESTED_STATS.map((key) => (

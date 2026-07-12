@@ -23,10 +23,10 @@ import {
   FileUp,
   Search,
   Image as ImageIcon,
-  ChevronUp,
-  ChevronDown,
   Grid3x3,
   Settings2,
+  Download,
+  GripVertical,
 } from "lucide-react";
 import type {
   Category,
@@ -38,6 +38,7 @@ import type {
   MapLayer,
   MapObjectInstance,
   MapObjectLayer,
+  MapPaletteColor,
   MapTileLayer,
   MapZone,
   MapZoneLayer,
@@ -50,6 +51,7 @@ import { ResizablePanel } from "../common/ResizablePanel";
 import { PortalMenu } from "../common/PortalMenu";
 import { Tour, type TourStep } from "../tour/Tour";
 import { mapEditorFocusState } from "../../lib/mapEditorFocus";
+import { PaletteImportModal } from "./PaletteImportModal";
 import { ThemedSelect } from "../common/ThemedSelect";
 import { themedAlert, themedConfirm } from "../../lib/modals";
 
@@ -132,6 +134,8 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
   const [categoryFilter, setCategoryFilter] = useState<Category | "all">("all");
   const [gridVisible, setGridVisible] = useState(true);
   const [renamingLayerId, setRenamingLayerId] = useState<string | null>(null);
+  const [draggingLayerId, setDraggingLayerId] = useState<string | null>(null);
+  const layerDragRef = useRef<{ id: string; snapshotted: boolean } | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   // Free-typing drafts for the canvas-size/grid-size inputs — clamping on every
@@ -141,7 +145,8 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
   const [widthDraft, setWidthDraft] = useState(String(map.width));
   const [heightDraft, setHeightDraft] = useState(String(map.height));
   const [gridSizeDraft, setGridSizeDraft] = useState(String(map.gridSize));
-  const [addColorDraft, setAddColorDraft] = useState({ color: "#888888", label: "" });
+  const [addColorDraft, setAddColorDraft] = useState({ color: "#888888" });
+  const [paletteImportOpen, setPaletteImportOpen] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const exportBtnRef = useRef<HTMLButtonElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
@@ -312,16 +317,54 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
     if (activeLayerId === id) setActiveLayerId(map.layers.find((l) => l.id !== id)?.id ?? "");
   };
 
-  const moveLayer = (id: string, dir: -1 | 1) => {
+  // Press-and-hold drag reordering (replaces the old up/down arrow buttons) — moves the
+  // dragged layer to sit exactly where the row currently under the cursor is, live as you drag
+  // over each row, same "reorder while hovering" feel as most layer panels. The whole drag is
+  // ONE undo step: `snapshot()` fires once on mousedown (matching how a freehand brush stroke
+  // or a QuestsView node drag is a single undo-able action), and every live reorder during the
+  // drag itself goes through `setMap(updater, false)` so it doesn't spam the history stack.
+  const moveLayerTo = (draggedId: string, targetId: string) => {
     setMap((prev) => {
+      if (draggedId === targetId) return prev;
       const next = cloneMap(prev);
-      const idx = next.layers.findIndex((l) => l.id === id);
-      const swapWith = idx + dir;
-      if (idx < 0 || swapWith < 0 || swapWith >= next.layers.length) return prev;
-      const [item] = next.layers.splice(idx, 1);
-      next.layers.splice(swapWith, 0, item);
+      const fromIdx = next.layers.findIndex((l) => l.id === draggedId);
+      const toIdx = next.layers.findIndex((l) => l.id === targetId);
+      if (fromIdx < 0 || toIdx < 0) return prev;
+      const [item] = next.layers.splice(fromIdx, 1);
+      next.layers.splice(toIdx, 0, item);
       return next;
-    });
+    }, false);
+  };
+
+  const onLayerDragHandleDown = (l: MapLayer, e: React.MouseEvent) => {
+    e.preventDefault(); // otherwise the browser starts a native text-selection drag on mousedown
+    e.stopPropagation();
+    layerDragRef.current = { id: l.id, snapshotted: false };
+    setDraggingLayerId(l.id);
+    // Belt-and-suspenders against text getting selected mid-drag on top of preventDefault above
+    // (Safari in particular can still highlight adjacent text during a fast drag otherwise).
+    document.body.style.userSelect = "none";
+    const onMove = (ev: MouseEvent) => {
+      const d = layerDragRef.current;
+      if (!d) return;
+      if (!d.snapshotted) {
+        snapshot();
+        d.snapshotted = true;
+      }
+      const target = document.elementFromPoint(ev.clientX, ev.clientY);
+      const rowEl = target && (target as HTMLElement).closest<HTMLElement>("[data-layer-row-id]");
+      const overId = rowEl?.dataset.layerRowId;
+      if (overId && overId !== d.id) moveLayerTo(d.id, overId);
+    };
+    const onUp = () => {
+      layerDragRef.current = null;
+      setDraggingLayerId(null);
+      document.body.style.userSelect = "";
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
   };
 
   const updateLayer = (id: string, patch: Record<string, unknown>) => {
@@ -339,19 +382,38 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
   };
 
   // ---- palette ----
+  // No label prompt anymore — pick a color and it's immediately usable, no naming step in the
+  // way. The label field still exists on MapPaletteColor (used as a tile's descriptive text
+  // when painted), so newly-added colors just default it to their own hex code.
   const addPaletteColor = () => {
-    if (!addColorDraft.label.trim()) return;
+    const hex = addColorDraft.color.toLowerCase();
     setMap((prev) => {
+      if (prev.palette.some((p) => p.color.toLowerCase() === hex)) return prev;
       const next = cloneMap(prev);
-      next.palette.push({ color: addColorDraft.color, label: addColorDraft.label.trim() });
+      next.palette.push({ color: hex, label: hex });
       return next;
     }, false);
-    setAddColorDraft({ color: "#888888", label: "" });
   };
   const removePaletteColor = (color: string) => {
     setMap((prev) => {
       const next = cloneMap(prev);
       next.palette = next.palette.filter((p) => p.color !== color);
+      return next;
+    }, false);
+  };
+  // Bulk-add from PaletteImportModal (Lospec fetch or pasted hex list) — silently skips any
+  // color already present instead of erroring, so importing the same palette twice (or one
+  // that overlaps the current one) is harmless.
+  const importPaletteColors = (colors: string[]) => {
+    setMap((prev) => {
+      const next = cloneMap(prev);
+      const existing = new Set(next.palette.map((p) => p.color.toLowerCase()));
+      for (const c of colors) {
+        const hex = c.toLowerCase();
+        if (existing.has(hex)) continue;
+        existing.add(hex);
+        next.palette.push({ color: hex, label: hex });
+      }
       return next;
     }, false);
   };
@@ -522,6 +584,13 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
   };
 
   // ---- freehand drawing ----
+  // Redraw the visible <canvas> from the layer's stored bitmap whenever that bitmap value
+  // itself changes — not just when switching layers/tools. Previously this only re-ran on
+  // [activeLayerId, tool], so the on-screen canvas kept showing stale, already-undone pixels
+  // after Ctrl+Z/the Undo button: the undo correctly rewound `map.layers[...].bitmap` in the
+  // store (which is why reopening the map later showed the reverted drawing), but nothing told
+  // THIS canvas element to actually repaint itself from that reverted bitmap while still in
+  // the editor, so undo looked like it silently did nothing.
   useEffect(() => {
     const layer = effectiveFreehandLayer();
     const canvas = freehandCanvasRef.current;
@@ -535,7 +604,7 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
       img.src = layer.bitmap;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeLayerId, tool]);
+  }, [activeLayerId, tool, effectiveFreehandLayer()?.bitmap]);
 
   const commitFreehandStroke = () => {
     const canvas = freehandCanvasRef.current;
@@ -928,6 +997,7 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
   const canvasCursor = tool === "pan" ? "grab" : tool === "select" ? "default" : "crosshair";
 
   return (
+    <>
     <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-3">
       <div className="glass rounded-lg w-full h-full max-w-[1500px] flex flex-col overflow-hidden">
         {/* Top bar */}
@@ -1072,51 +1142,20 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
                 <ToolBtn icon={Hand} active={tool === "pan"} onClick={() => setTool("pan")} title="Панорама" />
               </div>
 
-              {(tool === "paint" || tool === "erase") && !activeIsFreehand && (
-                <div className="mt-3">
-                  <div className="grid grid-cols-4 gap-1.5">
-                    {map.palette.map((t) => (
-                      <button
-                        key={t.color}
-                        title={t.label}
-                        onClick={() => {
-                          setPaintColor(t.color);
-                          setPaintLabel(t.label);
-                          setTool("paint");
-                        }}
-                        className="relative group w-full aspect-square rounded-md border-2"
-                        style={{ background: t.color, borderColor: paintColor === t.color ? "var(--op-90)" : "transparent" }}
-                      >
-                        <span
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            removePaletteColor(t.color);
-                          }}
-                          className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-black/70 text-white text-[8px] hidden group-hover:grid place-items-center"
-                        >
-                          ×
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                  <div className="flex items-center gap-1.5 mt-2">
-                    <input
-                      type="color"
-                      value={addColorDraft.color}
-                      onChange={(e) => setAddColorDraft((d) => ({ ...d, color: e.target.value }))}
-                      className="w-7 h-7 rounded-md border border-[var(--op-15)] bg-transparent cursor-pointer shrink-0"
-                    />
-                    <input
-                      value={addColorDraft.label}
-                      onChange={(e) => setAddColorDraft((d) => ({ ...d, label: e.target.value }))}
-                      placeholder="название"
-                      className="input text-xs py-1"
-                    />
-                    <button onClick={addPaletteColor} className="w-7 h-7 shrink-0 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]">
-                      <Plus size={12} />
-                    </button>
-                  </div>
-                </div>
+              {(tool === "paint" || tool === "fill") && !activeIsFreehand && (
+                <PaletteGrid
+                  palette={map.palette}
+                  activeColor={paintColor}
+                  onPick={(color, label) => {
+                    setPaintColor(color);
+                    setPaintLabel(label);
+                  }}
+                  onRemove={removePaletteColor}
+                  addColorDraft={addColorDraft}
+                  setAddColorDraft={setAddColorDraft}
+                  onAdd={addPaletteColor}
+                  onOpenImport={() => setPaletteImportOpen(true)}
+                />
               )}
 
               {(tool === "draw" || (tool === "erase" && activeIsFreehand)) && (
@@ -1133,15 +1172,16 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
                     />
                   </label>
                   {tool === "draw" && (
-                    <label className="flex items-center justify-between text-xs text-[var(--op-50)]">
-                      Цвет пера
-                      <input
-                        type="color"
-                        value={brushColor}
-                        onChange={(e) => setBrushColor(e.target.value)}
-                        className="w-8 h-6 rounded-md border border-[var(--op-15)] bg-transparent cursor-pointer"
-                      />
-                    </label>
+                    <PaletteGrid
+                      palette={map.palette}
+                      activeColor={brushColor}
+                      onPick={(color) => setBrushColor(color)}
+                      onRemove={removePaletteColor}
+                      addColorDraft={addColorDraft}
+                      setAddColorDraft={setAddColorDraft}
+                      onAdd={addPaletteColor}
+                      onOpenImport={() => setPaletteImportOpen(true)}
+                    />
                   )}
                   {!activeIsFreehand && (
                     <div className="text-[10px] text-[var(--op-30)]">Выберите или создайте слой «Рисование» ниже.</div>
@@ -1233,16 +1273,23 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
                 </PortalMenu>
               </div>
               <div className="space-y-1">
-                {[...map.layers].reverse().map((l, revIdx) => {
-                  const idx = map.layers.length - 1 - revIdx;
+                {[...map.layers].reverse().map((l) => {
                   return (
                     <div
                       key={l.id}
+                      data-layer-row-id={l.id}
                       onClick={() => setActiveLayerId(l.id)}
-                      className={`flex items-center gap-1 px-2 py-1.5 rounded-md cursor-pointer text-xs ${
+                      className={`flex items-center gap-1 px-2 py-1.5 rounded-md cursor-pointer text-xs transition-opacity ${
                         activeLayerId === l.id ? "bg-[var(--op-10)] text-[var(--op-90)]" : "text-[var(--op-50)] hover:bg-[var(--op-7)]"
-                      }`}
+                      } ${draggingLayerId === l.id ? "opacity-40" : ""}`}
                     >
+                      <span
+                        onMouseDown={(e) => onLayerDragHandleDown(l, e)}
+                        title="Потяните, чтобы изменить порядок слоёв"
+                        className="opacity-40 hover:opacity-90 shrink-0 cursor-grab active:cursor-grabbing select-none"
+                      >
+                        <GripVertical size={11} />
+                      </span>
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -1297,28 +1344,6 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
                         className="w-8 shrink-0"
                         title="Прозрачность"
                       />
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          moveLayer(l.id, 1);
-                        }}
-                        disabled={idx === map.layers.length - 1}
-                        className="opacity-50 hover:opacity-100 disabled:opacity-15 shrink-0"
-                        title="Выше"
-                      >
-                        <ChevronUp size={11} />
-                      </button>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          moveLayer(l.id, -1);
-                        }}
-                        disabled={idx === 0}
-                        className="opacity-50 hover:opacity-100 disabled:opacity-15 shrink-0"
-                        title="Ниже"
-                      >
-                        <ChevronDown size={11} />
-                      </button>
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -1753,6 +1778,8 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
         </div>
       </div>
     </div>
+    {paletteImportOpen && <PaletteImportModal onImport={importPaletteColors} onClose={() => setPaletteImportOpen(false)} />}
+    </>
   );
 }
 
@@ -1777,6 +1804,70 @@ function ToolBtn({
     >
       <Icon size={15} />
     </button>
+  );
+}
+
+// Shared by the paint/fill tile picker and the pen/freehand color picker (see the "Инструмент"
+// panel) — same swatch grid, same "add a color" control, same import entry point, just bound
+// to whichever color state the active tool actually uses.
+function PaletteGrid({
+  palette,
+  activeColor,
+  onPick,
+  onRemove,
+  addColorDraft,
+  setAddColorDraft,
+  onAdd,
+  onOpenImport,
+}: {
+  palette: MapPaletteColor[];
+  activeColor: string;
+  onPick: (color: string, label: string) => void;
+  onRemove: (color: string) => void;
+  addColorDraft: { color: string };
+  setAddColorDraft: (updater: (d: { color: string }) => { color: string }) => void;
+  onAdd: () => void;
+  onOpenImport: () => void;
+}) {
+  return (
+    <div className="mt-3">
+      <div className="grid grid-cols-4 gap-1.5">
+        {palette.map((t) => (
+          <button
+            key={t.color}
+            title={t.label}
+            onClick={() => onPick(t.color, t.label)}
+            className="relative group w-full aspect-square rounded-md border-2"
+            style={{ background: t.color, borderColor: activeColor === t.color ? "var(--op-90)" : "transparent" }}
+          >
+            <span
+              onClick={(e) => {
+                e.stopPropagation();
+                onRemove(t.color);
+              }}
+              className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-black/70 text-white text-[8px] hidden group-hover:grid place-items-center"
+            >
+              ×
+            </span>
+          </button>
+        ))}
+      </div>
+      <div className="flex items-center gap-1.5 mt-2">
+        <input
+          type="color"
+          value={addColorDraft.color}
+          onChange={(e) => setAddColorDraft((d) => ({ ...d, color: e.target.value }))}
+          title="Выбрать цвет"
+          className="w-7 h-7 rounded-md border border-[var(--op-15)] bg-transparent cursor-pointer shrink-0"
+        />
+        <button onClick={onAdd} title="Добавить цвет в палитру" className="flex-1 h-7 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]">
+          <Plus size={12} />
+        </button>
+        <button onClick={onOpenImport} title="Импортировать палитру (Lospec и др.)" className="w-7 h-7 shrink-0 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]">
+          <Download size={12} />
+        </button>
+      </div>
+    </div>
   );
 }
 
