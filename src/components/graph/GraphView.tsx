@@ -19,6 +19,13 @@ import {
 import { useProjectStore } from "../../store/useProjectStore";
 import { PortalMenu } from "../common/PortalMenu";
 import { CAT_COLOR, CAT_LABEL, CAT_ORDER, isQuest, type Category } from "../../types/database";
+import { Tour, type TourStep } from "../tour/Tour";
+
+const GRAPH_TOUR: TourStep[] = [
+  { target: '[data-tour="graph-filter"]', title: "Фильтр категорий", body: "Скрывайте категории, чтобы граф не превращался в кашу — удобно смотреть связи только части мира." },
+  { target: '[data-tour="graph-reset"]', title: "Сбросить вид", body: "Авто-центровка и масштаб под все узлы сразу — полезно после того, как граф разрастётся." },
+  { target: '[data-tour="graph-canvas"]', title: "Сам граф", body: "Перетаскивайте узлы, наводите для подсветки связей, кликайте, чтобы открыть запись. Колесо мыши — зум." },
+];
 
 const CAT_ICON: Record<Category, React.ComponentType<any>> = {
   character: User,
@@ -52,6 +59,7 @@ const MAX_SETTLE_FRAMES = 260;
 const IDLE_JITTER = 0.16;
 const MIN_REPULSE_DIST = 60;
 const MAX_VELOCITY = 18;
+const MIN_ZOOM = 0.01; // 1% — lets a very large relations graph still fully zoom-to-fit
 
 function clamp(v: number, lo: number, hi: number) {
   return Math.max(lo, Math.min(hi, v));
@@ -329,7 +337,7 @@ export function GraphView() {
 
   const onWheel = (e: React.WheelEvent) => {
     const rect = viewportRef.current?.getBoundingClientRect();
-    const newZoom = clamp(zoom + (e.deltaY > 0 ? -0.08 : 0.08), 0.15, 2.5);
+    const newZoom = clamp(zoom + (e.deltaY > 0 ? -0.08 : 0.08), MIN_ZOOM, 2.5);
     if (!rect || newZoom === zoom) {
       setZoom(newZoom);
       return;
@@ -343,9 +351,28 @@ export function GraphView() {
     setZoom(newZoom);
   };
 
+  // Auto-center + zoom-to-fit over every node's current position, same approach as the Quests
+  // roadmap graph's resetView (QuestsView.tsx) — bounding box of live positions rather than the
+  // full static WIDTH/HEIGHT canvas, with MIN_ZOOM lowered to 1% so a large relations graph can
+  // still fit entirely on screen instead of clipping.
   const resetView = () => {
-    setZoom(0.55);
-    setPan({ x: 40, y: 20 });
+    const positions = Array.from(posRef.current.values());
+    const rect = viewportRef.current?.getBoundingClientRect();
+    if (positions.length === 0 || !rect || rect.width === 0) {
+      setZoom(0.55);
+      setPan({ x: 40, y: 20 });
+      return;
+    }
+    const pad = 140;
+    const minX = Math.min(...positions.map((p) => p.x)) - pad;
+    const maxX = Math.max(...positions.map((p) => p.x)) + pad;
+    const minY = Math.min(...positions.map((p) => p.y)) - pad;
+    const maxY = Math.max(...positions.map((p) => p.y)) + pad;
+    const boxW = Math.max(1, maxX - minX);
+    const boxH = Math.max(1, maxY - minY);
+    const fitZoom = clamp(Math.min(rect.width / boxW, rect.height / boxH), MIN_ZOOM, 2.5);
+    setZoom(fitZoom);
+    setPan({ x: rect.width / 2 - ((minX + maxX) / 2) * fitZoom, y: rect.height / 2 - ((minY + maxY) / 2) * fitZoom });
   };
 
   const connected = useMemo(() => {
@@ -371,8 +398,10 @@ export function GraphView() {
           </span>
         </div>
         <div className="ml-auto flex items-center gap-2">
+          <Tour tourId="graph" steps={GRAPH_TOUR} />
           <button
             ref={filterBtnRef}
+            data-tour="graph-filter"
             onClick={() => setFilterOpen((v) => !v)}
             title="Фильтр категорий"
             className={`flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md transition-colors ${
@@ -419,14 +448,14 @@ export function GraphView() {
             </div>
           </PortalMenu>
           <div className="w-px h-5 bg-[var(--op-10)] mx-0.5" />
-          <button onClick={() => setZoom((z) => clamp(z - 0.15, 0.15, 2.5))} className="w-8 h-8 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]">
+          <button onClick={() => setZoom((z) => clamp(z - 0.15, MIN_ZOOM, 2.5))} className="w-8 h-8 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]">
             <ZoomOut size={14} />
           </button>
           <span className="text-xs mono text-[var(--op-40)] w-10 text-center">{Math.round(zoom * 100)}%</span>
-          <button onClick={() => setZoom((z) => clamp(z + 0.15, 0.15, 2.5))} className="w-8 h-8 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]">
+          <button onClick={() => setZoom((z) => clamp(z + 0.15, MIN_ZOOM, 2.5))} className="w-8 h-8 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]">
             <ZoomIn size={14} />
           </button>
-          <button onClick={resetView} title="Сбросить вид" className="w-8 h-8 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]">
+          <button data-tour="graph-reset" onClick={resetView} title="Сбросить вид" className="w-8 h-8 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]">
             <Maximize2 size={14} />
           </button>
         </div>
@@ -434,6 +463,7 @@ export function GraphView() {
 
       <div
         ref={viewportRef}
+        data-tour="graph-canvas"
         className="flex-1 relative overflow-hidden cursor-grab active:cursor-grabbing"
         style={{ background: "radial-gradient(circle at center, var(--op-5), transparent 70%)" }}
         onWheel={onWheel}

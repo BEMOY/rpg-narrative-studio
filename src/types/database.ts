@@ -84,12 +84,27 @@ export interface Stats {
 // should read progress via objectiveProgress() in lib/questCompile.ts, which derives
 // current/max from `done` when they're missing. `objId` matches quest_progress()'s optional
 // per-objective flag id (sets flag "obj_<objId>" when that objective reaches max).
+// How an objective's progress value is sourced/edited — purely a Codex planning aid (like
+// QuestDependency above), doesn't change quest_define()'s exported shape at all: current/max
+// are still what gets exported, this just controls how the WRITER edits/visualizes them.
+//   "checkbox" (default/legacy) — plain done/not-done, max is always 1.
+//   "flag"     — mirrors an existing project dialogue flag (see Project.dialogueFlags /
+//                dialogueFlagDefs); bool flags render as a checkbox, number flags as a slider,
+//                auto-detected from that flag's own DialogueFlagDef.
+//   "custom"   — writer manually picks bool/number plus a max and a default/reset value,
+//                independent of any dialogue flag.
+export type ObjectiveValueMode = "checkbox" | "flag" | "custom";
+
 export interface Objective {
   text: string;
   done: boolean;
   current?: number;
   max?: number;
   objId?: string;
+  valueMode?: ObjectiveValueMode; // undefined = "checkbox", for backward compatibility
+  boundFlagName?: string; // valueMode === "flag" — key into Project.dialogueFlagDefs
+  customType?: "bool" | "number"; // valueMode === "custom"
+  customDefault?: number; // valueMode === "custom", number type only — reset/starting value
 }
 
 export interface QuestRewardItem {
@@ -245,6 +260,13 @@ export interface Project {
   colorStyles: DialogueColorStyle[];
   statPresets: StatPreset[];
   resistPresets: StatPreset[];
+  // User-dragged node positions in the Quests roadmap graph, keyed by the graph's own node id
+  // (e.g. "q:<questId>", "d:<dialogueId>") — only written once a node is actually dragged (see
+  // pinnedRef in QuestsView.tsx), so the force layout still runs freely for anything nobody has
+  // manually placed. Persisted here instead of on Entry itself since flag/dialogue nodes have
+  // no Entry to hang a position off of.
+  questGraphPositions?: Record<string, { x: number; y: number }>;
+  uiSettings?: UiSettings;
 }
 
 // Mirrors the real engine's color_lookup()/color_eval()/color_eval_glyph() system
@@ -401,6 +423,13 @@ export interface DialogueLine {
   // instead of just silently skipping the line — lets the writer branch to an alternative
   // node/reply for the "condition not met" case rather than only being able to omit content.
   elseNodeId?: string;
+  // Same flag_set()/quest_start()/quest_progress()/quest_mark_done() side effects a choice can
+  // trigger (see DialogueChoice below), but firing the moment this REPLICA is shown rather than
+  // waiting for a player choice — e.g. "set flag met_npc when this line displays". Purely
+  // additive in the GML export (see renderLinePage in dialogueCompile.ts): a line with neither
+  // populated compiles to the exact same page object as before this field existed.
+  flagSets: DialogueFlagSet[];
+  questActions: QuestAction[];
 }
 
 // Direct quest-system calls a choice can trigger — confirmed against the real scr_quests.gml
@@ -441,6 +470,20 @@ export interface Dialogue {
   folderId: string | null;
   startNodeId: string;
   nodes: DialogueNode[];
+  // "Don't ask me again" for the Delete-key confirmation modal in THIS dialogue only — the
+  // global equivalent lives on Project.uiSettings.skipDeleteConfirmGlobal instead. Both are
+  // recoverable from the new Settings panel's "reset dismissed warnings" action.
+  skipDeleteConfirm?: boolean;
+}
+
+// App/Codex-wide UI preferences that aren't really "project content" (nothing here affects any
+// exported GML) — tutorial on/off + which ones have been dismissed, and the global delete
+// confirmation suppression. Grouped under one object on Project so the new Settings panel
+// (gear icon in the dialogue toolbar) has one place to read/reset everything from.
+export interface UiSettings {
+  tutorialsEnabled?: boolean; // default true when undefined
+  dismissedTutorials?: string[]; // tour ids the writer dismissed with "не показывать снова"
+  skipDeleteConfirmGlobal?: boolean;
 }
 
 // MARKUP_TAGS moved to src/lib/dialogueMarkup.ts (now alongside the parser/renderer it drives).

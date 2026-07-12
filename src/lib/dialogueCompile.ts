@@ -70,7 +70,7 @@ function indent(depth: number): string {
   return "    ".repeat(depth);
 }
 
-const FALLBACK_STUB_LINE: DialogueLine = { id: "stub", speaker: "", side: "default", text: "", noSkip: false };
+const FALLBACK_STUB_LINE: DialogueLine = { id: "stub", speaker: "", side: "default", text: "", noSkip: false, flagSets: [], questActions: [] };
 
 export function characterSpeakerKey(entry: Entry): string {
   return slugify(entry.id);
@@ -136,6 +136,23 @@ function renderLinePage(line: DialogueLine, entries: Entry[], depth: number): st
   if (line.side && line.side !== "default") parts.push(`side:${gmlString(line.side)}`);
   if (line.emotion && line.emotion.trim()) parts.push(`emotion:${gmlString(line.emotion)}`);
   if (line.noSkip) parts.push("unskippable:true");
+
+  // Same flag_set()/quest_* side effects a choice's action can fire, but attached to the page
+  // itself so they run the moment this replica is SHOWN — purely additive: a line with neither
+  // populated emits no "action" field at all, so it's byte-for-byte the same page object as
+  // before this feature existed (no risk to whatever your dialogue_page() runner already does
+  // with pages that lack one).
+  const actionLines: string[] = [];
+  for (const fs of line.flagSets ?? []) {
+    if (!fs.key.trim()) continue;
+    actionLines.push(`flag_set(${gmlString(fs.key)}, ${gmlValue(fs.value)});`);
+  }
+  actionLines.push(...renderQuestActionLines(line.questActions));
+  if (actionLines.length > 0) {
+    const actionBody = actionLines.map((l) => `${indent(depth + 1)}${l}`).join("\n");
+    parts.push(`action: function() {\n${actionBody}\n${indent(depth)}}`);
+  }
+
   return `${indent(depth)}{ ${parts.join(", ")} }`;
 }
 

@@ -3,6 +3,14 @@ import { useMemo, useRef, useState } from "react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { MapThumbnail, mapHasContent } from "../mapeditor/MapThumbnail";
 import { PortalMenu } from "../common/PortalMenu";
+import { Tour, type TourStep } from "../tour/Tour";
+
+const GALLERY_TOUR: TourStep[] = [
+  { target: '[data-tour="gallery-search"]', title: "Поиск по миру", body: "Ищет по всем записям Codex сразу — персонажам, локациям, квестам, предметам." },
+  { target: '[data-tour="gallery-filter"]', title: "Фильтр категорий", body: "Скрывайте ненужные категории, если хотите видеть только часть Codex за раз." },
+  { target: '[data-tour="gallery-create"]', title: "Создать запись", body: "Новая запись любой категории — персонаж, локация, квест, предмет и так далее." },
+  { target: '[data-tour="gallery-grid"]', title: "Карточки записей", body: "Кликните по карточке, чтобы открыть полный редактор. «Выбрать» позволяет удалить несколько записей разом." },
+];
 import {
   CAT_COLOR,
   CAT_LABEL,
@@ -228,6 +236,7 @@ export function Gallery() {
               <Trash2 size={14} /> Удалить ({selected.size})
             </button>
           )}
+          <Tour tourId="gallery" steps={GALLERY_TOUR} />
           <button
             onClick={() => (selectMode ? exitSelectMode() : setSelectMode(true))}
             title="Выбрать несколько"
@@ -242,6 +251,7 @@ export function Gallery() {
             <>
               <button
                 ref={filterBtnRef}
+                data-tour="gallery-filter"
                 onClick={() => setFilterOpen((v) => !v)}
                 title="Фильтр категорий"
                 className={`flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md transition-colors ${
@@ -289,7 +299,7 @@ export function Gallery() {
               </PortalMenu>
             </>
           )}
-          <div className="glass rounded-md px-3 py-1.5 flex items-center gap-2 text-sm w-64">
+          <div data-tour="gallery-search" className="glass rounded-md px-3 py-1.5 flex items-center gap-2 text-sm w-64">
             <Search size={14} className="text-[var(--op-40)]" />
             <input
               value={query}
@@ -310,6 +320,7 @@ export function Gallery() {
             <>
               <button
                 ref={createBtnRef}
+                data-tour="gallery-create"
                 onClick={() => setCreateMenuOpen((v) => !v)}
                 className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md bg-accent/80 hover:bg-accent transition-colors"
               >
@@ -343,7 +354,7 @@ export function Gallery() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-5">
+      <div data-tour="gallery-grid" className="flex-1 overflow-y-auto p-5">
         {list.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-[var(--op-30)] gap-2">
             <LayoutGrid size={28} />

@@ -20,12 +20,27 @@ import {
   Ban,
   CircleCheck,
   ToggleLeft,
+  CircleAlert,
+  Grid2X2,
+  Search,
 } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { ResizablePanel } from "../common/ResizablePanel";
-import { CAT_COLOR, isQuest, type Entry } from "../../types/database";
-import { compileQuestsScript, objectiveProgress } from "../../lib/questCompile";
+import { CAT_COLOR, isQuest, type Entry, type Dialogue, type DialogueFlagDef } from "../../types/database";
+import { compileQuestsScript, objectiveDisplayMode, objectiveProgress } from "../../lib/questCompile";
 import { FlagsManagerModal } from "../dialogue/FlagsManagerModal";
+import { Tour, type TourStep } from "../tour/Tour";
+
+const QUESTS_TOUR: TourStep[] = [
+  { target: '[data-tour="quests-search"]', title: "Поиск и фильтры", body: "Ищите квест по названию, фильтруйте по основным/побочным. Клик по квесту в списке — фокус на нём в графе справа, без открытия редактора." },
+  { target: '[data-tour="quests-list"]', title: "Список по главам", body: "Квесты сгруппированы по главам проекта — то же деление, что и в настройках Codex." },
+  { target: '[data-tour="quests-grid-toggle"]', title: "Сетка и привязка", body: "Включите, чтобы ноды прилипали к сетке при перетаскивании — удобно для аккуратной раскладки." },
+  {
+    target: '[data-tour="quests-graph"]',
+    title: "Карта влияния",
+    body: "Квесты, их связи и статусы (доступен/заперт/пройден). Значки у подцелей показывают, какой диалог их проверяет или завершает.",
+  },
+];
 
 // ---- roadmap graph (quest ↔ dialogue ↔ flag), adapted from GraphView.tsx's force layout ----
 
@@ -56,7 +71,8 @@ interface NodePos {
 
 const WIDTH = 3400;
 const HEIGHT = 1900;
-const IDEAL_LEN = 300;
+const IDEAL_LEN = 460; // was 300 — longer connectors read more clearly once dialogue mini-badges freed up space between quest columns
+const MIN_ZOOM = 0.01; // 1% — lets very large/sprawling graphs still fully zoom-to-fit instead of clipping
 const REPULSION = 34000;
 const MAX_SETTLE_FRAMES = 220;
 const IDLE_JITTER = 0.14;
@@ -251,55 +267,103 @@ function useQuestRoadmap() {
       }
     }
 
-    // dialogue -> quest / flag, only for dialogues that actually touch the quest system
+    // Dialogues used to appear as their own nodes in this graph (with "проверяет"/"завершает"
+    // edges fanning out to every quest/flag they touched) — with more than a couple dialogues
+    // that turned into a tangle of long diagonal lines crossing the whole quest DAG. That
+    // relationship is now surfaced directly on the quest card itself instead (small badges +
+    // per-objective indicator dots, see useDialogueQuestLinks below), so dialogues no longer
+    // need a presence in this graph at all.
+    return { nodes, edges, quests };
+  }, [entries]);
+}
+
+export interface DialogueRef {
+  dialogueId: string;
+  name: string;
+}
+
+export interface QuestDialogueLinks {
+  checks: DialogueRef[];
+  completes: DialogueRef[];
+}
+
+// Computes, for every quest and every individual objective, which dialogues check it
+// (a condition reading quest_state()/the objective's "obj_<objId>" flag) and which complete or
+// advance it (a choice's quest action). Feeds the small badge row under each quest card and the
+// per-objective indicator dot instead of dedicated dialogue nodes in the roadmap graph.
+export function useDialogueQuestLinks(quests: Entry[], dialogues: Dialogue[]) {
+  return useMemo(() => {
+    const byQuest = new Map<string, QuestDialogueLinks>();
+    const byObjective = new Map<string, QuestDialogueLinks>(); // key `${questId}:${index}`
+    const questIds = new Set(quests.map((q) => q.id));
+    const objIdIndex = new Map<string, { questId: string; index: number }>();
+    for (const q of quests) {
+      (q.objectives ?? []).forEach((o, i) => {
+        const raw = o.objId?.trim();
+        if (raw) objIdIndex.set(`obj_${raw}`, { questId: q.id, index: i });
+      });
+    }
+    const ensure = (map: Map<string, QuestDialogueLinks>, key: string) => {
+      if (!map.has(key)) map.set(key, { checks: [], completes: [] });
+      return map.get(key)!;
+    };
+    const addUnique = (list: DialogueRef[], ref: DialogueRef) => {
+      if (!list.some((r) => r.dialogueId === ref.dialogueId)) list.push(ref);
+    };
     for (const d of dialogues) {
-      const local: RoadmapEdge[] = [];
-      let touches = false;
+      const ref: DialogueRef = { dialogueId: d.id, name: d.name };
       for (const n of d.nodes) {
-        for (const line of n.lines) {
-          const c = line.condition;
+        const conditions = [...n.lines.map((l) => l.condition), ...n.choices.map((c) => c.condition)];
+        for (const c of conditions) {
           if (!c) continue;
           if (c.kind === "quest" && questIds.has(c.key)) {
-            local.push({ from: `d:${d.id}`, to: `q:${c.key}`, note: "проверяет" });
-            touches = true;
-          } else if (c.kind === "flag" && flagNames.has(c.key)) {
-            local.push({ from: `d:${d.id}`, to: `f:${c.key}`, note: "проверяет" });
-            touches = true;
+            addUnique(ensure(byQuest, c.key).checks, ref);
+          } else if (c.kind === "flag" && objIdIndex.has(c.key)) {
+            const loc = objIdIndex.get(c.key)!;
+            addUnique(ensure(byObjective, `${loc.questId}:${loc.index}`).checks, ref);
           }
         }
         for (const choice of n.choices) {
-          const c = choice.condition;
-          if (c) {
-            if (c.kind === "quest" && questIds.has(c.key)) {
-              local.push({ from: `d:${d.id}`, to: `q:${c.key}`, note: "проверяет" });
-              touches = true;
-            } else if (c.kind === "flag" && flagNames.has(c.key)) {
-              local.push({ from: `d:${d.id}`, to: `f:${c.key}`, note: "проверяет" });
-              touches = true;
-            }
-          }
-          for (const fs of choice.flagSets ?? []) {
-            if (flagNames.has(fs.key)) {
-              local.push({ from: `d:${d.id}`, to: `f:${fs.key}`, note: "устанавливает" });
-              touches = true;
-            }
-          }
           for (const qa of choice.questActions ?? []) {
             if (!qa.questId || !questIds.has(qa.questId)) continue;
-            const note = qa.kind === "start" ? "начинает" : qa.kind === "complete" ? "завершает" : "продвигает";
-            local.push({ from: `d:${d.id}`, to: `q:${qa.questId}`, note });
-            touches = true;
+            addUnique(ensure(byQuest, qa.questId).completes, ref);
+            if (qa.kind === "advance" && qa.objectiveIndex != null) {
+              addUnique(ensure(byObjective, `${qa.questId}:${qa.objectiveIndex}`).completes, ref);
+            }
           }
         }
       }
-      if (touches) {
-        addNode({ id: `d:${d.id}`, kind: "dialogue", label: d.name, color: DIALOGUE_COLOR, dialogueId: d.id });
-        for (const e of local) addEdge(e);
-      }
     }
+    return { byQuest, byObjective };
+  }, [quests, dialogues]);
+}
 
-    return { nodes, edges, quests };
-  }, [entries, dialogues]);
+// A small hoverable badge shown next to an objective row (or standalone in the quest-level
+// chip strip) indicating that some dialogue "checks" (condition reads it) or "completes"
+// (an action writes to it) this quest/objective. Uses DIALOGUE_COLOR normally; goes gray
+// (but stays hoverable) when the quest is locked/blocked, per the "нельзя" — link should still
+// be inspectable even though the quest itself can't be interacted with yet.
+function DialogueLinkDot({ refs, kind, dim }: { refs: DialogueRef[]; kind: "checks" | "completes"; dim: boolean }) {
+  if (refs.length === 0) return null;
+  const dotColor = dim ? "var(--op-30)" : DIALOGUE_COLOR;
+  const Icon = kind === "completes" ? CircleCheck : CircleAlert;
+  const label = kind === "completes" ? "завершает" : "проверяет";
+  return (
+    <span className="relative inline-flex group/dot">
+      <span
+        className="w-3.5 h-3.5 rounded-full grid place-items-center shrink-0 transition-colors duration-300 cursor-help"
+        style={{ background: dim ? "var(--op-8)" : `${DIALOGUE_COLOR}22`, color: dotColor }}
+      >
+        <Icon size={9} />
+      </span>
+      <span
+        className="pointer-events-none absolute right-full top-1/2 -translate-y-1/2 mr-1.5 whitespace-nowrap rounded-md border px-2 py-1 text-[10px] opacity-0 group-hover/dot:opacity-100 transition-opacity duration-150 z-10"
+        style={{ background: "var(--popover-bg)", borderColor: DIALOGUE_COLOR, color: "var(--op-80)" }}
+      >
+        <span style={{ color: DIALOGUE_COLOR }}>{label}:</span> {refs.map((r) => r.name).join(", ")}
+      </span>
+    </span>
+  );
 }
 
 function QuestNodeCard({
@@ -312,6 +376,10 @@ function QuestNodeCard({
   onSetAllObjectives,
   onToggleObjective,
   entryById,
+  questDialogueLinks,
+  objectiveDialogueLinks,
+  flagDefs,
+  onSetObjectiveValue,
 }: {
   entry?: Entry;
   label: string;
@@ -322,6 +390,10 @@ function QuestNodeCard({
   onSetAllObjectives: (done: boolean) => void;
   onToggleObjective: (index: number) => void;
   entryById: Map<string, Entry>;
+  questDialogueLinks?: QuestDialogueLinks;
+  objectiveDialogueLinks: Map<string, QuestDialogueLinks>;
+  flagDefs: Record<string, DialogueFlagDef>;
+  onSetObjectiveValue: (index: number, value: number) => void;
 }) {
   const objectives = entry?.objectives ?? [];
   const rewards = entry?.rewards;
@@ -365,37 +437,75 @@ function QuestNodeCard({
         {objectives.length > 0 && (
           <div className="space-y-0.5">
             {objectives.map((o, i) => {
-              const current = o.current ?? (o.done ? 1 : 0);
-              const max = o.max ?? 1;
-              const done = current >= max;
+              const display = objectiveDisplayMode(o, flagDefs);
+              const current = Math.max(0, Math.min(display.max, o.current ?? (o.done ? display.max : 0)));
+              const done = current >= display.max;
+              const objLinks = entry ? objectiveDialogueLinks.get(`${entry.id}:${i}`) : undefined;
               return (
-                <button
-                  key={i}
-                  disabled={toggleDisabled}
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (toggleDisabled) return;
-                    onToggleObjective(i);
-                  }}
-                  title={
-                    toggleDisabled
-                      ? status === "locked"
-                        ? "Заперт — сначала выполните квест(ы)-предпосылки"
-                        : "Заблокирован завершённым квестом"
-                      : done
-                      ? "Снять галочку с подцели"
-                      : "Отметить подцель выполненной"
-                  }
-                  className={`w-full flex items-center gap-1 text-[10px] text-left ${toggleDisabled ? "cursor-not-allowed opacity-60" : "hover:opacity-80"}`}
-                  style={{ color: done ? "#7cc98a" : "var(--op-45)" }}
-                >
-                  {done ? <CircleCheck size={10} className="shrink-0" /> : <span className="w-2.5 h-2.5 rounded-full border border-current shrink-0" />}
-                  <span className="truncate flex-1">{o.text || `Цель ${i + 1}`}</span>
-                  <span className="mono opacity-70 shrink-0">
-                    {current}/{max}
-                  </span>
-                </button>
+                <div key={i} className="flex items-center gap-1">
+                  {display.kind === "slider" ? (
+                    <div
+                      className={`flex-1 min-w-0 flex items-center gap-1.5 text-[10px] ${toggleDisabled ? "opacity-60" : ""}`}
+                      style={{ color: done ? "#7cc98a" : "var(--op-45)" }}
+                    >
+                      <span className="truncate shrink-0 max-w-[64px]">{o.text || `Цель ${i + 1}`}</span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={display.max}
+                        value={current}
+                        disabled={toggleDisabled}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => {
+                          if (toggleDisabled) return;
+                          onSetObjectiveValue(i, Number(e.target.value));
+                        }}
+                        className="flex-1 min-w-0 h-1 accent-current"
+                      />
+                      <span className="mono opacity-70 shrink-0">
+                        {current}/{display.max}
+                      </span>
+                    </div>
+                  ) : (
+                    <button
+                      disabled={toggleDisabled}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (toggleDisabled) return;
+                        onToggleObjective(i);
+                      }}
+                      title={
+                        toggleDisabled
+                          ? status === "locked"
+                            ? "Заперт — сначала выполните квест(ы)-предпосылки"
+                            : "Заблокирован завершённым квестом"
+                          : done
+                          ? "Снять галочку с подцели"
+                          : "Отметить подцель выполненной"
+                      }
+                      className={`flex-1 min-w-0 flex items-center gap-1 text-[10px] text-left ${toggleDisabled ? "cursor-not-allowed opacity-60" : "hover:opacity-80"}`}
+                      style={{ color: done ? "#7cc98a" : "var(--op-45)" }}
+                    >
+                      {done ? <CircleCheck size={10} className="shrink-0" /> : <span className="w-2.5 h-2.5 rounded-full border border-current shrink-0" />}
+                      <span className="truncate flex-1">{o.text || `Цель ${i + 1}`}</span>
+                      <span className="mono opacity-70 shrink-0">
+                        {current}/{display.max}
+                      </span>
+                    </button>
+                  )}
+                  {objLinks && (objLinks.checks.length > 0 || objLinks.completes.length > 0) && (
+                    <span
+                      className="flex items-center gap-0.5 shrink-0"
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <DialogueLinkDot refs={objLinks.checks} kind="checks" dim={toggleDisabled} />
+                      <DialogueLinkDot refs={objLinks.completes} kind="completes" dim={toggleDisabled} />
+                    </span>
+                  )}
+                </div>
               );
             })}
           </div>
@@ -430,6 +540,34 @@ function QuestNodeCard({
                 </span>
               );
             })}
+          </div>
+        )}
+        {questDialogueLinks && (questDialogueLinks.checks.length > 0 || questDialogueLinks.completes.length > 0) && (
+          <div className="flex items-center gap-1 flex-wrap">
+            {questDialogueLinks.completes.map((r) => (
+              <span
+                key={`c-${r.dialogueId}`}
+                className="flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded-full border truncate max-w-full"
+                style={{ borderColor: DIALOGUE_COLOR, color: "var(--op-70)" }}
+                title={`Завершает: ${r.name}`}
+              >
+                <CircleCheck size={9} style={{ color: DIALOGUE_COLOR }} className="shrink-0" />
+                <span className="truncate">{r.name}</span>
+                <span className="opacity-50 shrink-0">завершает</span>
+              </span>
+            ))}
+            {questDialogueLinks.checks.map((r) => (
+              <span
+                key={`k-${r.dialogueId}`}
+                className="flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded-full border truncate max-w-full"
+                style={{ borderColor: DIALOGUE_COLOR, color: "var(--op-70)" }}
+                title={`Проверяет: ${r.name}`}
+              >
+                <CircleAlert size={9} style={{ color: DIALOGUE_COLOR }} className="shrink-0" />
+                <span className="truncate">{r.name}</span>
+                <span className="opacity-50 shrink-0">проверяет</span>
+              </span>
+            ))}
           </div>
         )}
         <div className="flex items-center justify-between gap-1.5 pt-0.5">
@@ -482,6 +620,12 @@ function RoadmapGraph({
   onToggleCompleted,
   onSetAllObjectives,
   onToggleObjective,
+  dialogueLinks,
+  savedPositions,
+  onPersistPosition,
+  focusRequest,
+  flagDefs,
+  onSetObjectiveValue,
 }: {
   nodes: RoadmapNode[];
   edges: RoadmapEdge[];
@@ -495,6 +639,12 @@ function RoadmapGraph({
   onToggleCompleted: (questId: string) => void;
   onSetAllObjectives: (questId: string, done: boolean) => void;
   onToggleObjective: (questId: string, index: number) => void;
+  dialogueLinks: { byQuest: Map<string, QuestDialogueLinks>; byObjective: Map<string, QuestDialogueLinks> };
+  savedPositions: Record<string, { x: number; y: number }>;
+  onPersistPosition: (nodeId: string, x: number, y: number) => void;
+  focusRequest: { nodeId: string; token: number } | null;
+  flagDefs: Record<string, DialogueFlagDef>;
+  onSetObjectiveValue: (questId: string, index: number, value: number) => void;
 }) {
   const posRef = useRef<Map<string, NodePos>>(new Map());
   const pinnedRef = useRef<Set<string>>(new Set());
@@ -512,7 +662,10 @@ function RoadmapGraph({
   const [, bump] = useState(0);
   const [zoom, setZoom] = useState(0.65);
   const [pan, setPan] = useState({ x: 30, y: 20 });
+  const [gridEnabled, setGridEnabled] = useState(false);
   const viewportRef = useRef<HTMLDivElement>(null);
+  const GRID_SIZE = 40;
+  const snapToGrid = (v: number) => Math.round(v / GRID_SIZE) * GRID_SIZE;
 
   const nodeIds = useMemo(() => new Set(nodes.map((n) => n.id)), [nodes]);
 
@@ -531,6 +684,15 @@ function RoadmapGraph({
     }
     nodes.forEach((n, i) => {
       if (!pos.has(n.id)) {
+        const saved = savedPositions[n.id];
+        if (saved) {
+          // User dragged this node in a previous session — restore it verbatim instead of
+          // letting the force layout re-seed it, so a reload doesn't undo manual arranging.
+          pos.set(n.id, { x: saved.x, y: saved.y, vx: 0, vy: 0 });
+          pinnedRef.current.add(n.id);
+          anchorRef.current.set(n.id, { x: saved.x, y: saved.y });
+          return;
+        }
         const colX = columnXById.get(n.id);
         if (colX != null) {
           // Seed quest nodes near their dependency-depth column right away so the layout
@@ -791,8 +953,10 @@ function RoadmapGraph({
       if (Math.abs(dxScreen) > 4 || Math.abs(dyScreen) > 4) moved = true;
       const pos = posRef.current.get(d.id);
       if (!pos) return;
-      pos.x = d.startX + dxScreen / zoom;
-      pos.y = d.startY + dyScreen / zoom;
+      const rawX = d.startX + dxScreen / zoom;
+      const rawY = d.startY + dyScreen / zoom;
+      pos.x = gridEnabled ? snapToGrid(rawX) : rawX;
+      pos.y = gridEnabled ? snapToGrid(rawY) : rawY;
       pos.vx = 0;
       pos.vy = 0;
       bump((v) => v + 1);
@@ -805,6 +969,7 @@ function RoadmapGraph({
           const finalPos = posRef.current.get(d.id);
           if (finalPos) {
             anchorRef.current.set(d.id, { x: finalPos.x, y: finalPos.y });
+            onPersistPosition(d.id, finalPos.x, finalPos.y);
             // Small, gentle residual float — a fraction of the drag's average speed, capped
             // so a fast flick still only produces a soft drift, never a fling.
             const dt = Math.max(16, performance.now() - dragStartAt);
@@ -845,7 +1010,7 @@ function RoadmapGraph({
 
   const onWheel = (e: React.WheelEvent) => {
     const rect = viewportRef.current?.getBoundingClientRect();
-    const newZoom = clamp(zoom + (e.deltaY > 0 ? -0.08 : 0.08), 0.15, 2.5);
+    const newZoom = clamp(zoom + (e.deltaY > 0 ? -0.08 : 0.08), MIN_ZOOM, 2.5);
     if (!rect || newZoom === zoom) {
       setZoom(newZoom);
       return;
@@ -857,10 +1022,45 @@ function RoadmapGraph({
     setZoom(newZoom);
   };
 
+  // Auto-center + zoom-to-fit: bounding box of every node's CURRENT position (not the static
+  // WIDTH/HEIGHT world canvas, which is much bigger than what's actually populated), so this
+  // stays useful whether the graph has 3 quests or 80 of them. Min zoom lowered all the way to
+  // 1% (MIN_ZOOM) so a very large/sprawling graph can still fit rather than clipping.
   const resetView = () => {
-    setZoom(0.65);
-    setPan({ x: 30, y: 20 });
+    const positions = Array.from(posRef.current.values());
+    const rect = viewportRef.current?.getBoundingClientRect();
+    if (positions.length === 0 || !rect || rect.width === 0) {
+      setZoom(0.65);
+      setPan({ x: 30, y: 20 });
+      return;
+    }
+    const pad = 160;
+    const minX = Math.min(...positions.map((p) => p.x)) - pad;
+    const maxX = Math.max(...positions.map((p) => p.x)) + pad;
+    const minY = Math.min(...positions.map((p) => p.y)) - pad;
+    const maxY = Math.max(...positions.map((p) => p.y)) + pad;
+    const boxW = Math.max(1, maxX - minX);
+    const boxH = Math.max(1, maxY - minY);
+    const fitZoom = clamp(Math.min(rect.width / boxW, rect.height / boxH), MIN_ZOOM, 2.5);
+    setZoom(fitZoom);
+    setPan({ x: rect.width / 2 - ((minX + maxX) / 2) * fitZoom, y: rect.height / 2 - ((minY + maxY) / 2) * fitZoom });
   };
+
+  // Pan+zoom the viewport to bring a specific node into view (used when a quest is clicked in
+  // the left list, see QuestsView's focusRequest state) — keeps at least the current zoom level
+  // if the user is already zoomed in further than the default, so focusing doesn't yank them
+  // back out.
+  useEffect(() => {
+    if (!focusRequest) return;
+    const p = posRef.current.get(focusRequest.nodeId);
+    const rect = viewportRef.current?.getBoundingClientRect();
+    if (!p || !rect) return;
+    const targetZoom = Math.max(zoom, 0.8);
+    setZoom(targetZoom);
+    setPan({ x: rect.width / 2 - p.x * targetZoom, y: rect.height / 2 - p.y * targetZoom });
+    setHoveredId(focusRequest.nodeId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusRequest]);
 
   const connected = useMemo(() => {
     if (!hoveredId) return null;
@@ -881,20 +1081,29 @@ function RoadmapGraph({
     <div className="h-full flex flex-col overflow-hidden">
       <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--op-10)] shrink-0">
         <div className="ml-auto flex items-center gap-2">
-          <button onClick={() => setZoom((z) => clamp(z - 0.15, 0.15, 2.5))} className="w-7 h-7 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]">
+          <button onClick={() => setZoom((z) => clamp(z - 0.15, MIN_ZOOM, 2.5))} className="w-7 h-7 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]">
             <ZoomOut size={13} />
           </button>
-          <span className="text-xs mono text-[var(--op-40)] w-10 text-center">{Math.round(zoom * 100)}%</span>
-          <button onClick={() => setZoom((z) => clamp(z + 0.15, 0.15, 2.5))} className="w-7 h-7 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]">
+          <span className="text-xs mono text-[var(--op-40)] w-12 text-center">{Math.round(zoom * 100)}%</span>
+          <button onClick={() => setZoom((z) => clamp(z + 0.15, MIN_ZOOM, 2.5))} className="w-7 h-7 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]">
             <ZoomIn size={13} />
           </button>
-          <button onClick={resetView} title="Сбросить вид" className="w-7 h-7 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]">
+          <button onClick={resetView} title="Сбросить вид (авто-центровка)" className="w-7 h-7 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]">
             <Maximize2 size={13} />
+          </button>
+          <button
+            data-tour="quests-grid-toggle"
+            onClick={() => setGridEnabled((g) => !g)}
+            title={gridEnabled ? "Сетка и привязка: вкл" : "Сетка и привязка: выкл"}
+            className={`w-7 h-7 grid place-items-center rounded-md glass hover:bg-[var(--op-10)] ${gridEnabled ? "text-accent bg-accent/10" : ""}`}
+          >
+            <Grid2X2 size={13} />
           </button>
         </div>
       </div>
       <div
         ref={viewportRef}
+        data-tour="quests-graph"
         className="flex-1 relative overflow-hidden cursor-grab active:cursor-grabbing"
         style={{ background: "radial-gradient(circle at center, var(--op-5), transparent 70%)" }}
         onWheel={onWheel}
@@ -917,6 +1126,16 @@ function RoadmapGraph({
               transformOrigin: "0 0",
             }}
           >
+            {gridEnabled && (
+              <div
+                className="absolute inset-0 pointer-events-none"
+                style={{
+                  backgroundImage:
+                    "linear-gradient(to right, var(--op-8) 1px, transparent 1px), linear-gradient(to bottom, var(--op-8) 1px, transparent 1px)",
+                  backgroundSize: `${GRID_SIZE}px ${GRID_SIZE}px`,
+                }}
+              />
+            )}
             <svg width={WIDTH} height={HEIGHT} className="absolute inset-0 pointer-events-none" style={{ overflow: "visible" }}>
               <defs>
                 {/* markerUnits="strokeWidth" (not the previous fixed "userSpaceOnUse") so the
@@ -1103,6 +1322,10 @@ function RoadmapGraph({
                       onSetAllObjectives={(done) => onSetAllObjectives(n.entryId!, done)}
                       onToggleObjective={(i) => onToggleObjective(n.entryId!, i)}
                       entryById={entryById}
+                      questDialogueLinks={n.entryId ? dialogueLinks.byQuest.get(n.entryId) : undefined}
+                      objectiveDialogueLinks={dialogueLinks.byObjective}
+                      flagDefs={flagDefs}
+                      onSetObjectiveValue={(i, v) => onSetObjectiveValue(n.entryId!, i, v)}
                     />
                     {blockFlash.has(n.id) && (
                       <div
@@ -1315,12 +1538,20 @@ export function QuestsView() {
   const openEntry = useProjectStore((s) => s.openEntry);
   const showDialogues = useProjectStore((s) => s.showDialogues);
   const setActiveDialogue = useProjectStore((s) => s.setActiveDialogue);
+  const project = useProjectStore((s) => s.project);
   const entries = useProjectStore((s) => s.project.entries);
   const updateEntry = useProjectStore((s) => s.updateEntry);
+  const dialogues = useProjectStore((s) => s.project.dialogues);
+  const setQuestGraphPosition = useProjectStore((s) => s.setQuestGraphPosition);
+  const dialogueFlagDefs = useProjectStore((s) => s.project.dialogueFlagDefs);
   const { nodes, edges, quests } = useQuestRoadmap();
+  const dialogueLinks = useDialogueQuestLinks(quests, dialogues);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [flagsOpen, setFlagsOpen] = useState(false);
+  const [focusRequest, setFocusRequest] = useState<{ nodeId: string; token: number } | null>(null);
+  const [listCategoryFilter, setListCategoryFilter] = useState<"all" | "main_quest" | "side_quest">("all");
+  const [listSearch, setListSearch] = useState("");
   // "What if this quest were completed?" — a purely local, ephemeral simulation (not tied to
   // any real save data), used ONLY for quests with no objectives at all (nothing else to
   // represent "done" with). Quests that DO have objectives are driven by their real,
@@ -1354,14 +1585,54 @@ export function QuestsView() {
     const nextObjectives = entry.objectives.map((o) => ({ ...o, current: done ? o.max ?? 1 : 0, done }));
     updateEntry(entryId, { objectives: nextObjectives });
   };
-
-  const mainQuests = quests.filter((q) => q.category === "main_quest");
-  const sideQuests = quests.filter((q) => q.category === "side_quest");
+  // Slider objectives (valueMode "flag"/number or "custom"/number) write an arbitrary value
+  // directly instead of just toggling between 0 and max — see the DialogueLinkDot-adjacent
+  // range input in QuestNodeCard.
+  const setObjectiveValue = (entryId: string, index: number, value: number) => {
+    const entry = entries.find((e) => e.id === entryId);
+    const o = entry?.objectives?.[index];
+    if (!o) return;
+    const { max } = objectiveDisplayMode(o, dialogueFlagDefs);
+    const clamped = Math.max(0, Math.min(max, Math.round(value)));
+    const nextObjectives = entry!.objectives!.map((obj, i) => (i === index ? { ...obj, current: clamped, done: clamped >= max } : obj));
+    updateEntry(entryId, { objectives: nextObjectives });
+  };
 
   const openDialogue = (id: string) => {
     showDialogues();
     setActiveDialogue(id);
   };
+
+  // Clicking a quest in the left list used to open the full entry editor — now it pans/centers
+  // the roadmap graph on that quest's node instead, staying inside this window (per the
+  // "не открывать полный редактор записи" requirement). The full editor is still one click away
+  // from the node card itself (its icon/title) or the Gallery, so nothing is actually lost.
+  const focusQuestNode = (questId: string) => setFocusRequest({ nodeId: `q:${questId}`, token: Date.now() });
+
+  const searchNorm = listSearch.trim().toLowerCase();
+  const filteredQuests = quests.filter((q) => {
+    if (listCategoryFilter !== "all" && q.category !== listCategoryFilter) return false;
+    if (searchNorm && !q.name.toLowerCase().includes(searchNorm)) return false;
+    return true;
+  });
+  const chapterGroups = useMemo(() => {
+    const byChapter = new Map<string, Entry[]>();
+    for (const q of filteredQuests) {
+      const key = q.chapter && project.chapters.includes(q.chapter) ? q.chapter : "";
+      if (!byChapter.has(key)) byChapter.set(key, []);
+      byChapter.get(key)!.push(q);
+    }
+    for (const list of byChapter.values()) list.sort((a, b) => a.name.localeCompare(b.name, "ru"));
+    const ordered: { label: string; quests: Entry[] }[] = [];
+    for (const ch of project.chapters) {
+      const list = byChapter.get(ch);
+      if (list?.length) ordered.push({ label: ch, quests: list });
+    }
+    const noChapter = byChapter.get("");
+    if (noChapter?.length) ordered.push({ label: "Без главы", quests: noChapter });
+    return ordered;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filteredQuests, project.chapters]);
 
   return (
     <div className="h-full flex overflow-hidden">
@@ -1379,50 +1650,67 @@ export function QuestsView() {
           >
             <ToggleLeft size={13} />
           </button>
+          <Tour tourId="quests" steps={QUESTS_TOUR} />
           <span className="text-xs mono text-[var(--op-30)] bg-[var(--op-5)] border border-[var(--op-10)] rounded-full px-2 py-0.5 ml-auto">
-            {quests.length}
+            {filteredQuests.length}/{quests.length}
           </span>
         </div>
-        <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-3">
+        <div data-tour="quests-search" className="px-3 pt-3 pb-1 space-y-2 shrink-0">
+          <div className="relative">
+            <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--op-35)]" />
+            <input
+              value={listSearch}
+              onChange={(e) => setListSearch(e.target.value)}
+              placeholder="Поиск квеста…"
+              className="input text-xs py-1.5 pl-7"
+            />
+          </div>
+          <div className="flex items-center gap-1">
+            {(
+              [
+                ["all", "Все"],
+                ["main_quest", "Основные"],
+                ["side_quest", "Побочные"],
+              ] as const
+            ).map(([val, label]) => (
+              <button
+                key={val}
+                onClick={() => setListCategoryFilter(val)}
+                className={`flex-1 text-[10px] py-1 rounded-md border transition-colors ${
+                  listCategoryFilter === val
+                    ? "bg-accent/80 border-accent text-[var(--popover-bg)]"
+                    : "border-[var(--op-10)] text-[var(--op-45)] hover:bg-[var(--op-6)]"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div data-tour="quests-list" className="flex-1 min-h-0 overflow-y-auto p-2 space-y-3">
           {quests.length === 0 ? (
             <div className="p-4 text-sm text-[var(--op-35)] text-center">
               Нет квестов. Создайте запись категории «Основные квесты» или «Побочные квесты» в Галерее.
             </div>
+          ) : chapterGroups.length === 0 ? (
+            <div className="p-4 text-sm text-[var(--op-35)] text-center">Ничего не найдено.</div>
           ) : (
-            <>
-              {mainQuests.length > 0 && (
-                <div>
-                  <div className="px-2 pb-1 text-[11px] uppercase tracking-wider text-[var(--op-35)]">Основные</div>
-                  <div className="space-y-0.5">
-                    {mainQuests.map((q) => (
-                      <QuestListRow
-                        key={q.id}
-                        entry={q}
-                        onOpen={openEntry}
-                        onHover={(h) => setHoveredId(h ? `q:${q.id}` : null)}
-                        status={statuses.get(q.id)}
-                      />
-                    ))}
-                  </div>
+            chapterGroups.map((group) => (
+              <div key={group.label}>
+                <div className="px-2 pb-1 text-[11px] uppercase tracking-wider text-[var(--op-35)]">{group.label}</div>
+                <div className="space-y-0.5">
+                  {group.quests.map((q) => (
+                    <QuestListRow
+                      key={q.id}
+                      entry={q}
+                      onOpen={focusQuestNode}
+                      onHover={(h) => setHoveredId(h ? `q:${q.id}` : null)}
+                      status={statuses.get(q.id)}
+                    />
+                  ))}
                 </div>
-              )}
-              {sideQuests.length > 0 && (
-                <div>
-                  <div className="px-2 pb-1 text-[11px] uppercase tracking-wider text-[var(--op-35)]">Побочные</div>
-                  <div className="space-y-0.5">
-                    {sideQuests.map((q) => (
-                      <QuestListRow
-                        key={q.id}
-                        entry={q}
-                        onOpen={openEntry}
-                        onHover={(h) => setHoveredId(h ? `q:${q.id}` : null)}
-                        status={statuses.get(q.id)}
-                      />
-                    ))}
-                  </div>
-                </div>
-              )}
-            </>
+              </div>
+            ))
           )}
         </div>
         <div className="p-2 border-t border-[var(--op-10)] shrink-0">
@@ -1459,6 +1747,12 @@ export function QuestsView() {
             onToggleCompleted={toggleCompleted}
             onSetAllObjectives={setAllObjectivesDone}
             onToggleObjective={toggleObjective}
+            dialogueLinks={dialogueLinks}
+            savedPositions={project.questGraphPositions ?? {}}
+            onPersistPosition={setQuestGraphPosition}
+            focusRequest={focusRequest}
+            flagDefs={dialogueFlagDefs}
+            onSetObjectiveValue={setObjectiveValue}
           />
         </div>
       </div>

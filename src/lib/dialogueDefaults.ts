@@ -9,6 +9,8 @@ export function createLine(partial?: Partial<DialogueLine>): DialogueLine {
     emotion: "",
     text: "",
     noSkip: false,
+    flagSets: [],
+    questActions: [],
     ...partial,
   };
 }
@@ -50,7 +52,13 @@ export function createDialogue(name: string, folderId: string | null): Dialogue 
 export function normalizeDialogue(raw: Dialogue): Dialogue {
   const nodes = (raw.nodes ?? []).map((n) => ({
     ...n,
-    lines: (n.lines ?? []).map((l) => ({ ...l, side: l.side ?? "default", noSkip: l.noSkip ?? false })),
+    lines: (n.lines ?? []).map((l) => ({
+      ...l,
+      side: l.side ?? "default",
+      noSkip: l.noSkip ?? false,
+      flagSets: l.flagSets ?? [],
+      questActions: l.questActions ?? [],
+    })),
     choices: (n.choices ?? []).map((c) => ({ ...c, flagSets: c.flagSets ?? [], questActions: c.questActions ?? [] })),
   }));
   return {

@@ -4,12 +4,35 @@
 // Ids, field names, and the objectives/rewards shapes are taken verbatim from the pasted
 // source — no guessing involved here, unlike the dialogue/speaker exporters.
 
-import type { Entry, Objective, QuestRewards } from "../types/database";
+import type { DialogueFlagDef, Entry, Objective, QuestRewards } from "../types/database";
 import { isQuest } from "../types/database";
 import { slugify, gmlString } from "./dialogueCompile";
 
 export function objectiveProgress(o: Objective): { current: number; max: number } {
   return { current: o.current ?? (o.done ? 1 : 0), max: o.max ?? 1 };
+}
+
+// Resolves an objective's editing/display mode into a concrete "is this a checkbox or a
+// slider, and what's the effective max" — used by both the entry editor (EntryEditor.tsx) and
+// the quest node card (QuestsView.tsx) so the two stay perfectly in sync. `valueMode` is only
+// a Codex planning aid (see its own doc comment in types/database.ts); legacy objectives with
+// no valueMode at all fall back to "checkbox" so old saved projects keep behaving exactly as
+// before this feature existed.
+export function objectiveDisplayMode(
+  o: Objective,
+  flagDefs: Record<string, DialogueFlagDef>
+): { kind: "checkbox" | "slider"; max: number } {
+  const mode = o.valueMode ?? "checkbox";
+  if (mode === "flag" && o.boundFlagName) {
+    const def = flagDefs[o.boundFlagName];
+    if (def?.type === "number") return { kind: "slider", max: Math.max(1, def.max ?? 100) };
+    return { kind: "checkbox", max: 1 };
+  }
+  if (mode === "custom") {
+    if (o.customType === "number") return { kind: "slider", max: Math.max(1, o.max ?? 100) };
+    return { kind: "checkbox", max: 1 };
+  }
+  return { kind: "checkbox", max: o.max ?? 1 };
 }
 
 function renderObjectives(objectives: Objective[] | undefined): string {

@@ -49,7 +49,10 @@ export function SearchSelect({
         onClick={() => setOpen((v) => !v)}
         className="input text-xs py-1 w-full flex items-center justify-between gap-1 text-left"
       >
-        <span className={`truncate ${selected ? "text-[var(--op-85)]" : "text-[var(--op-35)]"}`}>{selected ? selected.label : placeholder}</span>
+        <span className="flex items-center gap-1.5 min-w-0">
+          {selected?.color && <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: selected.color }} />}
+          <span className={`truncate ${selected ? "text-[var(--op-85)]" : "text-[var(--op-35)]"}`}>{selected ? selected.label : placeholder}</span>
+        </span>
         <ChevronDown size={12} className="text-[var(--op-35)] shrink-0" />
       </button>
       <PortalMenu anchorRef={btnRef} open={open} onClose={() => setOpen(false)}>

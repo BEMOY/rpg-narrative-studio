@@ -4,7 +4,7 @@ import { useProjectStore } from "../../store/useProjectStore";
 import { PortalMenu } from "../common/PortalMenu";
 import { SearchSelect } from "./SearchSelect";
 import { FlagValueInput } from "./FlagValueInput";
-import { isQuest, type DialogueCondition } from "../../types/database";
+import { CAT_COLOR, isQuest, type DialogueCondition } from "../../types/database";
 
 const QUEST_STATUS_LABEL: Record<string, string> = { not_started: "не начат", active: "активен", done: "выполнен" };
 
@@ -98,7 +98,7 @@ export function ConditionEditor({
               <SearchSelect
                 value={draft.key || undefined}
                 onChange={(id) => set({ key: id ?? "" })}
-                options={entries.filter((e) => isQuest(e.category)).map((e) => ({ id: e.id, label: e.name }))}
+                options={entries.filter((e) => isQuest(e.category)).map((e) => ({ id: e.id, label: e.name, color: CAT_COLOR[e.category] }))}
                 placeholder="выбрать квест…"
                 searchPlaceholder="Поиск квеста…"
                 clearLabel="— не выбрано —"

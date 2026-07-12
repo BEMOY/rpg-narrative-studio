@@ -1,5 +1,5 @@
-import { useLayoutEffect, useRef, useState } from "react";
-import { Plus, ZoomIn, ZoomOut, Maximize2, Palette, Play, FileDown, FileUp, FileCode, Share2 } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Plus, ZoomIn, ZoomOut, Maximize2, Type, Settings, Play, FileDown, FileUp, FileCode, Share2 } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { PortalMenu } from "../common/PortalMenu";
 import type { Dialogue } from "../../types/database";
@@ -7,6 +7,19 @@ import { DialogueNodeCard } from "./DialogueNodeCard";
 import { ColorStylesManagerModal } from "./ColorStylesManagerModal";
 import { TestPlayModal } from "./TestPlayModal";
 import { GmlExportModal } from "./GmlExportModal";
+import { SettingsPanel } from "../settings/SettingsPanel";
+import { Tour, type TourStep } from "../tour/Tour";
+
+const DIALOGUES_TOUR: TourStep[] = [
+  { target: '[data-tour="dialogues-new"]', title: "Новый диалог", body: "Диалоги можно раскладывать по папкам слева — удобно, если персонажей и веток много." },
+  { target: '[data-tour="dialogues-addnode"]', title: "Добавить ноду", body: "Каждая нода — это один или несколько реплик подряд, плюс варианты ответа (выборы) в конце." },
+  { target: '[data-tour="dialogues-test"]', title: "Тестовый прогон", body: "Проходит диалог прямо здесь, с учётом условий и флагов — без выхода из редактора." },
+  {
+    target: '[data-tour="dialogues-canvas"]',
+    title: "Холст диалога",
+    body: "Перетяните ноду за верхнюю плашку. Shift+перетаскивание фона — выделить рамкой несколько нод сразу, Delete — удалить выделенные.",
+  },
+];
 
 const CANVAS_W = 4000;
 const CANVAS_H = 3000;
@@ -14,6 +27,91 @@ export const NODE_WIDTH = 340;
 
 function clamp(v: number, lo: number, hi: number) {
   return Math.max(lo, Math.min(hi, v));
+}
+
+// Directional ports: instead of every connection landing on one fixed dot at a node's top-left
+// (which looked wrong for anything approaching from below/the right), each edge computes where
+// it crosses the TARGET node's own bounding box along the straight line from its source point
+// to that box's center — so a node above the parent gets entered from the top, one to the
+// right from its left edge, and so on, per edge independently (a node with several incoming
+// connections from different directions gets a different entry point for each one). Dropping a
+// new connection anywhere on the node still works exactly as before (see onLinkDragStart's
+// elementFromPoint/closest hit-test) — this only changes where the line is drawn, not where you
+// can drop it.
+function boxEdgePoint(from: { x: number; y: number }, box: { x: number; y: number; w: number; h: number }) {
+  const dx = box.x - from.x;
+  const dy = box.y - from.y;
+  if (dx === 0 && dy === 0) return { x: box.x, y: box.y };
+  const halfW = box.w / 2;
+  const halfH = box.h / 2;
+  const scaleX = dx !== 0 ? halfW / Math.abs(dx) : Infinity;
+  const scaleY = dy !== 0 ? halfH / Math.abs(dy) : Infinity;
+  const scale = Math.min(scaleX, scaleY);
+  return { x: box.x - dx * scale, y: box.y - dy * scale };
+}
+
+// Same "which axis dominates" idea for the bezier control points themselves — a horizontal
+// S-curve (control points offset in x) reads naturally for a mostly-sideways connection, but
+// looks bowed and wrong once the target is mostly above/below the source, where a vertical
+// S-curve (control points offset in y) is what actually looks like a smooth cable.
+function curvePath(from: { x: number; y: number }, to: { x: number; y: number }): string {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    const mx = (from.x + to.x) / 2;
+    return `M ${from.x} ${from.y} C ${mx} ${from.y}, ${mx} ${to.y}, ${to.x} ${to.y}`;
+  }
+  const my = (from.y + to.y) / 2;
+  return `M ${from.x} ${from.y} C ${from.x} ${my}, ${to.x} ${my}, ${to.x} ${to.y}`;
+}
+
+// Delete-key confirmation — one checkbox suppresses it for just this dialogue (persisted on
+// the Dialogue itself), the other suppresses it everywhere (Project.uiSettings), both
+// recoverable later from the Settings panel's "reset dismissed warnings" action.
+function DeleteConfirmModal({
+  count,
+  onCancel,
+  onConfirm,
+}: {
+  count: number;
+  onCancel: () => void;
+  onConfirm: (suppressLocal: boolean, suppressGlobal: boolean) => void;
+}) {
+  const [suppressLocal, setSuppressLocal] = useState(false);
+  const [suppressGlobal, setSuppressGlobal] = useState(false);
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 grid place-items-center p-4" onMouseDown={onCancel}>
+      <div className="popover rounded-xl w-full max-w-sm overflow-hidden shadow-2xl" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="px-4 py-3 border-b border-[var(--op-10)]">
+          <div className="text-sm font-medium text-[var(--op-85)]">
+            Удалить {count === 1 ? "эту ноду" : `эти ноды (${count})`}?
+          </div>
+          <div className="text-[11px] text-[var(--op-40)] mt-1">Все связи, ведущие в удаляемые ноды, тоже будут очищены. Это необратимо.</div>
+        </div>
+        <div className="px-4 py-3 space-y-2">
+          <label className="flex items-center gap-2 text-xs text-[var(--op-60)] cursor-pointer select-none">
+            <input type="checkbox" checked={suppressLocal} onChange={(e) => setSuppressLocal(e.target.checked)} className="accent-current" />
+            не спрашивать больше в этом диалоге
+          </label>
+          <label className="flex items-center gap-2 text-xs text-[var(--op-60)] cursor-pointer select-none">
+            <input type="checkbox" checked={suppressGlobal} onChange={(e) => setSuppressGlobal(e.target.checked)} className="accent-current" />
+            не спрашивать больше нигде (можно вернуть в Настройках)
+          </label>
+        </div>
+        <div className="p-3 border-t border-[var(--op-10)] flex justify-end gap-2">
+          <button onClick={onCancel} className="text-sm px-4 py-1.5 rounded-md glass hover:bg-[var(--op-10)]">
+            Отмена
+          </button>
+          <button
+            onClick={() => onConfirm(suppressLocal, suppressGlobal)}
+            className="text-sm px-4 py-1.5 rounded-md bg-red-500/80 hover:bg-red-500 text-white"
+          >
+            Удалить
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 type AnchorKey = string; // "in:<nodeId>" | "cont:<nodeId>" | "choice:<choiceId>" | "else:<lineId>"
@@ -34,6 +132,7 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
   const [pan, setPan] = useState({ x: 60, y: 40 });
   const [, bump] = useState(0);
   const [colorStylesOpen, setColorStylesOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [testOpen, setTestOpen] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const [gmlOpen, setGmlOpen] = useState(false);
@@ -42,13 +141,25 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
 
   const stageRef = useRef<HTMLDivElement>(null);
   const anchorEls = useRef<Map<AnchorKey, HTMLElement>>(new Map());
-  const [anchorPos, setAnchorPos] = useState<Map<AnchorKey, { x: number; y: number }>>(new Map());
+  const [anchorPos, setAnchorPos] = useState<Map<AnchorKey, { x: number; y: number; w: number; h: number }>>(new Map());
 
   const dragNodeRef = useRef<{ id: string; startClientX: number; startClientY: number; startX: number; startY: number } | null>(null);
   const livePos = useRef<Map<string, { x: number; y: number }>>(new Map());
   const panDragRef = useRef<{ startClientX: number; startClientY: number; startPanX: number; startPanY: number } | null>(null);
   const [linkDrag, setLinkDrag] = useState<{ from: AnchorKey; x: number; y: number } | null>(null);
   const [dragOverNodeId, setDragOverNodeId] = useState<string | null>(null);
+
+  // Marquee/rubber-band multi-select — Shift+drag from empty canvas space (plain drag stays
+  // "pan", matching how this canvas already worked; adding a modifier avoids changing existing
+  // muscle memory for panning). `marquee` is the box being dragged out right now, in stage-local
+  // unscaled coordinates; `selectedIds` is what's actually selected once the drag finishes.
+  const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [deleteConfirm, setDeleteConfirm] = useState<{ ids: string[] } | null>(null);
+  const uiSettings = useProjectStore((s) => s.project.uiSettings);
+  const updateUiSettings = useProjectStore((s) => s.updateUiSettings);
+  const updateDialogue = useProjectStore((s) => s.updateDialogue);
+  const deleteDialogueNodes = useProjectStore((s) => s.deleteDialogueNodes);
 
   const registerAnchor = (key: AnchorKey, el: HTMLElement | null) => {
     if (el) anchorEls.current.set(key, el);
@@ -59,12 +170,14 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
     const stage = stageRef.current;
     if (!stage) return;
     const stageRect = stage.getBoundingClientRect();
-    const next = new Map<AnchorKey, { x: number; y: number }>();
+    const next = new Map<AnchorKey, { x: number; y: number; w: number; h: number }>();
     anchorEls.current.forEach((el, key) => {
       const r = el.getBoundingClientRect();
       next.set(key, {
         x: (r.left + r.width / 2 - stageRect.left) / zoom,
         y: (r.top + r.height / 2 - stageRect.top) / zoom,
+        w: r.width / zoom,
+        h: r.height / zoom,
       });
     });
     setAnchorPos(next);
@@ -76,6 +189,28 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dialogue, zoom]);
 
+  // Delete key removes every currently-selected node — gated behind a confirmation modal
+  // unless the writer has suppressed it (per-dialogue or globally, see deleteConfirm/uiSettings
+  // below). Ignored while focus is inside a text input/textarea/select so typing "Delete" to
+  // erase a character in a line's text doesn't nuke nodes.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Delete") return;
+      if (selectedIds.size === 0) return;
+      const active = document.activeElement as HTMLElement | null;
+      if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.isContentEditable)) return;
+      const ids = Array.from(selectedIds);
+      if (dialogue.skipDeleteConfirm || uiSettings?.skipDeleteConfirmGlobal) {
+        deleteDialogueNodes(dialogue.id, ids);
+        setSelectedIds(new Set());
+      } else {
+        setDeleteConfirm({ ids });
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectedIds, dialogue.id, dialogue.skipDeleteConfirm, uiSettings?.skipDeleteConfirmGlobal, deleteDialogueNodes]);
+
   const posFor = (nodeId: string) => {
     const live = livePos.current.get(nodeId);
     if (live) return live;
@@ -86,6 +221,21 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
   const onNodeDragStart = (nodeId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     e.preventDefault(); // otherwise the browser starts a native text-selection drag on mousedown
+    if (e.shiftKey) {
+      // Shift+click on a node's drag handle toggles it in/out of the marquee selection instead
+      // of moving it — same modifier as the empty-canvas marquee drag, so Shift consistently
+      // means "I'm selecting" throughout this canvas.
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(nodeId)) next.delete(nodeId);
+        else next.add(nodeId);
+        return next;
+      });
+      return;
+    }
+    // A plain click on a node makes it the sole selection — so Delete works right away for a
+    // single node too, without requiring a marquee drag first.
+    setSelectedIds(new Set([nodeId]));
     const p = posFor(nodeId);
     dragNodeRef.current = { id: nodeId, startClientX: e.clientX, startClientY: e.clientY, startX: p.x, startY: p.y };
     const onMove = (ev: MouseEvent) => {
@@ -115,6 +265,47 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
   };
 
   const onBgPointerDown = (e: React.MouseEvent) => {
+    if (e.shiftKey) {
+      const stage = stageRef.current;
+      if (!stage) return;
+      const rect = stage.getBoundingClientRect();
+      const startX = (e.clientX - rect.left) / zoom;
+      const startY = (e.clientY - rect.top) / zoom;
+      setMarquee({ x0: startX, y0: startY, x1: startX, y1: startY });
+      const onMove = (ev: MouseEvent) => {
+        const r = stage.getBoundingClientRect();
+        setMarquee((m) => (m ? { ...m, x1: (ev.clientX - r.left) / zoom, y1: (ev.clientY - r.top) / zoom } : m));
+      };
+      const onUp = () => {
+        setMarquee((m) => {
+          if (m) {
+            const minX = Math.min(m.x0, m.x1);
+            const maxX = Math.max(m.x0, m.x1);
+            const minY = Math.min(m.y0, m.y1);
+            const maxY = Math.max(m.y0, m.y1);
+            const picked = new Set<string>();
+            dialogue.nodes.forEach((n) => {
+              const p = posFor(n.id);
+              const box = anchorPos.get(`box:${n.id}`);
+              const w = box?.w ?? NODE_WIDTH;
+              const h = box?.h ?? 200;
+              if (p.x < maxX && p.x + w > minX && p.y < maxY && p.y + h > minY) picked.add(n.id);
+            });
+            setSelectedIds(picked);
+          }
+          return null;
+        });
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+      };
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+      return;
+    }
+
+    // Plain click on empty canvas clears the current selection (standard node-editor
+    // convention) before falling through to the existing pan-drag behavior.
+    setSelectedIds(new Set());
     panDragRef.current = { startClientX: e.clientX, startClientY: e.clientY, startPanX: pan.x, startPanY: pan.y };
     const onMove = (ev: MouseEvent) => {
       const d = panDragRef.current;
@@ -147,6 +338,7 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
   // ---- link creation drag: from a choice dot / continuation bar to another node ----
   const onLinkDragStart = (from: AnchorKey, e: React.MouseEvent) => {
     e.stopPropagation();
+    e.preventDefault(); // otherwise the browser starts a native text/image-selection drag
     const stage = stageRef.current;
     if (!stage) return;
     const move = (ev: MouseEvent) => {
@@ -231,15 +423,23 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
           onChange={(e) => renameDialogue(dialogue.id, e.target.value || dialogue.name)}
           className="bg-transparent outline-none text-sm font-medium text-[var(--op-85)] px-1.5 py-1 rounded hover:bg-[var(--op-5)] focus:bg-[var(--op-7)] min-w-[120px]"
         />
-        <button onClick={addNode} className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md bg-accent/80 hover:bg-accent">
+        <button data-tour="dialogues-addnode" onClick={addNode} className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md bg-accent/80 hover:bg-accent">
           <Plus size={12} /> Нода
         </button>
-        <button onClick={() => setTestOpen(true)} className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md glass hover:bg-[var(--op-10)]">
+        <button data-tour="dialogues-test" onClick={() => setTestOpen(true)} className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md glass hover:bg-[var(--op-10)]">
           <Play size={12} /> Тест
         </button>
         <button onClick={() => setColorStylesOpen(true)} className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md glass hover:bg-[var(--op-10)]">
-          <Palette size={12} /> Стили
+          <Type size={12} /> Стили текста
         </button>
+        <button
+          onClick={() => setSettingsOpen(true)}
+          title="Настройки: тема, обучение, сброс предупреждений"
+          className="w-8 h-8 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]"
+        >
+          <Settings size={13} />
+        </button>
+        <Tour tourId="dialogues" steps={DIALOGUES_TOUR} />
         <div className="relative">
           <input ref={importInputRef} type="file" accept="application/json,.json" className="hidden" onChange={(e) => importJson(e.target.files?.[0])} />
           <button
@@ -297,7 +497,7 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
         </button>
       </div>
 
-      <div className="flex-1 relative overflow-hidden cursor-grab active:cursor-grabbing" onWheel={onWheel} onMouseDown={onBgPointerDown}>
+      <div data-tour="dialogues-canvas" className="flex-1 relative overflow-hidden cursor-grab active:cursor-grabbing" onWheel={onWheel} onMouseDown={onBgPointerDown}>
         <div
           ref={stageRef}
           style={{ position: "absolute", left: 0, top: 0, width: CANVAS_W, height: CANVAS_H, transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin: "0 0" }}
@@ -312,54 +512,41 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
               const lines: React.ReactNode[] = [];
               if (n.choices.length === 0 && n.continueTo) {
                 const from = anchorPos.get(`cont:${n.id}`);
-                const to = anchorPos.get(`in:${n.continueTo}`);
-                if (from && to) {
-                  const mx = (from.x + to.x) / 2;
+                const box = anchorPos.get(`box:${n.continueTo}`);
+                if (from && box) {
+                  const to = boxEdgePoint(from, box);
                   lines.push(
-                    <path
-                      key={`cont-${n.id}`}
-                      d={`M ${from.x} ${from.y} C ${mx} ${from.y}, ${mx} ${to.y}, ${to.x} ${to.y}`}
-                      fill="none"
-                      stroke="var(--op-30)"
-                      strokeWidth={1.6}
-                      markerEnd="url(#dlg-arrow)"
-                    />
+                    <g key={`cont-${n.id}`}>
+                      <path d={curvePath(from, to)} fill="none" stroke="var(--op-30)" strokeWidth={1.6} markerEnd="url(#dlg-arrow)" />
+                      <circle cx={to.x} cy={to.y} r={3} fill="var(--op-30)" />
+                    </g>
                   );
                 }
               }
               n.choices.forEach((c) => {
                 if (!c.targetNodeId) return;
                 const from = anchorPos.get(`choice:${c.id}`);
-                const to = anchorPos.get(`in:${c.targetNodeId}`);
-                if (!from || !to) return;
-                const mx = (from.x + to.x) / 2;
+                const box = anchorPos.get(`box:${c.targetNodeId}`);
+                if (!from || !box) return;
+                const to = boxEdgePoint(from, box);
                 lines.push(
-                  <path
-                    key={`choice-${c.id}`}
-                    d={`M ${from.x} ${from.y} C ${mx} ${from.y}, ${mx} ${to.y}, ${to.x} ${to.y}`}
-                    fill="none"
-                    stroke="#5fc9c9"
-                    strokeWidth={1.6}
-                    markerEnd="url(#dlg-arrow)"
-                  />
+                  <g key={`choice-${c.id}`}>
+                    <path d={curvePath(from, to)} fill="none" stroke="#5fc9c9" strokeWidth={1.6} markerEnd="url(#dlg-arrow)" />
+                    <circle cx={to.x} cy={to.y} r={3} fill="#5fc9c9" />
+                  </g>
                 );
               });
               n.lines.forEach((l) => {
                 if (!l.condition || !l.elseNodeId) return;
                 const from = anchorPos.get(`else:${l.id}`);
-                const to = anchorPos.get(`in:${l.elseNodeId}`);
-                if (!from || !to) return;
-                const mx = (from.x + to.x) / 2;
+                const box = anchorPos.get(`box:${l.elseNodeId}`);
+                if (!from || !box) return;
+                const to = boxEdgePoint(from, box);
                 lines.push(
-                  <path
-                    key={`else-${l.id}`}
-                    d={`M ${from.x} ${from.y} C ${mx} ${from.y}, ${mx} ${to.y}, ${to.x} ${to.y}`}
-                    fill="none"
-                    stroke="#e0a95f"
-                    strokeWidth={1.6}
-                    strokeDasharray="4 3"
-                    markerEnd="url(#dlg-arrow)"
-                  />
+                  <g key={`else-${l.id}`}>
+                    <path d={curvePath(from, to)} fill="none" stroke="#e0a95f" strokeWidth={1.6} strokeDasharray="4 3" markerEnd="url(#dlg-arrow)" />
+                    <circle cx={to.x} cy={to.y} r={3} fill="#e0a95f" />
+                  </g>
                 );
               });
               return lines;
@@ -377,8 +564,22 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
 
           {dialogue.nodes.map((n) => {
             const p = posFor(n.id);
+            const selected = selectedIds.has(n.id);
             return (
-              <div key={n.id} style={{ position: "absolute", left: p.x, top: p.y, width: NODE_WIDTH }} data-dialogue-node-id={n.id}>
+              <div
+                key={n.id}
+                ref={(el) => registerAnchor(`box:${n.id}`, el)}
+                style={{
+                  position: "absolute",
+                  left: p.x,
+                  top: p.y,
+                  width: NODE_WIDTH,
+                  outline: selected ? "2px solid var(--accent, #8b7bff)" : "none",
+                  outlineOffset: 3,
+                  borderRadius: 10,
+                }}
+                data-dialogue-node-id={n.id}
+              >
                 <DialogueNodeCard
                   node={n}
                   dialogue={dialogue}
@@ -392,6 +593,18 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
               </div>
             );
           })}
+
+          {marquee && (
+            <div
+              className="absolute border border-accent/70 bg-accent/10 pointer-events-none"
+              style={{
+                left: Math.min(marquee.x0, marquee.x1),
+                top: Math.min(marquee.y0, marquee.y1),
+                width: Math.abs(marquee.x1 - marquee.x0),
+                height: Math.abs(marquee.y1 - marquee.y0),
+              }}
+            />
+          )}
         </div>
       </div>
 
@@ -405,8 +618,22 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
       </datalist>
 
       {colorStylesOpen && <ColorStylesManagerModal onClose={() => setColorStylesOpen(false)} />}
+      {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
       {testOpen && <TestPlayModal dialogue={dialogue} onClose={() => setTestOpen(false)} />}
       {gmlOpen && <GmlExportModal dialogue={dialogue} entries={entries} colorStyles={colorStyles} onClose={() => setGmlOpen(false)} />}
+      {deleteConfirm && (
+        <DeleteConfirmModal
+          count={deleteConfirm.ids.length}
+          onCancel={() => setDeleteConfirm(null)}
+          onConfirm={(suppressLocal, suppressGlobal) => {
+            deleteDialogueNodes(dialogue.id, deleteConfirm.ids);
+            setSelectedIds(new Set());
+            if (suppressLocal) updateDialogue(dialogue.id, { skipDeleteConfirm: true });
+            if (suppressGlobal) updateUiSettings({ skipDeleteConfirmGlobal: true });
+            setDeleteConfirm(null);
+          }}
+        />
+      )}
     </div>
   );
 }

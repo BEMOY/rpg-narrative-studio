@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Category, Dialogue, DialogueChoice, DialogueColorStyle, DialogueFlagDef, DialogueLine, DialogueNode, Entry, Project, StatPreset } from "../types/database";
+import type { Category, Dialogue, DialogueChoice, DialogueColorStyle, DialogueFlagDef, DialogueLine, DialogueNode, Entry, Project, StatPreset, UiSettings } from "../types/database";
 import { sampleProject } from "../data/sampleProject";
 import { saveProjectData } from "../cloud/projects";
 import { createChoice, createDialogue as makeDialogue, createLine, createNode, normalizeDialogue } from "../lib/dialogueDefaults";
@@ -52,11 +52,13 @@ interface ProjectState {
   moveDialogueFolder: (id: string, newParentId: string | null) => void;
   createDialogue: (name: string, folderId: string | null) => string;
   renameDialogue: (id: string, name: string) => void;
+  updateDialogue: (id: string, patch: Partial<Dialogue>) => void;
   deleteDialogue: (id: string) => void;
   moveDialogueToFolder: (id: string, folderId: string | null) => void;
   addDialogueNode: (dialogueId: string, x: number, y: number) => string;
   updateDialogueNode: (dialogueId: string, nodeId: string, patch: Partial<DialogueNode>) => void;
   deleteDialogueNode: (dialogueId: string, nodeId: string) => void;
+  deleteDialogueNodes: (dialogueId: string, nodeIds: string[]) => void;
   setDialogueStartNode: (dialogueId: string, nodeId: string) => void;
   addDialogueLine: (dialogueId: string, nodeId: string) => void;
   updateDialogueLine: (dialogueId: string, nodeId: string, lineId: string, patch: Partial<DialogueLine>) => void;
@@ -75,6 +77,10 @@ interface ProjectState {
   importDialogue: (dialogue: Dialogue, folderId: string | null) => void;
   addStatPreset: (kind: "stat" | "resist", preset: Omit<StatPreset, "id">) => void;
   removeStatPreset: (kind: "stat" | "resist", id: string) => void;
+  setQuestGraphPosition: (nodeId: string, x: number, y: number) => void;
+  clearQuestGraphPositions: () => void;
+  updateUiSettings: (patch: Partial<UiSettings>) => void;
+  resetDeleteConfirmSuppression: () => void;
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -313,6 +319,13 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     triggerAutosavePulse(set);
   },
 
+  updateDialogue: (id, patch) => {
+    set((s) => ({
+      project: { ...s.project, dialogues: s.project.dialogues.map((d) => (d.id === id ? { ...d, ...patch } : d)) },
+    }));
+    triggerAutosavePulse(set);
+  },
+
   deleteDialogue: (id) => {
     set((s) => ({
       project: { ...s.project, dialogues: s.project.dialogues.filter((d) => d.id !== id) },
@@ -366,6 +379,32 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
               choices: n.choices.map((c) => (c.targetNodeId === nodeId ? { ...c, targetNodeId: undefined } : c)),
             }));
           return { ...d, nodes, startNodeId: d.startNodeId === nodeId ? nodes[0]?.id ?? "" : d.startNodeId };
+        }),
+      },
+    }));
+    triggerAutosavePulse(set);
+  },
+
+  // Bulk version for marquee multi-select + Delete-key removal (DialogueCanvas.tsx) — also
+  // clears dangling `line.elseNodeId` references, which the singular deleteDialogueNode above
+  // doesn't (a pre-existing gap; not worth touching that one's behavior here, but a bulk delete
+  // is a good place not to repeat it).
+  deleteDialogueNodes: (dialogueId, nodeIds) => {
+    const doomed = new Set(nodeIds);
+    set((s) => ({
+      project: {
+        ...s.project,
+        dialogues: s.project.dialogues.map((d) => {
+          if (d.id !== dialogueId) return d;
+          const nodes = d.nodes
+            .filter((n) => !doomed.has(n.id))
+            .map((n) => ({
+              ...n,
+              continueTo: n.continueTo && doomed.has(n.continueTo) ? undefined : n.continueTo,
+              choices: n.choices.map((c) => (c.targetNodeId && doomed.has(c.targetNodeId) ? { ...c, targetNodeId: undefined } : c)),
+              lines: n.lines.map((l) => (l.elseNodeId && doomed.has(l.elseNodeId) ? { ...l, elseNodeId: undefined } : l)),
+            }));
+          return { ...d, nodes, startNodeId: doomed.has(d.startNodeId) ? nodes[0]?.id ?? "" : d.startNodeId };
         }),
       },
     }));
@@ -624,6 +663,43 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   removeStatPreset: (kind, id) => {
     const key = kind === "stat" ? "statPresets" : "resistPresets";
     set((s) => ({ project: { ...s.project, [key]: s.project[key].filter((p) => p.id !== id) } }));
+    triggerAutosavePulse(set);
+  },
+
+  // Called once per node on drag-release (not every frame) — see onNodePointerDown's onUp in
+  // QuestsView.tsx's RoadmapGraph.
+  setQuestGraphPosition: (nodeId, x, y) => {
+    set((s) => ({
+      project: {
+        ...s.project,
+        questGraphPositions: { ...(s.project.questGraphPositions ?? {}), [nodeId]: { x, y } },
+      },
+    }));
+    triggerAutosavePulse(set);
+  },
+
+  clearQuestGraphPositions: () => {
+    set((s) => ({ project: { ...s.project, questGraphPositions: {} } }));
+    triggerAutosavePulse(set);
+  },
+
+  updateUiSettings: (patch) => {
+    set((s) => ({ project: { ...s.project, uiSettings: { ...(s.project.uiSettings ?? {}), ...patch } } }));
+    triggerAutosavePulse(set);
+  },
+
+  // "Reset dismissed warnings" in the new Settings panel — clears the global delete-confirm
+  // suppression AND every individual dialogue's per-dialogue suppression flag in one go, so a
+  // writer who clicked through a bunch of "не спрашивать" checkboxes can get the modal back
+  // everywhere without having to track down which dialogues they touched.
+  resetDeleteConfirmSuppression: () => {
+    set((s) => ({
+      project: {
+        ...s.project,
+        uiSettings: { ...(s.project.uiSettings ?? {}), skipDeleteConfirmGlobal: false },
+        dialogues: s.project.dialogues.map((d) => (d.skipDeleteConfirm ? { ...d, skipDeleteConfirm: false } : d)),
+      },
+    }));
     triggerAutosavePulse(set);
   },
 }));

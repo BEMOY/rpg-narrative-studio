@@ -248,6 +248,7 @@ export function DialogueSidebar() {
             <FolderPlus size={12} /> Папка
           </button>
           <button
+            data-tour="dialogues-new"
             onClick={addDialogue}
             className="flex-1 flex items-center justify-center gap-1.5 text-xs px-2 py-1.5 rounded-md bg-accent/80 hover:bg-accent"
           >

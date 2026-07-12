@@ -7,9 +7,10 @@ import { MarkupText } from "./MarkupText";
 import { PortalMenu } from "../common/PortalMenu";
 import { FlagValueInput } from "./FlagValueInput";
 import type { ColorStyleMode, Dialogue, DialogueChoice, DialogueLine, DialogueNode, DialogueSide, QuestAction, QuestActionKind } from "../../types/database";
-import { isQuest } from "../../types/database";
+import { CAT_COLOR, isQuest } from "../../types/database";
 import { MARKUP_TAGS, FALLBACK_COLOR_GUESSES, mixHex } from "../../lib/dialogueMarkup";
 import { nextId } from "../../lib/mapDefaults";
+import { objectiveDisplayMode } from "../../lib/questCompile";
 
 // Applies a markup tag around the current selection (or right before it, for "prefix" tags)
 // in a plain <textarea>. Shared between the generic tag-button row and the dedicated color
@@ -241,6 +242,20 @@ function LineBlock({
 
   const patch = (p: Partial<DialogueLine>) => updateDialogueLine(dialogue.id, node.id, line.id, p);
 
+  // Same flag_set()/quest_* side effects a choice can fire — here they trigger the moment this
+  // REPLICA is shown, not on a player choice (see renderLinePage in dialogueCompile.ts).
+  const lineFlagSets = line.flagSets ?? [];
+  const addLineFlagSet = () => patch({ flagSets: [...lineFlagSets, { key: "", value: "true" }] });
+  const updateLineFlagSet = (i: number, p: Partial<{ key: string; value: string }>) =>
+    patch({ flagSets: lineFlagSets.map((fs, idx) => (idx === i ? { ...fs, ...p } : fs)) });
+  const removeLineFlagSet = (i: number) => patch({ flagSets: lineFlagSets.filter((_, idx) => idx !== i) });
+
+  const lineQuestActions = line.questActions ?? [];
+  const addLineQuestAction = () => patch({ questActions: [...lineQuestActions, { id: nextId("qact"), kind: "start", questId: "" }] });
+  const updateLineQuestAction = (i: number, p: Partial<QuestAction>) =>
+    patch({ questActions: lineQuestActions.map((qa, idx) => (idx === i ? { ...qa, ...p } : qa)) });
+  const removeLineQuestAction = (i: number) => patch({ questActions: lineQuestActions.filter((_, idx) => idx !== i) });
+
   return (
     <div className="rounded-md border border-[var(--op-7)] p-2 space-y-1.5 bg-[var(--op-3)]">
       <div className="flex items-center justify-between">
@@ -326,6 +341,24 @@ function LineBlock({
         )
       )}
 
+      <div className="space-y-1">
+        {lineFlagSets.map((fs, i) => (
+          <FlagSetRow key={i} fs={fs} onChange={(p) => updateLineFlagSet(i, p)} onRemove={() => removeLineFlagSet(i)} />
+        ))}
+        <button onClick={addLineFlagSet} className="w-full text-[10px] text-[var(--op-35)] hover:text-[var(--op-65)] py-1 rounded bg-[var(--op-5)]">
+          + flag_set
+        </button>
+      </div>
+
+      <div className="space-y-1">
+        {lineQuestActions.map((qa, i) => (
+          <QuestActionRow key={qa.id} action={qa} onChange={(p) => updateLineQuestAction(i, p)} onRemove={() => removeLineQuestAction(i)} />
+        ))}
+        <button onClick={addLineQuestAction} className="w-full text-[10px] text-[var(--op-35)] hover:text-[var(--op-65)] py-1 rounded bg-[var(--op-5)]">
+          + действие с квестом
+        </button>
+      </div>
+
       <label className="flex items-center gap-1.5 text-[10px] text-[var(--op-45)] cursor-pointer select-none w-fit">
         <input type="checkbox" checked={line.noSkip ?? false} onChange={(e) => patch({ noSkip: e.target.checked })} className="sr-only peer" />
         <span className="w-3.5 h-3.5 rounded-[4px] border border-[var(--op-20)] bg-[var(--op-5)] grid place-items-center shrink-0 transition-colors peer-checked:bg-accent/80 peer-checked:border-accent">
@@ -349,9 +382,15 @@ function QuestActionRow({
   onRemove: () => void;
 }) {
   const entries = useProjectStore((s) => s.project.entries);
+  const dialogueFlagDefs = useProjectStore((s) => s.project.dialogueFlagDefs);
   const quests = entries.filter((e) => isQuest(e.category));
   const quest = quests.find((q) => q.id === action.questId);
   const objectives = quest?.objectives ?? [];
+  const selectedObjective = objectives[action.objectiveIndex ?? 0];
+  // Slider-type objectives (see objectiveDisplayMode, shared with the Quests roadmap card)
+  // make "amount" a meaningful number to tune; plain checkbox objectives only ever go from
+  // 0 to their max in one shot, so the amount field is just noise there — hide it.
+  const isSliderObjective = selectedObjective ? objectiveDisplayMode(selectedObjective, dialogueFlagDefs).kind === "slider" : false;
 
   return (
     <div className="rounded-md border border-[var(--op-7)] p-1.5 space-y-1 bg-[var(--op-4)]">
@@ -371,7 +410,7 @@ function QuestActionRow({
           <SearchSelect
             value={action.questId || undefined}
             onChange={(id) => onChange({ questId: id ?? "" })}
-            options={quests.map((q) => ({ id: q.id, label: q.name }))}
+            options={quests.map((q) => ({ id: q.id, label: q.name, color: CAT_COLOR[q.category] }))}
             placeholder="выбрать квест…"
             searchPlaceholder="Поиск квеста…"
             clearLabel="— не выбрано —"
@@ -398,13 +437,17 @@ function QuestActionRow({
           ) : (
             <div className="flex-1 text-[10px] text-[var(--op-35)] italic">{quest ? "у этого квеста нет подцелей" : "сначала выберите квест"}</div>
           )}
-          <input
-            type="number"
-            value={action.amount ?? 1}
-            onChange={(e) => onChange({ amount: Number(e.target.value) || 1 })}
-            title="на сколько продвинуть"
-            className="input text-[11px] py-1 w-14 shrink-0"
-          />
+          {isSliderObjective ? (
+            <input
+              type="number"
+              value={action.amount ?? 1}
+              onChange={(e) => onChange({ amount: Number(e.target.value) || 1 })}
+              title="на сколько продвинуть"
+              className="input text-[11px] py-1 w-14 shrink-0"
+            />
+          ) : (
+            selectedObjective && <span className="text-[9px] text-[var(--op-30)] shrink-0" title="чекбокс-цель — выполняется целиком">✓ целиком</span>
+          )}
         </div>
       )}
     </div>
@@ -529,10 +572,12 @@ export function DialogueNodeCard({
       }`}
       onMouseDown={(e) => e.stopPropagation()}
     >
-      <span
-        ref={(el) => registerAnchor(`in:${node.id}`, el)}
-        className="absolute -left-1.5 top-5 w-3 h-3 rounded-full bg-emerald-400 border-2 border-[var(--popover-bg)]"
-      />
+      {/* No longer a fixed connection point — incoming edges now dock wherever they cross this
+          card's own bounding box along the line from their source (see boxEdgePoint in
+          DialogueCanvas.tsx), drawn as a small colored dot per edge right at that crossing
+          point. This is now purely decorative: a quiet reminder that the whole card accepts
+          drops, not just one spot. */}
+      <div className="absolute -left-1 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-emerald-400/50 border border-[var(--popover-bg)] pointer-events-none" />
 
       <div
         onMouseDown={onDragHandleDown}

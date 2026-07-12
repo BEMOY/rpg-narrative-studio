@@ -94,6 +94,28 @@ export function TestPlayModal({ dialogue, onClose }: { dialogue: Dialogue; onClo
     if (lineIdx + 1 < visibleLines.length) setLineIdx(lineIdx + 1);
   };
 
+  // Line-level flag_set (see LineBlock's "+ flag_set" button in DialogueNodeCard.tsx) applies
+  // the moment its line is actually SHOWN — mirrors pickChoice's flag application below, just
+  // triggered by navigation instead of a click. Quest actions on lines are intentionally NOT
+  // simulated here, matching this same gap for CHOICE quest actions just below (this tester
+  // only ever tracked flags/dialogue flow, never quest state — see QuestsView's own separate
+  // "what if" simulation for that).
+  useEffect(() => {
+    if (!currentLine || currentLine.flagSets.length === 0) return;
+    setState((s) => {
+      const flags = { ...s.flags };
+      let changed = false;
+      for (const fs of currentLine.flagSets) {
+        if (flags[fs.key] !== fs.value) {
+          flags[fs.key] = fs.value;
+          changed = true;
+        }
+      }
+      return changed ? { ...s, flags } : s;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentLine?.id]);
+
   const pickChoice = (choiceId: string) => {
     const choice = node?.choices.find((c) => c.id === choiceId);
     if (!choice) return;

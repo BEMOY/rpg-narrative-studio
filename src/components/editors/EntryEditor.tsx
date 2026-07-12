@@ -11,6 +11,7 @@ import { statIcon } from "../../lib/statIcons";
 import { EquipmentPresetsModal } from "./EquipmentPresetsModal";
 import type { StatPreset } from "../../types/database";
 import { SLOTS, SLOT_LABEL, SLOT_ICON } from "../../lib/equipSlot";
+import { objectiveDisplayMode } from "../../lib/questCompile";
 
 
 const RELATIONSHIPS: Relationship[] = ["friend", "neutral", "enemy"];
@@ -451,6 +452,8 @@ function TagsSection({ entry }: { entry: Entry }) {
 function QuestPanel({ entry }: { entry: Entry }) {
   const updateEntry = useProjectStore((s) => s.updateEntry);
   const allEntries = useProjectStore((s) => s.project.entries);
+  const dialogueFlags = useProjectStore((s) => s.project.dialogueFlags);
+  const dialogueFlagDefs = useProjectStore((s) => s.project.dialogueFlagDefs);
   const objectives = entry.objectives ?? [];
   const rewards = entry.rewards ?? {};
   const itemOptions = allEntries.filter((e) => e.category === "item" || e.category === "equipment");
@@ -511,40 +514,115 @@ function QuestPanel({ entry }: { entry: Entry }) {
           )}
         </div>
         <div className="space-y-1.5">
-          {objectives.map((o, i) => (
-            <div key={i} className="flex items-center gap-1.5 rounded-md border border-[var(--op-7)] p-2">
-              <input
-                className="input flex-1 min-w-0"
-                value={o.text}
-                placeholder="текст подцели"
-                onChange={(e) => patchObjective(i, { text: e.target.value })}
-              />
-              <input
-                type="number"
-                className="input w-14 shrink-0"
-                title="current"
-                value={o.current ?? (o.done ? 1 : 0)}
-                onChange={(e) => patchObjective(i, { current: Number(e.target.value) || 0 })}
-              />
-              <span className="text-[var(--op-30)] text-xs shrink-0">/</span>
-              <input
-                type="number"
-                className="input w-14 shrink-0"
-                title="max"
-                value={o.max ?? 1}
-                onChange={(e) => patchObjective(i, { max: Number(e.target.value) || 1 })}
-              />
-              <input
-                className="input w-32 shrink-0 mono"
-                value={o.objId ?? ""}
-                placeholder="objId (флаг obj_...)"
-                onChange={(e) => patchObjective(i, { objId: e.target.value || undefined })}
-              />
-              <button onClick={() => removeObjective(i)} className="opacity-40 hover:opacity-100 shrink-0">
-                <X size={14} />
-              </button>
-            </div>
-          ))}
+          {objectives.map((o, i) => {
+            const mode = o.valueMode ?? "checkbox";
+            const display = objectiveDisplayMode(o, dialogueFlagDefs);
+            return (
+              <div key={i} className="rounded-md border border-[var(--op-7)] p-2 space-y-1.5">
+                <div className="flex items-center gap-1.5">
+                  <input
+                    className="input flex-1 min-w-0"
+                    value={o.text}
+                    placeholder="текст подцели"
+                    onChange={(e) => patchObjective(i, { text: e.target.value })}
+                  />
+                  <button onClick={() => removeObjective(i)} className="opacity-40 hover:opacity-100 shrink-0">
+                    <X size={14} />
+                  </button>
+                </div>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <select
+                    className="input w-auto text-xs py-1 shrink-0"
+                    value={mode}
+                    onChange={(e) => {
+                      const nextMode = e.target.value as Objective["valueMode"];
+                      if (nextMode === "checkbox") patchObjective(i, { valueMode: nextMode, max: 1, current: Math.min(o.current ?? 0, 1) });
+                      else if (nextMode === "flag") {
+                        const firstFlag = dialogueFlags[0];
+                        patchObjective(i, { valueMode: nextMode, boundFlagName: o.boundFlagName ?? firstFlag });
+                      } else patchObjective(i, { valueMode: nextMode, customType: o.customType ?? "bool", max: o.max ?? 100, customDefault: o.customDefault ?? 0 });
+                    }}
+                  >
+                    <option value="checkbox">чекбокс</option>
+                    <option value="flag">флаг</option>
+                    <option value="custom">своё значение</option>
+                  </select>
+
+                  {mode === "flag" && (
+                    <>
+                      <select
+                        className="input w-auto text-xs py-1 shrink-0 min-w-[140px]"
+                        value={o.boundFlagName ?? ""}
+                        onChange={(e) => patchObjective(i, { boundFlagName: e.target.value || undefined })}
+                      >
+                        <option value="">— выберите флаг —</option>
+                        {dialogueFlags.map((f) => (
+                          <option key={f} value={f}>
+                            {f} ({dialogueFlagDefs[f]?.type === "number" ? "число" : "bool"})
+                          </option>
+                        ))}
+                      </select>
+                      {o.boundFlagName && !dialogueFlagDefs[o.boundFlagName] && (
+                        <span className="text-[10px] text-amber-400/80">флаг не найден</span>
+                      )}
+                    </>
+                  )}
+
+                  {mode === "custom" && (
+                    <>
+                      <select
+                        className="input w-auto text-xs py-1 shrink-0"
+                        value={o.customType ?? "bool"}
+                        onChange={(e) => patchObjective(i, { customType: e.target.value as "bool" | "number" })}
+                      >
+                        <option value="bool">bool</option>
+                        <option value="number">число</option>
+                      </select>
+                      {o.customType === "number" && (
+                        <>
+                          <span className="text-[10px] text-[var(--op-35)] shrink-0">макс.</span>
+                          <input
+                            type="number"
+                            className="input w-16 text-xs py-1 shrink-0"
+                            value={o.max ?? 100}
+                            onChange={(e) => patchObjective(i, { max: Math.max(1, Number(e.target.value) || 1) })}
+                          />
+                          <span className="text-[10px] text-[var(--op-35)] shrink-0">по умолч.</span>
+                          <input
+                            type="number"
+                            className="input w-16 text-xs py-1 shrink-0"
+                            value={o.customDefault ?? 0}
+                            onChange={(e) => patchObjective(i, { customDefault: Number(e.target.value) || 0 })}
+                          />
+                        </>
+                      )}
+                    </>
+                  )}
+
+                  {display.kind === "slider" && (
+                    <>
+                      <span className="text-[10px] text-[var(--op-35)] shrink-0 ml-auto">текущее</span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={display.max}
+                        className="input w-16 text-xs py-1 shrink-0"
+                        value={o.current ?? 0}
+                        onChange={(e) => patchObjective(i, { current: Math.max(0, Math.min(display.max, Number(e.target.value) || 0)) })}
+                      />
+                    </>
+                  )}
+
+                  <input
+                    className="input w-28 shrink-0 mono text-xs py-1"
+                    value={o.objId ?? ""}
+                    placeholder="objId (флаг obj_...)"
+                    onChange={(e) => patchObjective(i, { objId: e.target.value || undefined })}
+                  />
+                </div>
+              </div>
+            );
+          })}
           <button onClick={addObjective} className="flex items-center gap-1.5 text-xs text-[var(--op-50)] hover:text-[var(--op-80)]">
             <Plus size={12} /> Добавить подцель
           </button>
