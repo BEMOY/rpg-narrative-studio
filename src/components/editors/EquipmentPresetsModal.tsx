@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { X, Plus, Check } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { STAT_ICON_NAMES, statIcon } from "../../lib/statIcons";
@@ -74,7 +75,13 @@ export function EquipmentPresetsModal({
 
   const title = kind === "stat" ? "Параметры" : "Сопротивления";
 
-  return (
+  // Rendered through a portal straight to <body> — this component is opened from deep inside
+  // a .glass-styled Section, and `.glass` sets `backdrop-filter`, which (per spec) makes that
+  // element a new containing block for any `position: fixed` descendant. Without the portal,
+  // "fixed inset-0" ends up positioned/sized relative to that Section instead of the viewport,
+  // so the overlay only covers part of the page instead of centering over everything — matches
+  // PortalMenu/CommandPalette's existing approach for the same reason.
+  return createPortal(
     <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-3" onClick={onClose}>
       <div className="popover rounded-xl w-full max-w-sm max-h-[80vh] flex flex-col overflow-hidden shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="px-4 py-3 border-b border-[var(--op-10)] shrink-0">
@@ -154,6 +161,7 @@ export function EquipmentPresetsModal({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
