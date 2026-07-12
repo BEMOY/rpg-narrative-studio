@@ -71,6 +71,11 @@ interface ProjectState {
   deleteDialogue: (id: string) => void;
   moveDialogueToFolder: (id: string, folderId: string | null) => void;
   addDialogueNode: (dialogueId: string, x: number, y: number) => string;
+  // Bulk append of fully-formed nodes (ids/lines/choices already resolved by the caller) — used
+  // by DialogueCanvas's Ctrl+V paste, which needs to insert several complete cloned nodes (with
+  // internal links already remapped to fresh ids) in one shot rather than one default-empty
+  // node at a time like addDialogueNode.
+  addDialogueNodesRaw: (dialogueId: string, nodes: DialogueNode[]) => void;
   updateDialogueNode: (dialogueId: string, nodeId: string, patch: Partial<DialogueNode>) => void;
   deleteDialogueNode: (dialogueId: string, nodeId: string) => void;
   deleteDialogueNodes: (dialogueId: string, nodeIds: string[]) => void;
@@ -419,6 +424,16 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     }));
     triggerAutosavePulse(set);
     return node.id;
+  },
+
+  addDialogueNodesRaw: (dialogueId, nodes) => {
+    set((s) => ({
+      project: {
+        ...s.project,
+        dialogues: s.project.dialogues.map((d) => (d.id === dialogueId ? { ...d, nodes: [...d.nodes, ...nodes] } : d)),
+      },
+    }));
+    triggerAutosavePulse(set);
   },
 
   updateDialogueNode: (dialogueId, nodeId, patch) => {

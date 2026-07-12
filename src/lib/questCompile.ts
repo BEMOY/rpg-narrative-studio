@@ -100,3 +100,34 @@ export function compileQuestsScript(entries: Entry[]): string {
 
   return header + "function quests_init() {\n    global.quests = {};\n\n" + blocks.join("\n\n") + "\n}\n";
 }
+
+
+// Every quest that (directly or transitively) GATES the given quest's availability — i.e. every
+// quest reachable by walking questDependencies backwards, regardless of "unlocks"/"blocks" kind
+// (both feed the same unlockedBy/blockedBy gate maps in QuestsView's computeQuestStatuses, so
+// both count as "upstream" of this quest). Used by the dependency editor (EntryEditor's
+// QuestPanel) to grey out targets that would create a contradiction/cycle if THIS quest tried
+// to declare a dependency pointing back at one of its own gates — e.g. a child quest trying to
+// block or unlock the very parent that unlocks it.
+export function questAncestorIds(questId: string, allEntries: Entry[]): Set<string> {
+  const parentsOf = new Map<string, string[]>();
+  for (const e of allEntries) {
+    if (!isQuest(e.category)) continue;
+    for (const dep of e.questDependencies ?? []) {
+      if (!dep.questId) continue;
+      if (!parentsOf.has(dep.questId)) parentsOf.set(dep.questId, []);
+      parentsOf.get(dep.questId)!.push(e.id);
+    }
+  }
+  const ancestors = new Set<string>();
+  const queue = [...(parentsOf.get(questId) ?? [])];
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    if (ancestors.has(id)) continue;
+    ancestors.add(id);
+    for (const p of parentsOf.get(id) ?? []) {
+      if (!ancestors.has(p)) queue.push(p);
+    }
+  }
+  return ancestors;
+}

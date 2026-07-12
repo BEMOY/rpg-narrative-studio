@@ -1,5 +1,5 @@
 import { Trash2, Plus, X, Upload, ImageOff, ChevronDown } from "lucide-react";
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { DialogueSide, DialogueSpeakerData, Entry, EquipSlot, Objective, QuestDependency, QuestDependencyKind, QuestRewards, Relationship } from "../../types/database";
 import { canHaveStats, hasRelationship, isEquip, isQuest } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
@@ -11,7 +11,9 @@ import { statIcon } from "../../lib/statIcons";
 import { EquipmentPresetsModal } from "./EquipmentPresetsModal";
 import type { StatPreset } from "../../types/database";
 import { SLOTS, SLOT_LABEL, SLOT_ICON } from "../../lib/equipSlot";
-import { objectiveDisplayMode } from "../../lib/questCompile";
+import { objectiveDisplayMode, questAncestorIds } from "../../lib/questCompile";
+import { ThemedSelect } from "../common/ThemedSelect";
+import { themedAlert, themedConfirm, themedPrompt } from "../../lib/modals";
 
 
 const RELATIONSHIPS: Relationship[] = ["friend", "neutral", "enemy"];
@@ -66,16 +68,15 @@ export function EntryEditor({ entry, onDone }: { entry: Entry; onDone: () => voi
             })}
           </div>
           <Field label="Редкость">
-            <select className="input" value={entry.rarityId ?? "common"} onChange={(e) => updateEntry(entry.id, { rarityId: e.target.value })}>
-              {rarities
+            <ThemedSelect
+              className="input"
+              value={entry.rarityId ?? "common"}
+              onChange={(v) => updateEntry(entry.id, { rarityId: v })}
+              options={rarities
                 .slice()
                 .sort((a, b) => a.order - b.order)
-                .map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.name}
-                  </option>
-                ))}
-            </select>
+                .map((r) => ({ value: r.id, label: r.name }))}
+            />
           </Field>
         </Section>
       )}
@@ -99,17 +100,12 @@ export function EntryEditor({ entry, onDone }: { entry: Entry; onDone: () => voi
       {hasRelationship(entry.category) && (
         <Section title="Relationship">
           <Field label="Attitude">
-            <select
+            <ThemedSelect
               className="input"
               value={entry.relationship ?? "neutral"}
-              onChange={(e) => updateEntry(entry.id, { relationship: e.target.value as Relationship })}
-            >
-              {RELATIONSHIPS.map((r) => (
-                <option key={r} value={r}>
-                  {r}
-                </option>
-              ))}
-            </select>
+              onChange={(v) => updateEntry(entry.id, { relationship: v as Relationship })}
+              options={RELATIONSHIPS.map((r) => ({ value: r, label: r }))}
+            />
           </Field>
         </Section>
       )}
@@ -140,8 +136,8 @@ export function EntryEditor({ entry, onDone }: { entry: Entry; onDone: () => voi
 
       <div className="flex justify-between pt-2">
         <button
-          onClick={() => {
-            if (confirm(`Удалить «${entry.name}»? Это необратимо.`)) deleteEntry(entry.id);
+          onClick={async () => {
+            if (await themedConfirm(`Удалить «${entry.name}»? Это необратимо.`)) deleteEntry(entry.id);
           }}
           className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border border-red-500/30 text-red-300 hover:bg-red-500/10"
         >
@@ -277,19 +273,19 @@ function ChapterSection({ entry }: { entry: Entry }) {
   const addChapter = useProjectStore((s) => s.addChapter);
   const removeChapter = useProjectStore((s) => s.removeChapter);
 
-  const addNew = () => {
-    const name = prompt("Название главы:");
+  const addNew = async () => {
+    const name = await themedPrompt("Название главы:");
     if (!name) return;
     addChapter(name.trim());
     updateEntry(entry.id, { chapter: name.trim() });
   };
 
-  const removeCurrent = () => {
+  const removeCurrent = async () => {
     const name = entry.chapter;
     if (!name) return;
     const count = entries.filter((e) => e.chapter === name).length;
     const warn = count > 1 ? ` Записей с этой главой: ${count} — у всех она будет снята.` : "";
-    if (!confirm(`Удалить главу «${name}» из проекта?${warn}`)) return;
+    if (!(await themedConfirm(`Удалить главу «${name}» из проекта?${warn}`))) return;
     removeChapter(name);
   };
 
@@ -297,18 +293,12 @@ function ChapterSection({ entry }: { entry: Entry }) {
     <Section title="Глава">
       <Field label="Глава">
         <div className="flex gap-2">
-          <select
+          <ThemedSelect
             className="input"
             value={entry.chapter ?? ""}
-            onChange={(e) => updateEntry(entry.id, { chapter: e.target.value || undefined })}
-          >
-            <option value="">— без главы —</option>
-            {chapters.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
+            onChange={(v) => updateEntry(entry.id, { chapter: v || undefined })}
+            options={[{ value: "", label: "— без главы —" }, ...chapters.map((c) => ({ value: c, label: c }))]}
+          />
           <button
             onClick={addNew}
             title="Новая глава"
@@ -342,7 +332,7 @@ function VisualSection({ entry }: { entry: Entry }) {
       const dataUrl = await resizeImageFile(file);
       updateEntry(entry.id, { image: dataUrl });
     } catch {
-      alert("Не удалось загрузить картинку — попробуйте другой файл.");
+      themedAlert("Не удалось загрузить картинку — попробуйте другой файл.");
     } finally {
       setBusy(false);
     }
@@ -476,8 +466,20 @@ function QuestPanel({ entry }: { entry: Entry }) {
 
   const dependencies = entry.questDependencies ?? [];
   const otherQuests = allEntries.filter((e) => isQuest(e.category) && e.id !== entry.id);
+  // Every quest that already (directly or transitively) gates THIS quest's own availability —
+  // picking one of these as a dependency TARGET would create a contradiction/cycle (e.g. a
+  // child quest trying to block or unlock the very parent that unlocks it), so they're greyed
+  // out with a lock icon in the picker below instead of silently allowing an invalid graph.
+  const ancestorIds = useMemo(() => questAncestorIds(entry.id, allEntries), [entry.id, allEntries]);
+  const dependencyOptions = otherQuests.map((e) => ({
+    id: e.id,
+    label: e.name,
+    sublabel: ancestorIds.has(e.id) ? "родитель" : undefined,
+    disabled: ancestorIds.has(e.id),
+  }));
   const setDependencies = (next: QuestDependency[]) => updateEntry(entry.id, { questDependencies: next });
-  const addDependency = () => setDependencies([...dependencies, { id: nextId("qdep"), questId: otherQuests[0]?.id ?? "", kind: "unlocks" }]);
+  const addDependency = () =>
+    setDependencies([...dependencies, { id: nextId("qdep"), questId: otherQuests.find((e) => !ancestorIds.has(e.id))?.id ?? "", kind: "unlocks" }]);
   const patchDependency = (i: number, p: Partial<QuestDependency>) =>
     setDependencies(dependencies.map((d, idx) => (idx === i ? { ...d, ...p } : d)));
   const removeDependency = (i: number) => setDependencies(dependencies.filter((_, idx) => idx !== i));
@@ -493,17 +495,15 @@ function QuestPanel({ entry }: { entry: Entry }) {
   return (
     <Section title="Квест (quest_define)">
       <Field label="Тип (type)">
-        <select
+        <ThemedSelect
           className="input"
           value={displayType}
-          onChange={(e) => {
-            const next = e.target.value as "main" | "side";
+          onChange={(v) => {
+            const next = v as "main" | "side";
             updateEntry(entry.id, { questType: next, category: next === "side" ? "side_quest" : "main_quest" });
           }}
-        >
-          <option value="main">main</option>
-          <option value="side">side</option>
-        </select>
+          options={[{ value: "main", label: "main" }, { value: "side", label: "side" }]}
+        />
       </Field>
 
       <div>
@@ -531,37 +531,37 @@ function QuestPanel({ entry }: { entry: Entry }) {
                   </button>
                 </div>
                 <div className="flex items-center gap-1.5 flex-wrap">
-                  <select
+                  <ThemedSelect
                     className="input w-auto text-xs py-1 shrink-0"
                     value={mode}
-                    onChange={(e) => {
-                      const nextMode = e.target.value as Objective["valueMode"];
+                    onChange={(v) => {
+                      const nextMode = v as Objective["valueMode"];
                       if (nextMode === "checkbox") patchObjective(i, { valueMode: nextMode, max: 1, current: Math.min(o.current ?? 0, 1) });
                       else if (nextMode === "flag") {
                         const firstFlag = dialogueFlags[0];
                         patchObjective(i, { valueMode: nextMode, boundFlagName: o.boundFlagName ?? firstFlag });
                       } else patchObjective(i, { valueMode: nextMode, customType: o.customType ?? "bool", max: o.max ?? 100, customDefault: o.customDefault ?? 0 });
                     }}
-                  >
-                    <option value="checkbox">чекбокс</option>
-                    <option value="flag">флаг</option>
-                    <option value="custom">своё значение</option>
-                  </select>
+                    options={[
+                      { value: "checkbox", label: "чекбокс" },
+                      { value: "flag", label: "флаг" },
+                      { value: "custom", label: "своё значение" },
+                    ]}
+                    panelClassName="min-w-[150px]"
+                  />
 
                   {mode === "flag" && (
                     <>
-                      <select
+                      <ThemedSelect
                         className="input w-auto text-xs py-1 shrink-0 min-w-[140px]"
                         value={o.boundFlagName ?? ""}
-                        onChange={(e) => patchObjective(i, { boundFlagName: e.target.value || undefined })}
-                      >
-                        <option value="">— выберите флаг —</option>
-                        {dialogueFlags.map((f) => (
-                          <option key={f} value={f}>
-                            {f} ({dialogueFlagDefs[f]?.type === "number" ? "число" : "bool"})
-                          </option>
-                        ))}
-                      </select>
+                        onChange={(v) => patchObjective(i, { boundFlagName: v || undefined })}
+                        options={[
+                          { value: "", label: "— выберите флаг —" },
+                          ...dialogueFlags.map((f) => ({ value: f, label: `${f} (${dialogueFlagDefs[f]?.type === "number" ? "число" : "bool"})` })),
+                        ]}
+                        panelClassName="min-w-[200px]"
+                      />
                       {o.boundFlagName && !dialogueFlagDefs[o.boundFlagName] && (
                         <span className="text-[10px] text-amber-400/80">флаг не найден</span>
                       )}
@@ -570,14 +570,12 @@ function QuestPanel({ entry }: { entry: Entry }) {
 
                   {mode === "custom" && (
                     <>
-                      <select
+                      <ThemedSelect
                         className="input w-auto text-xs py-1 shrink-0"
                         value={o.customType ?? "bool"}
-                        onChange={(e) => patchObjective(i, { customType: e.target.value as "bool" | "number" })}
-                      >
-                        <option value="bool">bool</option>
-                        <option value="number">число</option>
-                      </select>
+                        onChange={(v) => patchObjective(i, { customType: v as "bool" | "number" })}
+                        options={[{ value: "bool", label: "bool" }, { value: "number", label: "число" }]}
+                      />
                       {o.customType === "number" && (
                         <>
                           <span className="text-[10px] text-[var(--op-35)] shrink-0">макс.</span>
@@ -704,19 +702,17 @@ function QuestPanel({ entry }: { entry: Entry }) {
           {dependencies.map((d, i) => (
             <div key={d.id} className="flex items-center gap-1.5 rounded-md border border-[var(--op-7)] p-2">
               <span className="text-xs text-[var(--op-45)] shrink-0">При завершении этого квеста —</span>
-              <select
+              <ThemedSelect
                 className="input w-32 shrink-0"
                 value={d.kind}
-                onChange={(e) => patchDependency(i, { kind: e.target.value as QuestDependencyKind })}
-              >
-                <option value="unlocks">открывается</option>
-                <option value="blocks">блокируется</option>
-              </select>
+                onChange={(v) => patchDependency(i, { kind: v as QuestDependencyKind })}
+                options={[{ value: "unlocks", label: "открывается" }, { value: "blocks", label: "блокируется" }]}
+              />
               <div className="flex-1 min-w-0">
                 <SearchSelect
                   value={d.questId || undefined}
                   onChange={(id) => patchDependency(i, { questId: id ?? "" })}
-                  options={otherQuests.map((e) => ({ id: e.id, label: e.name }))}
+                  options={dependencyOptions}
                   placeholder="выбрать квест…"
                   searchPlaceholder="Поиск квеста…"
                   clearLabel="— не выбрано —"
@@ -824,14 +820,13 @@ function DialogueSpeakerSection({ entry }: { entry: Entry }) {
         <input className="input mono" value={data.blip ?? ""} onChange={(e) => patch({ blip: e.target.value })} placeholder="-1 (без звука)" />
       </Field>
       <Field label="Сторона по умолчанию">
-        <select className="input" value={data.side ?? ""} onChange={(e) => patch({ side: (e.target.value || undefined) as DialogueSide | undefined })}>
-          <option value="">— как в диалоге (по умолчанию left) —</option>
-          {SIDE_OPTIONS.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </select>
+        <ThemedSelect
+          className="input"
+          value={data.side ?? ""}
+          onChange={(v) => patch({ side: (v || undefined) as DialogueSide | undefined })}
+          options={[{ value: "", label: "— как в диалоге (по умолчанию left) —" }, ...SIDE_OPTIONS.map((s) => ({ value: s, label: s }))]}
+          panelClassName="min-w-[220px]"
+        />
       </Field>
       <Field label="Скорость текста">
         <input

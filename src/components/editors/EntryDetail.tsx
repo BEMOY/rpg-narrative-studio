@@ -28,6 +28,7 @@ import { MapThumbnail, mapHasContent } from "../mapeditor/MapThumbnail";
 import { RarityBadge } from "../common/RarityBadge";
 import { statIcon } from "../../lib/statIcons";
 import { SLOT_LABEL, SLOT_ICON } from "../../lib/equipSlot";
+import { themedAlert, themedConfirm } from "../../lib/modals";
 
 const CAT_ICON: Record<Category, React.ComponentType<any>> = {
   character: User,
@@ -52,8 +53,8 @@ export function EntryDetail({ entry, onEdit }: { entry: Entry; onEdit: () => voi
   const Icon = CAT_ICON[entry.category];
   const rarity = isEquip(entry.category) ? rarities.find((r) => r.id === entry.rarityId) : undefined;
 
-  const remove = () => {
-    if (confirm(`Удалить «${entry.name}»? Это необратимо.`)) deleteEntry(entry.id);
+  const remove = async () => {
+    if (await themedConfirm(`Удалить «${entry.name}»? Это необратимо.`)) deleteEntry(entry.id);
   };
 
   return (
@@ -368,7 +369,7 @@ function LocationMapBlock({ entry }: { entry: Entry }) {
       const dataUrl = await resizeImageFile(file);
       updateEntry(entry.id, { mapImage: dataUrl });
     } catch {
-      alert("Не удалось загрузить карту — попробуйте другой файл.");
+      themedAlert("Не удалось загрузить карту — попробуйте другой файл.");
     } finally {
       setBusy(false);
     }

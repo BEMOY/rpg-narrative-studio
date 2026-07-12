@@ -7,6 +7,7 @@ import { StatusBar } from "./components/layout/StatusBar";
 import { ExportPreview } from "./components/layout/ExportPreview";
 import { ResizablePanel } from "./components/common/ResizablePanel";
 import { useProjectStore } from "./store/useProjectStore";
+import { mapEditorFocusState } from "./lib/mapEditorFocus";
 
 export default function App() {
   const [exportOpen, setExportOpen] = useState(false);
@@ -25,6 +26,11 @@ export default function App() {
     };
     const onKeyDown = (e: KeyboardEvent) => {
       if (isEditableTarget(e.target)) return;
+      // While a map editor is open, its own local per-stroke undo/redo handles Ctrl+Z/Ctrl+Y
+      // instead — otherwise this app-wide handler (mounted once at the root, so it always runs
+      // BEFORE the map editor's own listener) would consume the keystroke first and revert an
+      // unrelated whole-project checkpoint rather than the last brush stroke.
+      if (mapEditorFocusState.active) return;
       const mod = e.ctrlKey || e.metaKey;
       if (!mod) return;
       const key = e.key.toLowerCase();

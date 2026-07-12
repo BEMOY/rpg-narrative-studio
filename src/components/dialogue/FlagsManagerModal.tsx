@@ -2,6 +2,7 @@ import { useState } from "react";
 import { X, Plus, Pencil, Trash2, Flag } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import type { DialogueFlagDef, DialogueFlagType } from "../../types/database";
+import { themedConfirm, themedPrompt } from "../../lib/modals";
 
 function TypeToggle({ type, onChange }: { type: DialogueFlagType; onChange: (t: DialogueFlagType) => void }) {
   return (
@@ -98,8 +99,8 @@ export function FlagsManagerModal({ onClose }: { onClose: () => void }) {
     setDraftDef({ type: "bool", default: "false", max: 100 });
   };
 
-  const rename = (name: string) => {
-    const next = prompt("Новое имя флага:", name);
+  const rename = async (name: string) => {
+    const next = await themedPrompt("Новое имя флага:", name);
     if (next && next.trim() && next.trim() !== name) renameDialogueFlag(name, next.trim());
   };
 
@@ -129,7 +130,9 @@ export function FlagsManagerModal({ onClose }: { onClose: () => void }) {
                     <Pencil size={12} />
                   </button>
                   <button
-                    onClick={() => confirm(`Удалить флаг «${f}»? Ссылки на него в условиях/действиях останутся как есть.`) && removeDialogueFlag(f)}
+                    onClick={async () => {
+                      if (await themedConfirm(`Удалить флаг «${f}»? Ссылки на него в условиях/действиях останутся как есть.`)) removeDialogueFlag(f);
+                    }}
                     className="opacity-40 hover:opacity-100 hover:text-red-300"
                   >
                     <Trash2 size={12} />

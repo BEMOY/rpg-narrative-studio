@@ -16,6 +16,7 @@ import { useProjectStore } from "../../store/useProjectStore";
 import { PortalMenu } from "../common/PortalMenu";
 import { SearchSelect } from "./SearchSelect";
 import type { DialogueFolder, Dialogue } from "../../types/database";
+import { themedConfirm, themedPrompt } from "../../lib/modals";
 
 const VIEW_MODE_KEY = "rpg-narrative-studio:dialogues-sidebar-view";
 
@@ -62,23 +63,23 @@ function FolderRow({ node, depth }: { node: TreeFolder; depth: number }) {
   const moveDialogueFolder = useProjectStore((s) => s.moveDialogueFolder);
   const moveDialogueToFolder = useProjectStore((s) => s.moveDialogueToFolder);
 
-  const addSubfolder = () => {
-    const name = prompt("Название папки:", "Новая папка");
+  const addSubfolder = async () => {
+    const name = await themedPrompt("Название папки:", "Новая папка");
     if (name) createDialogueFolder(name, node.folder.id);
     setMenuOpen(false);
   };
-  const addDialogueHere = () => {
-    const name = prompt("Название диалога:", "Новый диалог");
+  const addDialogueHere = async () => {
+    const name = await themedPrompt("Название диалога:", "Новый диалог");
     if (name) createDialogue(name, node.folder.id);
     setMenuOpen(false);
   };
-  const rename = () => {
-    const name = prompt("Новое название папки:", node.folder.name);
+  const rename = async () => {
+    const name = await themedPrompt("Новое название папки:", node.folder.name);
     if (name) renameDialogueFolder(node.folder.id, name);
     setMenuOpen(false);
   };
-  const remove = () => {
-    if (confirm(`Удалить папку «${node.folder.name}»? Содержимое переместится на уровень выше.`)) deleteDialogueFolder(node.folder.id);
+  const remove = async () => {
+    if (await themedConfirm(`Удалить папку «${node.folder.name}»? Содержимое переместится на уровень выше.`)) deleteDialogueFolder(node.folder.id);
     setMenuOpen(false);
   };
 
@@ -178,13 +179,13 @@ function DialogueRow({
     dialogue.locationEntryId ? s.project.entries.find((e) => e.id === dialogue.locationEntryId)?.name : undefined
   );
 
-  const rename = () => {
-    const name = prompt("Новое название диалога:", dialogue.name);
+  const rename = async () => {
+    const name = await themedPrompt("Новое название диалога:", dialogue.name);
     if (name) renameDialogue(dialogue.id, name);
     setMenuOpen(false);
   };
-  const remove = () => {
-    if (confirm(`Удалить диалог «${dialogue.name}»? Это необратимо.`)) deleteDialogue(dialogue.id);
+  const remove = async () => {
+    if (await themedConfirm(`Удалить диалог «${dialogue.name}»? Это необратимо.`)) deleteDialogue(dialogue.id);
     setMenuOpen(false);
   };
   const toRoot = () => {
@@ -387,12 +388,12 @@ export function DialogueSidebar() {
   const rootDialogues = filteredDialogues.filter((d) => d.folderId === null);
   const filterActive = search.trim().length > 0 || !!characterFilter || !!locationFilter;
 
-  const addFolder = () => {
-    const name = prompt("Название папки:", "Новая папка");
+  const addFolder = async () => {
+    const name = await themedPrompt("Название папки:", "Новая папка");
     if (name) createDialogueFolder(name, null);
   };
-  const addDialogue = () => {
-    const name = prompt("Название диалога:", "Новый диалог");
+  const addDialogue = async () => {
+    const name = await themedPrompt("Название диалога:", "Новый диалог");
     if (name) createDialogue(name, null);
   };
 

@@ -4,6 +4,7 @@ import { useProjectStore } from "../../store/useProjectStore";
 import { MapThumbnail, mapHasContent } from "../mapeditor/MapThumbnail";
 import { PortalMenu } from "../common/PortalMenu";
 import { Tour, type TourStep } from "../tour/Tour";
+import { themedConfirm } from "../../lib/modals";
 
 const GALLERY_TOUR: TourStep[] = [
   { target: '[data-tour="gallery-search"]', title: "Поиск по миру", body: "Ищет по всем записям Codex сразу — персонажам, локациям, квестам, предметам." },
@@ -212,9 +213,9 @@ export function Gallery() {
     setSelected(new Set());
   };
 
-  const deleteSelected = () => {
+  const deleteSelected = async () => {
     if (selected.size === 0) return;
-    if (!confirm(`Удалить выбранные записи (${selected.size})? Это необратимо.`)) return;
+    if (!(await themedConfirm(`Удалить выбранные записи (${selected.size})? Это необратимо.`))) return;
     deleteEntries(Array.from(selected));
     exitSelectMode();
   };

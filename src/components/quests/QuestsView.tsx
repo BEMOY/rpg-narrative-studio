@@ -410,6 +410,7 @@ function ChapterFrame({
   color,
   zoom,
   minWidth,
+  minHeight,
   onResize,
   onResizeHeight,
 }: {
@@ -418,6 +419,7 @@ function ChapterFrame({
   color: string;
   zoom: number;
   minWidth: number;
+  minHeight: number;
   onResize: (width: number) => void;
   onResizeHeight: (height: number) => void;
 }) {
@@ -451,11 +453,13 @@ function ChapterFrame({
     window.addEventListener("mouseup", up);
   };
 
-  // Height only ever STRETCHES past its auto-computed size (see chapterBand) — dragging down
-  // grows it, there's no dragging back below the auto value here. Note: since chapters below
-  // this one are stacked directly under it, they only shift down once the drag actually
-  // commits (onResizeHeight, on mouseup) — a brief visual overlap with the next chapter while
-  // still dragging is an accepted trade-off for keeping this a simple, self-contained preview.
+  // Height can be stretched past its auto-computed size (see chapterBand) and dragged back
+  // down again — down to `minHeight` (the chapter's own natural/auto height), not below it,
+  // same floor `chapterBand` itself enforces via Math.max(autoHeight, saved). Note: since
+  // chapters below this one are stacked directly under it, they only shift up/down once the
+  // drag actually commits (onResizeHeight, on mouseup) — a brief visual overlap with the next
+  // chapter while still dragging is an accepted trade-off for keeping this a simple,
+  // self-contained preview.
   const onHandleDownV = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -463,7 +467,7 @@ function ChapterFrame({
     const move = (ev: MouseEvent) => {
       if (!dragHRef.current) return;
       const dy = (ev.clientY - dragHRef.current.startClientY) / zoom;
-      setLiveHeight(Math.max(bandHeight, dragHRef.current.startHeight + dy));
+      setLiveHeight(Math.max(minHeight, dragHRef.current.startHeight + dy));
     };
     const up = () => {
       dragHRef.current = null;
@@ -692,7 +696,12 @@ function QuestNodeCard({
         ) : (
           <Flag size={13} style={{ color }} className="shrink-0" />
         )}
-        <span className="text-[11px] font-medium text-[var(--op-85)] truncate flex-1">{label}</span>
+        {/* Only clicking THIS title text opens the quest card — clicking anywhere else on the
+            card (background, badges, toggle) used to open it too, and misclicks while just
+            trying to glance at/drag the node kept sending the writer to the card by accident. */}
+        <span data-node-open-handle="true" className="text-[11px] font-medium text-[var(--op-85)] truncate flex-1 hover:underline decoration-dotted underline-offset-2">
+          {label}
+        </span>
       </div>
       <div className="px-2 py-1.5 space-y-1.5">
         {objectives.length > 0 && (
@@ -928,7 +937,7 @@ function RoadmapGraph({
   const posRef = useRef<Map<string, NodePos>>(new Map());
   const pinnedRef = useRef<Set<string>>(new Set());
   const anchorRef = useRef<Map<string, { x: number; y: number }>>(new Map());
-  const draggingRef = useRef<{ id: string; startClientX: number; startClientY: number; startX: number; startY: number } | null>(null);
+  const draggingRef = useRef<{ id: string; startClientX: number; startClientY: number; startX: number; startY: number; openHandle: boolean } | null>(null);
   const panDragRef = useRef<{ startClientX: number; startClientY: number; startPanX: number; startPanY: number } | null>(null);
   // A short celebratory shake, keyed by node id and counting down in frames — triggered only
   // by the "пройден" toggle actually switching on (see the statuses-watching effect below),
@@ -1026,7 +1035,7 @@ function RoadmapGraph({
   // something a formula can guess well, so it defaults to the full canvas width and the writer
   // narrows or widens it by hand, clamped to chapterMinWidth above and persisted per chapter.
   const chapterBand = useMemo(() => {
-    const m = new Map<string, { top: number; bottom: number; center: number; label: string; left: number; width: number; right: number }>();
+    const m = new Map<string, { top: number; bottom: number; center: number; label: string; left: number; width: number; right: number; autoHeight: number }>();
     const n = chapterOrder.length;
     if (n === 0) return m;
     const usableH = HEIGHT - CHAPTER_BAND_PAD * 2;
@@ -1055,7 +1064,19 @@ function RoadmapGraph({
       const minW = chapterMinWidth.get(key) ?? 320;
       const savedW = savedChapterWidths[key];
       const width = Math.max(minW, savedW ?? DEFAULT_CHAPTER_WIDTH);
-      m.set(key, { top, bottom, center: top + bandH / 2, label: key || "Без главы", left: CHAPTER_LEFT, width, right: CHAPTER_LEFT + width });
+      m.set(key, {
+        top,
+        bottom,
+        center: top + bandH / 2,
+        label: key || "Без главы",
+        left: CHAPTER_LEFT,
+        width,
+        right: CHAPTER_LEFT + width,
+        // The chapter's own natural/auto-computed height, exposed separately from `bottom -
+        // top` (which can be writer-inflated) so the height resize handle knows how far it's
+        // allowed to shrink BACK DOWN to — see ChapterFrame's minHeight prop.
+        autoHeight: autoHeights[i],
+      });
       cursor = bottom;
     });
     return m;
@@ -1148,6 +1169,49 @@ function RoadmapGraph({
       }
     });
   }, [nodes, nodeIds, columnXById, chapterKeyByQuestId, chapterBand, savedPositions, onPersistPosition]);
+
+  // When a chapter's band TOP moves — because the writer stretched its own height, or an
+  // earlier chapter in the stack grew/shrank and pushed every later swimlane down/up — every
+  // quest node belonging to that chapter needs to shift by the exact same delta. Without this,
+  // a node keeps its stale absolute Y while its band moves out from under it; the per-frame
+  // hard clamp in tick() below then slams it against whichever edge it now falls outside of,
+  // and for a PINNED node that clamp is a permanent correction (it gets persisted — see the
+  // self-heal block in tick()), so the node visually glues itself to that edge and never
+  // returns to its actual saved offset even after the band moves back. Shifting by the delta
+  // instead preserves each node's relative position within its own band.
+  const prevChapterTopRef = useRef<Map<string, number>>(new Map());
+  useEffect(() => {
+    const prevTops = prevChapterTopRef.current;
+    const pos = posRef.current;
+    let questsByChapter: Map<string, string[]> | null = null;
+    for (const [key, band] of chapterBand) {
+      const prevTop = prevTops.get(key);
+      if (prevTop != null && Math.abs(band.top - prevTop) > 0.5) {
+        const delta = band.top - prevTop;
+        if (!questsByChapter) {
+          questsByChapter = new Map();
+          for (const [qId, chKey] of chapterKeyByQuestId) {
+            if (!questsByChapter.has(chKey)) questsByChapter.set(chKey, []);
+            questsByChapter.get(chKey)!.push(qId);
+          }
+        }
+        for (const qId of questsByChapter.get(key) ?? []) {
+          const id = `q:${qId}`;
+          const p = pos.get(id);
+          if (p) p.y += delta;
+          const anchor = anchorRef.current.get(id);
+          if (anchor) {
+            const ny = anchor.y + delta;
+            anchorRef.current.set(id, { x: anchor.x, y: ny });
+            if (pinnedRef.current.has(id)) onPersistPosition(id, anchor.x, ny);
+          }
+        }
+      }
+    }
+    const nextTops = new Map<string, number>();
+    for (const [key, band] of chapterBand) nextTops.set(key, band.top);
+    prevChapterTopRef.current = nextTops;
+  }, [chapterBand, chapterKeyByQuestId, onPersistPosition]);
 
   // Cascade-revert: a quest can have real, persisted objective progress (from clicking its own
   // "пройден" toggle, or manually ticking subtasks) marking it complete, while ITS OWN unlock
@@ -1515,7 +1579,8 @@ function RoadmapGraph({
     e.preventDefault();
     const p = posRef.current.get(n.id);
     if (!p) return;
-    draggingRef.current = { id: n.id, startClientX: e.clientX, startClientY: e.clientY, startX: p.x, startY: p.y };
+    const openHandle = (e.target as HTMLElement | null)?.closest?.('[data-node-open-handle="true"]') != null;
+    draggingRef.current = { id: n.id, startClientX: e.clientX, startClientY: e.clientY, startX: p.x, startY: p.y, openHandle };
     let moved = false;
     // On release, the node gets a brief decaying float instead of either freezing dead or
     // swaying forever — but it's computed as the AVERAGE velocity over the whole drag
@@ -1560,8 +1625,9 @@ function RoadmapGraph({
             finalPos.vx = avgVx * scale * 0.35;
             finalPos.vy = avgVy * scale * 0.35;
           }
-        } else if (n.kind === "quest" && n.entryId) onOpenQuest(n.entryId);
-        else if (n.kind === "dialogue" && n.dialogueId) onOpenDialogue(n.dialogueId);
+        } else if (n.kind === "quest" && n.entryId) {
+          if (d.openHandle) onOpenQuest(n.entryId);
+        } else if (n.kind === "dialogue" && n.dialogueId) onOpenDialogue(n.dialogueId);
       }
       draggingRef.current = null;
       window.removeEventListener("mousemove", onMove);
@@ -1815,6 +1881,7 @@ function RoadmapGraph({
                   color={color}
                   zoom={zoom}
                   minWidth={chapterMinWidth.get(key) ?? 320}
+                  minHeight={band.autoHeight}
                   onResize={(w) => onSetChapterWidth(key, w)}
                   onResizeHeight={(h) => onSetChapterHeight(key, h)}
                 />

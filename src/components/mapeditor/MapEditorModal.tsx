@@ -49,6 +49,9 @@ import { usePasteImage } from "../../lib/usePasteImage";
 import { ResizablePanel } from "../common/ResizablePanel";
 import { PortalMenu } from "../common/PortalMenu";
 import { Tour, type TourStep } from "../tour/Tour";
+import { mapEditorFocusState } from "../../lib/mapEditorFocus";
+import { ThemedSelect } from "../common/ThemedSelect";
+import { themedAlert, themedConfirm } from "../../lib/modals";
 
 const MAP_EDITOR_TOUR: TourStep[] = [
   { target: '[data-tour="mapeditor-tools"]', title: "Инструменты", body: "Кисть и заливка красят тайлы, ластик стирает, «Зона» рисует прямоугольные области, «Перо» — попиксельный режим, «Панорама» двигает холст." },
@@ -222,6 +225,38 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
     forceRender((n) => n + 1);
   };
 
+  // Ctrl+Z / Ctrl+Y (Cmd+Z / Cmd+Shift+Z on Mac) drive THIS editor's own local, per-stroke
+  // history while it's open — see mapEditorFocusState, which tells the app-wide undo/redo
+  // handler (App.tsx) to stand down for as long as this modal is mounted, so the two histories
+  // never fight over the same keystroke.
+  useEffect(() => {
+    mapEditorFocusState.active = true;
+    return () => {
+      mapEditorFocusState.active = false;
+    };
+  }, []);
+  useEffect(() => {
+    const isEditableTarget = (el: EventTarget | null) => {
+      if (!(el instanceof HTMLElement)) return false;
+      return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable;
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (isEditableTarget(e.target)) return;
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod) return;
+      const key = e.key.toLowerCase();
+      if (key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+      } else if ((key === "y" && !e.shiftKey) || (key === "z" && e.shiftKey)) {
+        e.preventDefault();
+        redo();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
+
   // ---- layer helpers ----
   const findLayer = (id: string) => map.layers.find((l) => l.id === id);
   const effectiveTileLayer = (): MapTileLayer | undefined => {
@@ -369,7 +404,7 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
       });
       setSelection({ kind: "image", id: inst.id });
     } catch {
-      alert("Не удалось загрузить картинку — попробуйте другой файл.");
+      themedAlert("Не удалось загрузить картинку — попробуйте другой файл.");
     } finally {
       setImageUploadBusy(false);
     }
@@ -418,7 +453,7 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
       setActiveLayerId(targetLayerId);
       setSelection({ kind: "image", id: inst.id });
     } catch {
-      alert("Не удалось вставить картинку из буфера обмена.");
+      themedAlert("Не удалось вставить картинку из буфера обмена.");
     } finally {
       setImageUploadBusy(false);
     }
@@ -862,7 +897,7 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
       if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.layers) || typeof parsed.width !== "number" || typeof parsed.height !== "number") {
         throw new Error("shape");
       }
-      if (!confirm("Импорт заменит текущую карту этим файлом. Продолжить? (можно будет отменить через Undo)")) return;
+      if (!(await themedConfirm("Импорт заменит текущую карту этим файлом. Продолжить? (можно будет отменить через Undo)"))) return;
       const imported = normalizeMap(parsed as MapData);
       snapshot();
       setMapState(imported);
@@ -870,7 +905,7 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
       setSelection(null);
       setSelectionRect(null);
     } catch {
-      alert("Не удалось прочитать файл — это должен быть JSON, экспортированный из этого редактора карт.");
+      themedAlert("Не удалось прочитать файл — это должен быть JSON, экспортированный из этого редактора карт.");
     }
   };
 
@@ -1024,8 +1059,8 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
         <div className="flex-1 flex overflow-hidden">
           {/* Left rail: tools + layers + palette */}
           <ResizablePanel panelKey="map-editor-left" side="left" defaultWidth={250} min={180} max={420}>
-          <div className="border-r border-[var(--op-10)] flex flex-col h-full overflow-hidden">
-            <div className="p-3 border-b border-[var(--op-10)] shrink-0 overflow-y-auto max-h-[46vh]">
+          <div className="border-r border-[var(--op-10)] flex flex-col h-full overflow-y-auto">
+            <div className="p-3 border-b border-[var(--op-10)] shrink-0">
               <div className="text-xs uppercase tracking-wider text-[var(--op-35)] mb-2">Инструмент</div>
               <div data-tour="mapeditor-tools" className="grid grid-cols-4 gap-1.5">
                 <ToolBtn icon={Paintbrush} active={tool === "paint"} onClick={() => setTool("paint")} title="Кисть" />
@@ -1197,7 +1232,7 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
                   </div>
                 </PortalMenu>
               </div>
-              <div className="space-y-1 max-h-48 overflow-y-auto">
+              <div className="space-y-1">
                 {[...map.layers].reverse().map((l, revIdx) => {
                   const idx = map.layers.length - 1 - revIdx;
                   return (
@@ -1301,7 +1336,7 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
               </div>
             </div>
 
-            <div data-tour="mapeditor-palette" className="p-3 flex-1 flex flex-col min-h-0">
+            <div data-tour="mapeditor-palette" className="p-3">
               <div className="text-xs uppercase tracking-wider text-[var(--op-35)] mb-2">Объекты проекта</div>
               <div className="flex flex-wrap gap-1 mb-2">
                 <button
@@ -1333,7 +1368,7 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
                   className="bg-transparent outline-none text-[var(--op-80)] placeholder:text-[var(--op-30)] w-full"
                 />
               </div>
-              <div className="flex-1 min-h-0 overflow-y-auto space-y-0.5">
+              <div className="space-y-0.5">
                 {filteredEntries.map((e) => (
                   <div
                     key={e.id}
@@ -1861,16 +1896,15 @@ function ZoneProperties({
         Название
         <input className="input mt-1" value={zone.label} onChange={(e) => onChange({ label: e.target.value })} />
       </label>
-      <label className="text-xs text-[var(--op-40)] block">
+      <div className="text-xs text-[var(--op-40)] block">
         Тег
-        <select className="input mt-1" value={zone.tag} onChange={(e) => onChange({ tag: e.target.value })}>
-          {ZONE_TAGS.map((t) => (
-            <option key={t.tag} value={t.tag}>
-              {t.label}
-            </option>
-          ))}
-        </select>
-      </label>
+        <ThemedSelect
+          className="input mt-1 w-full"
+          value={zone.tag}
+          onChange={(v) => onChange({ tag: v })}
+          options={ZONE_TAGS.map((t) => ({ value: t.tag, label: t.label }))}
+        />
+      </div>
       <label className="text-xs text-[var(--op-40)] flex items-center justify-between">
         Цвет
         <input

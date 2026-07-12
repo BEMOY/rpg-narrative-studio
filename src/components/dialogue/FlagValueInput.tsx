@@ -1,4 +1,5 @@
 import type { DialogueFlagType } from "../../types/database";
+import { ThemedSelect } from "../common/ThemedSelect";
 
 // A flag's stored value is usually a boolean (matching the user's own GML convention, e.g.
 // flag_set("helped_test", true)) or occasionally a number. When the flag's registered type is
@@ -54,20 +55,21 @@ export function FlagValueInput({
 
   return (
     <div className={`flex items-center gap-1 min-w-0 ${className}`}>
-      <select
+      <ThemedSelect
         value={kind}
-        onChange={(e) => {
-          const k = e.target.value;
+        onChange={(k) => {
           if (k === "true") onChange("true");
           else if (k === "false") onChange("false");
           else onChange(kind === "number" ? value : "");
         }}
+        options={[
+          { value: "true", label: "true" },
+          { value: "false", label: "false" },
+          { value: "number", label: "число…" },
+        ]}
         className="input text-[11px] py-1 w-[74px] shrink-0"
-      >
-        <option value="true">true</option>
-        <option value="false">false</option>
-        <option value="number">число…</option>
-      </select>
+        panelClassName="min-w-[90px]"
+      />
       {kind === "number" && (
         <input
           type="number"

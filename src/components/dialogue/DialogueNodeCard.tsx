@@ -11,6 +11,8 @@ import { CAT_COLOR, isQuest } from "../../types/database";
 import { MARKUP_TAGS, FALLBACK_COLOR_GUESSES, mixHex, parseDialogueMarkup } from "../../lib/dialogueMarkup";
 import { nextId } from "../../lib/mapDefaults";
 import { objectiveDisplayMode } from "../../lib/questCompile";
+import { ThemedSelect } from "../common/ThemedSelect";
+import { themedConfirm, themedPrompt } from "../../lib/modals";
 
 // Same per-glyph typewriter timing TestPlayModal.tsx uses for the real dialogue test-runner —
 // kept identical here so the "▶" preview button in the reply editor plays a line at the exact
@@ -192,10 +194,10 @@ function LineTextEditor({ value, onChange, speakerEntryId }: { value: string; on
   // point-in-time marker in the engine, not a range) inserts only right before the selection
   // without touching it. Falls back to inserting an empty pair at the caret if nothing is
   // selected, so the tags are still reachable via typing between them.
-  const applyTag = (def: (typeof MARKUP_TAGS)[number]) => {
+  const applyTag = async (def: (typeof MARKUP_TAGS)[number]) => {
     let arg: string | undefined;
     if (def.promptForValue) {
-      const entered = prompt(def.promptLabel ?? `Значение для ${def.label}`, def.defaultValue ?? "");
+      const entered = await themedPrompt(def.promptLabel ?? `Значение для ${def.label}`, def.defaultValue ?? "");
       if (entered === null) return; // cancelled
       arg = entered.trim();
     }
@@ -341,12 +343,18 @@ function LineBlock({
       </div>
 
       <div className="flex gap-1.5">
-        <select value={line.side} onChange={(e) => patch({ side: e.target.value as DialogueSide })} className="input text-xs py-1 flex-1">
-          <option value="left">сторона: left</option>
-          <option value="default">сторона: default</option>
-          <option value="right">сторона: right</option>
-          <option value="none">сторона: none (без портрета)</option>
-        </select>
+        <ThemedSelect
+          value={line.side}
+          onChange={(v) => patch({ side: v as DialogueSide })}
+          options={[
+            { value: "left", label: "сторона: left" },
+            { value: "default", label: "сторона: default" },
+            { value: "right", label: "сторона: right" },
+            { value: "none", label: "сторона: none (без портрета)" },
+          ]}
+          className="input text-xs py-1 flex-1"
+          panelClassName="min-w-[190px]"
+        />
         <input
           value={line.emotion ?? ""}
           onChange={(e) => patch({ emotion: e.target.value })}
@@ -452,17 +460,12 @@ function QuestActionRow({
   return (
     <div className="rounded-md border border-[var(--op-7)] p-1.5 space-y-1 bg-[var(--op-4)]">
       <div className="flex items-center gap-1">
-        <select
+        <ThemedSelect
           value={action.kind}
-          onChange={(e) => onChange({ kind: e.target.value as QuestActionKind })}
+          onChange={(v) => onChange({ kind: v as QuestActionKind })}
+          options={(Object.keys(QUEST_ACTION_LABEL) as QuestActionKind[]).map((k) => ({ value: k, label: QUEST_ACTION_LABEL[k] }))}
           className="input text-[11px] py-1 w-32 shrink-0"
-        >
-          {(Object.keys(QUEST_ACTION_LABEL) as QuestActionKind[]).map((k) => (
-            <option key={k} value={k}>
-              {QUEST_ACTION_LABEL[k]}
-            </option>
-          ))}
-        </select>
+        />
         <div className="flex-1 min-w-0">
           <SearchSelect
             value={action.questId || undefined}
@@ -480,17 +483,13 @@ function QuestActionRow({
       {action.kind === "advance" && (
         <div className="flex items-center gap-1">
           {objectives.length > 0 ? (
-            <select
-              value={action.objectiveIndex ?? 0}
-              onChange={(e) => onChange({ objectiveIndex: Number(e.target.value) })}
+            <ThemedSelect
+              value={String(action.objectiveIndex ?? 0)}
+              onChange={(v) => onChange({ objectiveIndex: Number(v) })}
+              options={objectives.map((o, i) => ({ value: String(i), label: o.text || `Цель ${i + 1}` }))}
               className="input text-[11px] py-1 flex-1 min-w-0"
-            >
-              {objectives.map((o, i) => (
-                <option key={i} value={i}>
-                  {o.text || `Цель ${i + 1}`}
-                </option>
-              ))}
-            </select>
+              panelClassName="min-w-[200px]"
+            />
           ) : (
             <div className="flex-1 text-[10px] text-[var(--op-35)] italic">{quest ? "у этого квеста нет подцелей" : "сначала выберите квест"}</div>
           )}
@@ -648,8 +647,8 @@ export function DialogueNodeCard({
         )}
         <button
           onMouseDown={(e) => e.stopPropagation()}
-          onClick={() => {
-            if (confirm("Удалить эту ноду?")) deleteDialogueNode(dialogue.id, node.id);
+          onClick={async () => {
+            if (await themedConfirm("Удалить эту ноду?")) deleteDialogueNode(dialogue.id, node.id);
           }}
           title="Удалить ноду"
           className="text-[var(--op-30)] hover:text-red-300 shrink-0"

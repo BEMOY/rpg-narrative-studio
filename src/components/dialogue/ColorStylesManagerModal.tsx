@@ -2,6 +2,8 @@ import { useState } from "react";
 import { X, Plus, Trash2, Palette } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { MarkupText } from "./MarkupText";
+import { themedAlert, themedConfirm } from "../../lib/modals";
+import { ThemedSelect } from "../common/ThemedSelect";
 import type { ColorStyleMode, DialogueColorStyle } from "../../types/database";
 
 const MODE_LABEL: Record<ColorStyleMode, string> = {
@@ -41,24 +43,22 @@ function StyleRow({ style }: { style: DialogueColorStyle }) {
           <MarkupText text={`[c=${style.name}]Пример текста в диалоге[/c]`} styles={[style]} className="text-xs" />
         </div>
         <button
-          onClick={() => confirm(`Удалить стиль «${style.name}»? Уже вставленные [c=${style.name}] теги в тексте останутся как есть.`) && removeColorStyle(style.name)}
+          onClick={async () => {
+            if (await themedConfirm(`Удалить стиль «${style.name}»? Уже вставленные [c=${style.name}] теги в тексте останутся как есть.`)) removeColorStyle(style.name);
+          }}
           className="opacity-40 hover:opacity-100 hover:text-red-300 shrink-0"
         >
           <Trash2 size={13} />
         </button>
       </div>
       <div className="flex flex-wrap items-center gap-1.5">
-        <select
+        <ThemedSelect
           value={style.mode}
-          onChange={(e) => patch({ mode: e.target.value as ColorStyleMode })}
+          onChange={(v) => patch({ mode: v as ColorStyleMode })}
+          options={(Object.keys(MODE_LABEL) as ColorStyleMode[]).map((m) => ({ value: m, label: MODE_LABEL[m] }))}
           className="input text-xs py-1 flex-1 min-w-[160px]"
-        >
-          {(Object.keys(MODE_LABEL) as ColorStyleMode[]).map((m) => (
-            <option key={m} value={m}>
-              {MODE_LABEL[m]}
-            </option>
-          ))}
-        </select>
+          panelClassName="min-w-[220px]"
+        />
         <label className="flex items-center gap-1 text-[10px] text-[var(--op-40)]">
           A
           <input type="color" value={style.a || "#ffffff"} onChange={(e) => patch({ a: e.target.value })} className="w-7 h-7 rounded-md border border-[var(--op-15)] bg-transparent cursor-pointer" />
@@ -95,7 +95,7 @@ export function ColorStylesManagerModal({ onClose }: { onClose: () => void }) {
     const name = draft.trim();
     if (!name) return;
     if (styles.some((s) => s.name === name)) {
-      alert(`Стиль «${name}» уже существует.`);
+      themedAlert(`Стиль «${name}» уже существует.`);
       return;
     }
     setColorStyle({ name, mode: "gradient", a: "#ff7043", b: "#8b5cf6", speed: 1 });

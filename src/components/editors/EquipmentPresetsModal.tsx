@@ -4,6 +4,7 @@ import { X, Plus, Check } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { STAT_ICON_NAMES, statIcon } from "../../lib/statIcons";
 import type { StatPreset } from "../../types/database";
+import { themedConfirm } from "../../lib/modals";
 
 // A compact grid of every icon in the library — used both when creating a brand new preset
 // and (implicitly, via statIcon()) when rendering an existing one. Kept as its own component
@@ -68,8 +69,8 @@ export function EquipmentPresetsModal({
     setCreating(false);
   };
 
-  const remove = (p: StatPreset) => {
-    if (!confirm(`Удалить пресет «${p.name}» из общей библиотеки? Он пропадёт со всех карточек снаряжения, где был назначен.`)) return;
+  const remove = async (p: StatPreset) => {
+    if (!(await themedConfirm(`Удалить пресет «${p.name}» из общей библиотеки? Он пропадёт со всех карточек снаряжения, где был назначен.`))) return;
     removeStatPreset(kind, p.id);
   };
 

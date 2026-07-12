@@ -9,6 +9,7 @@ import {
   type BugReportMessageRow,
   type BugReportRow,
 } from "../../cloud/reports";
+import { themedAlert } from "../../lib/modals";
 
 const POLL_MS = 8000;
 
@@ -75,7 +76,7 @@ export function BugReportWidget({ variant = "floating" }: { variant?: "floating"
       setMessages(m);
       setDraft("");
     } catch (e: any) {
-      alert(e?.message ?? String(e));
+      themedAlert(e?.message ?? String(e));
     } finally {
       setSending(false);
     }
@@ -90,7 +91,7 @@ export function BugReportWidget({ variant = "floating" }: { variant?: "floating"
       setMessages((m) => [...m, msg]);
       setDraft("");
     } catch (e: any) {
-      alert(e?.message ?? String(e));
+      themedAlert(e?.message ?? String(e));
     } finally {
       setSending(false);
     }

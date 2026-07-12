@@ -2,13 +2,16 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Plus, ZoomIn, ZoomOut, Maximize2, Type, Play, FileDown, FileUp, FileCode, Share2, Grid2X2, MapPin, BookMarked } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { PortalMenu } from "../common/PortalMenu";
-import type { Dialogue } from "../../types/database";
+import type { Dialogue, DialogueNode } from "../../types/database";
+import { nextId } from "../../lib/mapDefaults";
 import { DialogueNodeCard } from "./DialogueNodeCard";
 import { ColorStylesManagerModal } from "./ColorStylesManagerModal";
 import { TestPlayModal } from "./TestPlayModal";
 import { GmlExportModal } from "./GmlExportModal";
 import { SearchSelect } from "./SearchSelect";
+import { ThemedSelect } from "../common/ThemedSelect";
 import { Tour, type TourStep } from "../tour/Tour";
+import { themedAlert, themedConfirm } from "../../lib/modals";
 
 const DIALOGUES_TOUR: TourStep[] = [
   { target: '[data-tour="dialogues-new"]', title: "Новый диалог", body: "Диалоги можно раскладывать по папкам слева — удобно, если персонажей и веток много." },
@@ -17,7 +20,7 @@ const DIALOGUES_TOUR: TourStep[] = [
   {
     target: '[data-tour="dialogues-canvas"]',
     title: "Холст диалога",
-    body: "Перетяните ноду за верхнюю плашку. Перетаскивание пустого фона — выделить рамкой несколько нод, Delete — удалить выделенные. Камера: WASD или колесо мыши для перемещения, Ctrl+колесо — зум.",
+    body: "Перетяните ноду за верхнюю плашку. Перетаскивание пустого фона — выделить рамкой несколько нод (Ctrl+C/V/X — копировать/вставить/вырезать, Delete — удалить). Камера: WASD или зажатое колесо мыши для перемещения, колесо — зум.",
   },
 ];
 
@@ -200,7 +203,18 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
   const anchorEls = useRef<Map<AnchorKey, HTMLElement>>(new Map());
   const [anchorPos, setAnchorPos] = useState<Map<AnchorKey, { x: number; y: number; w: number; h: number }>>(new Map());
 
-  const dragNodeRef = useRef<{ id: string; startClientX: number; startClientY: number; startX: number; startY: number } | null>(null);
+  // Group-drag: whichever node's handle was actually grabbed, PLUS every other node that was
+  // already part of the multi-selection at that moment (so dragging any one of several
+  // selected nodes moves the whole group together, not just the one under the cursor).
+  const groupDragRef = useRef<{ ids: string[]; startClientX: number; startClientY: number; startPositions: Map<string, { x: number; y: number }> } | null>(null);
+  // Middle-mouse-button (wheel-click) drag panning — independent of the marquee/select drag,
+  // which stays on the left button only.
+  const panDragRef = useRef<{ startClientX: number; startClientY: number; startPan: { x: number; y: number } } | null>(null);
+  // Ctrl+C/Ctrl+X copy — a deep-cloned snapshot of the selected nodes at copy time, pasted back
+  // via Ctrl+V with fresh ids (see the keydown handler below). Plain ref, not state: clipboard
+  // content never needs to trigger a re-render on its own.
+  const clipboardRef = useRef<DialogueNode[] | null>(null);
+  const addDialogueNodesRaw = useProjectStore((s) => s.addDialogueNodesRaw);
   const livePos = useRef<Map<string, { x: number; y: number }>>(new Map());
   const [linkDrag, setLinkDrag] = useState<{ from: AnchorKey; x: number; y: number } | null>(null);
   const [dragOverNodeId, setDragOverNodeId] = useState<string | null>(null);
@@ -274,6 +288,69 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [selectedIds, dialogue.id, dialogue.skipDeleteConfirm, uiSettings?.skipDeleteConfirmGlobal, deleteDialogueNodes]);
 
+  // Ctrl+C / Ctrl+X / Ctrl+V for selected nodes — copy takes a deep-cloned snapshot into
+  // clipboardRef (a plain ref, not project state, so copying itself never touches undo
+  // history); paste regenerates fresh ids for every pasted node/line/choice and remaps any
+  // internal links (continueTo/choice target/else-branch) that pointed at ANOTHER node in the
+  // same copied set to the corresponding new id, while links pointing outside the copied set
+  // are dropped (there's no sensible "same" target to remap them to). Cmd on Mac, Ctrl
+  // elsewhere; same editable-target gate as Delete so typing into a text field isn't hijacked.
+  useEffect(() => {
+    const isEditableTarget = (el: EventTarget | null) => {
+      if (!(el instanceof HTMLElement)) return false;
+      return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable;
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod) return;
+      const key = e.key.toLowerCase();
+      if (key !== "c" && key !== "x" && key !== "v") return;
+      if (isEditableTarget(e.target)) return;
+
+      if (key === "c" || key === "x") {
+        if (selectedIds.size === 0) return;
+        e.preventDefault();
+        const snapshot = dialogue.nodes.filter((n) => selectedIds.has(n.id)).map((n) => JSON.parse(JSON.stringify(n)) as DialogueNode);
+        if (snapshot.length === 0) return;
+        clipboardRef.current = snapshot;
+        if (key === "x") {
+          deleteDialogueNodes(dialogue.id, snapshot.map((n) => n.id));
+          setSelectedIds(new Set());
+        }
+        return;
+      }
+
+      // Paste
+      const clip = clipboardRef.current;
+      if (!clip || clip.length === 0) return;
+      e.preventDefault();
+      const idMap = new Map<string, string>();
+      clip.forEach((n) => idMap.set(n.id, nextId("node")));
+      const PASTE_OFFSET = 48;
+      const pasted: DialogueNode[] = clip.map((n) => ({
+        ...n,
+        id: idMap.get(n.id)!,
+        x: n.x + PASTE_OFFSET,
+        y: n.y + PASTE_OFFSET,
+        continueTo: n.continueTo && idMap.has(n.continueTo) ? idMap.get(n.continueTo) : undefined,
+        choices: n.choices.map((c) => ({
+          ...c,
+          id: nextId("choice"),
+          targetNodeId: c.targetNodeId && idMap.has(c.targetNodeId) ? idMap.get(c.targetNodeId) : undefined,
+        })),
+        lines: n.lines.map((l) => ({
+          ...l,
+          id: nextId("line"),
+          elseNodeId: l.elseNodeId && idMap.has(l.elseNodeId) ? idMap.get(l.elseNodeId) : undefined,
+        })),
+      }));
+      addDialogueNodesRaw(dialogue.id, pasted);
+      setSelectedIds(new Set(pasted.map((n) => n.id)));
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectedIds, dialogue, deleteDialogueNodes, addDialogueNodesRaw]);
+
   // WASD panning — held keys accumulate in a ref (not React state, so held-down tracking isn't
   // fighting a render cycle) and a small always-on rAF loop nudges `pan` every frame while any
   // of them are down. Same editable-target gate as the Delete handler above, so typing "wasd"
@@ -284,15 +361,19 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
       if (!(el instanceof HTMLElement)) return false;
       return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable;
     };
-    const MOVE_KEYS = new Set(["w", "a", "s", "d"]);
+    // `e.code` (the physical key, e.g. "KeyW") instead of `e.key` (the character the layout
+    // produces) — on a Windows machine with a Cyrillic/other non-Latin layout active, `e.key`
+    // for the W/A/S/D keys is whatever letter is printed there in THAT layout, not "w"/"a"/"s"/
+    // "d", so the old check silently never matched and panning looked completely dead. `e.code`
+    // always reports the physical key position regardless of active layout.
+    const MOVE_KEYS = new Set(["KeyW", "KeyA", "KeyS", "KeyD"]);
     const onKeyDown = (e: KeyboardEvent) => {
-      const k = e.key.toLowerCase();
-      if (!MOVE_KEYS.has(k)) return;
+      if (!MOVE_KEYS.has(e.code)) return;
       if (isEditableTarget(e.target)) return;
-      heldMoveKeysRef.current.add(k);
+      heldMoveKeysRef.current.add(e.code);
     };
     const onKeyUp = (e: KeyboardEvent) => {
-      heldMoveKeysRef.current.delete(e.key.toLowerCase());
+      heldMoveKeysRef.current.delete(e.code);
     };
     const onBlur = () => heldMoveKeysRef.current.clear();
     window.addEventListener("keydown", onKeyDown);
@@ -317,10 +398,10 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
       if (held.size > 0) {
         let dx = 0;
         let dy = 0;
-        if (held.has("w")) dy += 1;
-        if (held.has("s")) dy -= 1;
-        if (held.has("a")) dx += 1;
-        if (held.has("d")) dx -= 1;
+        if (held.has("KeyW")) dy += 1;
+        if (held.has("KeyS")) dy -= 1;
+        if (held.has("KeyA")) dx += 1;
+        if (held.has("KeyD")) dx -= 1;
         if (dx !== 0 || dy !== 0) {
           const len = Math.hypot(dx, dy) || 1;
           setPan((p) => ({ x: p.x + (dx / len) * PAN_SPEED * dt, y: p.y + (dy / len) * PAN_SPEED * dt }));
@@ -384,30 +465,45 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
       });
       return;
     }
-    // A plain click on a node makes it the sole selection — so Delete works right away for a
-    // single node too, without requiring a marquee drag first.
-    setSelectedIds(new Set([nodeId]));
-    const p = posFor(nodeId);
-    dragNodeRef.current = { id: nodeId, startClientX: e.clientX, startClientY: e.clientY, startX: p.x, startY: p.y };
+    // If the grabbed node is already part of a bigger multi-selection, drag the WHOLE group
+    // together instead of collapsing the selection down to just this one node — otherwise
+    // there was no way to actually move several selected nodes at once.
+    let groupIds: string[];
+    if (selectedIds.has(nodeId) && selectedIds.size > 1) {
+      groupIds = Array.from(selectedIds);
+    } else {
+      groupIds = [nodeId];
+      // A plain click on a node makes it the sole selection — so Delete/copy work right away
+      // for a single node too, without requiring a marquee drag first.
+      setSelectedIds(new Set([nodeId]));
+    }
+    const startPositions = new Map(groupIds.map((id) => [id, posFor(id)]));
+    groupDragRef.current = { ids: groupIds, startClientX: e.clientX, startClientY: e.clientY, startPositions };
     const onMove = (ev: MouseEvent) => {
-      const d = dragNodeRef.current;
+      const d = groupDragRef.current;
       if (!d) return;
-      const nx = d.startX + (ev.clientX - d.startClientX) / zoom;
-      const ny = d.startY + (ev.clientY - d.startClientY) / zoom;
-      livePos.current.set(d.id, { x: nx, y: ny });
+      const dx = (ev.clientX - d.startClientX) / zoom;
+      const dy = (ev.clientY - d.startClientY) / zoom;
+      for (const id of d.ids) {
+        const sp = d.startPositions.get(id);
+        if (!sp) continue;
+        livePos.current.set(id, { x: sp.x + dx, y: sp.y + dy });
+      }
       bump((n) => n + 1);
       requestAnimationFrame(remeasure);
     };
     const onUp = () => {
-      const d = dragNodeRef.current;
+      const d = groupDragRef.current;
       if (d) {
-        const final = livePos.current.get(d.id);
-        if (final) updateDialogueNode(dialogue.id, d.id, { x: final.x, y: final.y });
-        // Once committed to the store, stop overriding — otherwise this node would keep
-        // rendering from the stale drag-time cache instead of fresh data forever after.
-        livePos.current.delete(d.id);
+        for (const id of d.ids) {
+          const final = livePos.current.get(id);
+          if (final) updateDialogueNode(dialogue.id, id, { x: final.x, y: final.y });
+          // Once committed to the store, stop overriding — otherwise this node would keep
+          // rendering from the stale drag-time cache instead of fresh data forever after.
+          livePos.current.delete(id);
+        }
       }
-      dragNodeRef.current = null;
+      groupDragRef.current = null;
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
@@ -415,39 +511,68 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
     window.addEventListener("mouseup", onUp);
   };
 
-  // Left-drag on empty canvas is now ALWAYS a marquee select (no Shift needed) — panning moved
-  // to WASD/the wheel below, freeing up plain left-drag entirely for selection, which is the
-  // more common action while editing a dialogue graph.
+  // Which nodes fall inside a given marquee box, in stage-local unscaled coordinates —
+  // shared between the live in-flight preview (so nodes light up the instant they enter the
+  // box, not only once the mouse is released) and any final commit.
+  const nodesInMarquee = (m: { x0: number; y0: number; x1: number; y1: number }) => {
+    const minX = Math.min(m.x0, m.x1);
+    const maxX = Math.max(m.x0, m.x1);
+    const minY = Math.min(m.y0, m.y1);
+    const maxY = Math.max(m.y0, m.y1);
+    const picked = new Set<string>();
+    dialogue.nodes.forEach((n) => {
+      const p = posFor(n.id);
+      const box = anchorPos.get(`box:${n.id}`);
+      const w = box?.w ?? NODE_WIDTH;
+      const h = box?.h ?? 200;
+      if (p.x < maxX && p.x + w > minX && p.y < maxY && p.y + h > minY) picked.add(n.id);
+    });
+    return picked;
+  };
+
+  // Left-drag on empty canvas is a marquee select; middle-mouse-button (wheel-click) drag pans
+  // the camera instead, independent of WASD.
   const onBgPointerDown = (e: React.MouseEvent) => {
+    if (e.button === 1) {
+      e.preventDefault();
+      const startClientX = e.clientX;
+      const startClientY = e.clientY;
+      const startPan = { ...pan };
+      panDragRef.current = { startClientX, startClientY, startPan };
+      const onMove = (ev: MouseEvent) => {
+        const d = panDragRef.current;
+        if (!d) return;
+        setPan({ x: d.startPan.x + (ev.clientX - d.startClientX), y: d.startPan.y + (ev.clientY - d.startClientY) });
+      };
+      const onUp = () => {
+        panDragRef.current = null;
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+      };
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+      return;
+    }
+    if (e.button !== 0) return;
     const stage = stageRef.current;
     if (!stage) return;
+    e.preventDefault(); // otherwise the browser starts a native text-selection drag on mousedown
     const rect = stage.getBoundingClientRect();
     const startX = (e.clientX - rect.left) / zoom;
     const startY = (e.clientY - rect.top) / zoom;
-    setMarquee({ x0: startX, y0: startY, x1: startX, y1: startY });
+    const initial = { x0: startX, y0: startY, x1: startX, y1: startY };
+    setMarquee(initial);
+    // Selection updates live as the box grows (not just on mouseup) — a node is selected the
+    // instant it falls inside the marquee, matching how selection boxes behave everywhere else.
+    setSelectedIds(nodesInMarquee(initial));
     const onMove = (ev: MouseEvent) => {
       const r = stage.getBoundingClientRect();
-      setMarquee((m) => (m ? { ...m, x1: (ev.clientX - r.left) / zoom, y1: (ev.clientY - r.top) / zoom } : m));
+      const next = { ...initial, x1: (ev.clientX - r.left) / zoom, y1: (ev.clientY - r.top) / zoom };
+      setMarquee((m) => (m ? { ...m, x1: next.x1, y1: next.y1 } : m));
+      setSelectedIds(nodesInMarquee(next));
     };
     const onUp = () => {
-      setMarquee((m) => {
-        if (m) {
-          const minX = Math.min(m.x0, m.x1);
-          const maxX = Math.max(m.x0, m.x1);
-          const minY = Math.min(m.y0, m.y1);
-          const maxY = Math.max(m.y0, m.y1);
-          const picked = new Set<string>();
-          dialogue.nodes.forEach((n) => {
-            const p = posFor(n.id);
-            const box = anchorPos.get(`box:${n.id}`);
-            const w = box?.w ?? NODE_WIDTH;
-            const h = box?.h ?? 200;
-            if (p.x < maxX && p.x + w > minX && p.y < maxY && p.y + h > minY) picked.add(n.id);
-          });
-          setSelectedIds(picked);
-        }
-        return null;
-      });
+      setMarquee(null);
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
@@ -455,26 +580,20 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
     window.addEventListener("mouseup", onUp);
   };
 
-  // Plain wheel now PANS the canvas (vertical scroll = vertical pan, horizontal trackpad/shift
-  // scroll = horizontal pan) instead of zooming — Ctrl/Cmd+wheel is the zoom gesture instead
-  // (same convention as Figma/Google Maps/etc), still centered on the cursor so the point under
-  // it stays put while zooming.
+  // Plain wheel always zooms (cursor-centered) — panning is WASD or middle-mouse-drag instead,
+  // so the wheel doesn't need to double as a pan gesture anymore.
   const onWheel = (e: React.WheelEvent) => {
-    if (e.ctrlKey || e.metaKey) {
-      const rect = stageRef.current?.parentElement?.getBoundingClientRect();
-      const newZoom = clamp(zoom + (e.deltaY > 0 ? -0.08 : 0.08), MIN_ZOOM, 2);
-      if (!rect) {
-        setZoom(newZoom);
-        return;
-      }
-      const mouseX = e.clientX - rect.left;
-      const mouseY = e.clientY - rect.top;
-      const ratio = newZoom / zoom;
-      setPan((p) => ({ x: mouseX - (mouseX - p.x) * ratio, y: mouseY - (mouseY - p.y) * ratio }));
+    const rect = stageRef.current?.parentElement?.getBoundingClientRect();
+    const newZoom = clamp(zoom + (e.deltaY > 0 ? -0.08 : 0.08), MIN_ZOOM, 2);
+    if (!rect) {
       setZoom(newZoom);
       return;
     }
-    setPan((p) => ({ x: p.x - e.deltaX, y: p.y - e.deltaY }));
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+    const ratio = newZoom / zoom;
+    setPan((p) => ({ x: mouseX - (mouseX - p.x) * ratio, y: mouseY - (mouseY - p.y) * ratio }));
+    setZoom(newZoom);
   };
 
   // Auto-center + zoom-to-fit over every node's actual measured box (see the `box:<nodeId>`
@@ -588,10 +707,10 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
       const text = await file.text();
       const parsed = JSON.parse(text);
       if (!Array.isArray(parsed.nodes)) throw new Error("Не похоже на файл диалога.");
-      if (!confirm(`Импортировать «${parsed.name ?? "диалог"}» как новый диалог в этой же папке?`)) return;
+      if (!(await themedConfirm(`Импортировать «${parsed.name ?? "диалог"}» как новый диалог в этой же папке?`))) return;
       importDialogueAction(parsed, dialogue.folderId);
     } catch (e: any) {
-      alert(e?.message ?? String(e));
+      themedAlert(e?.message ?? String(e));
     }
   };
 
@@ -608,19 +727,12 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
             same spirit as the title input itself. */}
         <div className="flex items-center gap-1 text-[11px] text-[var(--op-45)]">
           <BookMarked size={12} className="shrink-0" />
-          <select
+          <ThemedSelect
             value={dialogue.chapter ?? ""}
-            onChange={(e) => updateDialogue(dialogue.id, { chapter: e.target.value || undefined })}
-            title="Глава этого диалога"
-            className="bg-transparent outline-none text-[11px] text-[var(--op-60)] hover:text-[var(--op-85)] rounded px-1 py-1 hover:bg-[var(--op-5)] max-w-[130px]"
-          >
-            <option value="">Без главы</option>
-            {chapters.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
+            onChange={(v) => updateDialogue(dialogue.id, { chapter: v || undefined })}
+            options={[{ value: "", label: "Без главы" }, ...chapters.map((c) => ({ value: c, label: c }))]}
+            className="bg-transparent border-none outline-none text-[11px] text-[var(--op-60)] hover:text-[var(--op-85)] rounded px-1 py-1 hover:bg-[var(--op-5)] max-w-[130px]"
+          />
         </div>
         <div className="flex items-center gap-1 min-w-[140px]">
           <MapPin size={12} className="shrink-0 text-[var(--op-45)]" />
@@ -700,21 +812,34 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
         </button>
       </div>
 
-      <div data-tour="dialogues-canvas" className="flex-1 relative overflow-hidden cursor-crosshair" onWheel={onWheel} onMouseDown={onBgPointerDown}>
+      <div
+        data-tour="dialogues-canvas"
+        className="flex-1 relative overflow-hidden cursor-crosshair select-none"
+        onWheel={onWheel}
+        onMouseDown={onBgPointerDown}
+        onContextMenu={(e) => e.preventDefault()}
+      >
+        {/* Grid is pinned to the VIEWPORT (this wrapper), not to the 4000x3000 world-space
+            stage below — a DOM layer that size with a small tiled background can hit GPU
+            texture/rasterization limits on some machines (observed on Windows), which is what
+            made the grid only paint over a small patch instead of the whole window. Sized to
+            just the visible viewport instead, with the pattern's own backgroundSize/Position
+            driven by zoom/pan, it always covers the full window and never needs a huge layer. */}
+        {dialoguesGridEnabled && (
+          <div
+            className="absolute inset-0 pointer-events-none"
+            style={{
+              backgroundImage:
+                "linear-gradient(to right, var(--op-8) 1px, transparent 1px), linear-gradient(to bottom, var(--op-8) 1px, transparent 1px)",
+              backgroundSize: `${DLG_GRID_SIZE * zoom}px ${DLG_GRID_SIZE * zoom}px`,
+              backgroundPosition: `${pan.x}px ${pan.y}px`,
+            }}
+          />
+        )}
         <div
           ref={stageRef}
           style={{ position: "absolute", left: 0, top: 0, width: CANVAS_W, height: CANVAS_H, transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin: "0 0" }}
         >
-          {dialoguesGridEnabled && (
-            <div
-              className="absolute inset-0 pointer-events-none"
-              style={{
-                backgroundImage:
-                  "linear-gradient(to right, var(--op-8) 1px, transparent 1px), linear-gradient(to bottom, var(--op-8) 1px, transparent 1px)",
-                backgroundSize: `${DLG_GRID_SIZE}px ${DLG_GRID_SIZE}px`,
-              }}
-            />
-          )}
           <svg width={CANVAS_W} height={CANVAS_H} className="absolute inset-0 pointer-events-none" style={{ overflow: "visible" }}>
             <defs>
               {/* One arrowhead marker per connector "port" color, matching the actual DOM dot

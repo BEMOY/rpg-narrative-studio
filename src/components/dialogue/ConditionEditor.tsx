@@ -4,6 +4,7 @@ import { useProjectStore } from "../../store/useProjectStore";
 import { PortalMenu } from "../common/PortalMenu";
 import { SearchSelect } from "./SearchSelect";
 import { FlagValueInput } from "./FlagValueInput";
+import { ThemedSelect } from "../common/ThemedSelect";
 import { CAT_COLOR, isQuest, type DialogueCondition } from "../../types/database";
 
 const QUEST_STATUS_LABEL: Record<string, string> = { not_started: "не начат", active: "активен", done: "выполнен" };
@@ -84,10 +85,13 @@ export function ConditionEditor({
                 className="input text-xs py-1 w-full"
               />
               <div className="flex gap-1.5">
-                <select value={draft.op} onChange={(e) => set({ op: e.target.value as "eq" | "neq" })} className="input text-xs py-1 w-20">
-                  <option value="eq">=</option>
-                  <option value="neq">≠</option>
-                </select>
+                <ThemedSelect
+                  value={draft.op}
+                  onChange={(v) => set({ op: v as "eq" | "neq" })}
+                  options={[{ value: "eq", label: "=" }, { value: "neq", label: "≠" }]}
+                  className="input text-xs py-1 w-20"
+                  panelClassName="min-w-[60px]"
+                />
                 <FlagValueInput value={draft.value ?? ""} onChange={(v) => set({ value: v })} className="flex-1" flagType={dialogueFlagDefs[draft.key]?.type} />
               </div>
             </>
@@ -103,11 +107,16 @@ export function ConditionEditor({
                 searchPlaceholder="Поиск квеста…"
                 clearLabel="— не выбрано —"
               />
-              <select value={draft.value ?? "active"} onChange={(e) => set({ value: e.target.value })} className="input text-xs py-1 w-full">
-                <option value="not_started">не начат</option>
-                <option value="active">активен</option>
-                <option value="done">выполнен</option>
-              </select>
+              <ThemedSelect
+                value={draft.value ?? "active"}
+                onChange={(v) => set({ value: v })}
+                options={[
+                  { value: "not_started", label: "не начат" },
+                  { value: "active", label: "активен" },
+                  { value: "done", label: "выполнен" },
+                ]}
+                className="input text-xs py-1 w-full"
+              />
             </>
           )}
 
@@ -121,10 +130,16 @@ export function ConditionEditor({
                 searchPlaceholder="Поиск объекта…"
                 clearLabel="— не выбрано —"
               />
-              <select value={draft.op} onChange={(e) => set({ op: e.target.value as "has" | "not_has" })} className="input text-xs py-1 w-full">
-                <option value="has">есть у игрока / выполнено</option>
-                <option value="not_has">нет у игрока / не выполнено</option>
-              </select>
+              <ThemedSelect
+                value={draft.op}
+                onChange={(v) => set({ op: v as "has" | "not_has" })}
+                options={[
+                  { value: "has", label: "есть у игрока / выполнено" },
+                  { value: "not_has", label: "нет у игрока / не выполнено" },
+                ]}
+                className="input text-xs py-1 w-full"
+                panelClassName="min-w-[220px]"
+              />
             </>
           )}
 

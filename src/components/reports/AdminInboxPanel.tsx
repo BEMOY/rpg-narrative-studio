@@ -6,6 +6,7 @@ import {
   sendReportMessage,
   type AdminReportThread,
 } from "../../cloud/reports";
+import { themedAlert } from "../../lib/modals";
 
 function timeAgo(iso: string): string {
   const diffMs = Date.now() - new Date(iso).getTime();
@@ -33,7 +34,7 @@ export function AdminInboxPanel({ onClose }: { onClose: () => void }) {
       setThreads(t);
       if (!selectedId && t.length) setSelectedId(t[0].report.id);
     } catch (e: any) {
-      alert(e?.message ?? String(e));
+      themedAlert(e?.message ?? String(e));
     }
   };
 
@@ -61,7 +62,7 @@ export function AdminInboxPanel({ onClose }: { onClose: () => void }) {
       );
       setReply("");
     } catch (e: any) {
-      alert(e?.message ?? String(e));
+      themedAlert(e?.message ?? String(e));
     } finally {
       setSending(false);
     }
@@ -79,7 +80,7 @@ export function AdminInboxPanel({ onClose }: { onClose: () => void }) {
           : prev
       );
     } catch (e: any) {
-      alert(e?.message ?? String(e));
+      themedAlert(e?.message ?? String(e));
     }
   };
 

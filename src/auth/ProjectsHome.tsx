@@ -3,6 +3,7 @@ import { Plus, LogOut, Copy, KeyRound, FolderOpen, Pencil, Trash2, ShieldCheck, 
 import { ThemeMenu } from "../components/ThemeMenu";
 import { ChangelogBell } from "../components/changelog/ChangelogBell";
 import { AdminInboxPanel } from "../components/reports/AdminInboxPanel";
+import { themedAlert, themedConfirm, themedPrompt } from "../lib/modals";
 import { supabase } from "../lib/supabaseClient";
 import {
   createInvite,
@@ -93,13 +94,13 @@ export function ProjectsHome({ onOpen }: { onOpen: (row: ProjectRow) => void }) 
       try {
         setAdminGroups(await listAllProjectsForAdmin());
       } catch (e: any) {
-        alert(e?.message ?? String(e));
+        await themedAlert(e?.message ?? String(e));
       }
     }
   };
 
   const newProject = async () => {
-    const name = prompt("Название проекта:", "New Project");
+    const name = await themedPrompt("Название проекта:", "New Project");
     if (!name) return;
     setCreating(true);
     try {
@@ -118,7 +119,7 @@ export function ProjectsHome({ onOpen }: { onOpen: (row: ProjectRow) => void }) 
       });
       onOpen(row);
     } catch (e: any) {
-      alert(e?.message ?? String(e));
+      await themedAlert(e?.message ?? String(e));
     } finally {
       setCreating(false);
     }
@@ -126,24 +127,24 @@ export function ProjectsHome({ onOpen }: { onOpen: (row: ProjectRow) => void }) 
 
   const rename = async (p: ProjectRow, e: React.MouseEvent) => {
     e.stopPropagation();
-    const name = prompt("Новое название проекта:", p.name);
+    const name = await themedPrompt("Новое название проекта:", p.name);
     if (!name || name === p.name) return;
     try {
       await renameProject(p.id, name);
       await refresh();
     } catch (err: any) {
-      alert(err?.message ?? String(err));
+      await themedAlert(err?.message ?? String(err));
     }
   };
 
   const remove = async (p: ProjectRow, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!confirm(`Удалить проект «${p.name}»? Это необратимо.`)) return;
+    if (!(await themedConfirm(`Удалить проект «${p.name}»? Это необратимо.`))) return;
     try {
       await deleteProject(p.id);
       await refresh();
     } catch (err: any) {
-      alert(err?.message ?? String(err));
+      await themedAlert(err?.message ?? String(err));
     }
   };
 
@@ -152,9 +153,9 @@ export function ProjectsHome({ onOpen }: { onOpen: (row: ProjectRow) => void }) 
       const code = await createInvite();
       setInvites(await listMyInvites());
       navigator.clipboard?.writeText(code).catch(() => {});
-      alert(`Код приглашения: ${code}\n\n(скопирован в буфер обмена)`);
+      await themedAlert(`Код приглашения: ${code}\n\n(скопирован в буфер обмена)`);
     } catch (e: any) {
-      alert(e?.message ?? String(e));
+      await themedAlert(e?.message ?? String(e));
     }
   };
 

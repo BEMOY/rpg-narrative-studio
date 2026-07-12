@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { ChevronDown, Search } from "lucide-react";
+import { ChevronDown, Lock, Search } from "lucide-react";
 import { PortalMenu } from "../common/PortalMenu";
 
 export interface SearchSelectOption {
@@ -7,6 +7,9 @@ export interface SearchSelectOption {
   label: string;
   sublabel?: string;
   color?: string;
+  // Shown greyed-out with a lock icon and not selectable — e.g. a quest that would create a
+  // contradictory/circular dependency if picked (see questAncestorIds + QuestPanel).
+  disabled?: boolean;
 }
 
 // Reusable searchable single-select combobox — used wherever the dialogue editor needs to
@@ -76,12 +79,26 @@ export function SearchSelect({
             {filtered.map((o) => (
               <button
                 key={o.id}
-                onClick={() => pick(o.id)}
+                type="button"
+                disabled={o.disabled}
+                onClick={() => {
+                  if (o.disabled) return;
+                  pick(o.id);
+                }}
+                title={o.disabled ? "Недоступно: это привело бы к противоречивой/циклической зависимости" : undefined}
                 className={`w-full text-left px-2 py-1.5 rounded-md text-[11px] flex items-center gap-1.5 ${
-                  o.id === value ? "bg-accent/20 text-[var(--op-90)]" : "text-[var(--op-70)] hover:bg-[var(--op-7)]"
+                  o.disabled
+                    ? "text-[var(--op-25)] cursor-not-allowed"
+                    : o.id === value
+                      ? "bg-accent/20 text-[var(--op-90)]"
+                      : "text-[var(--op-70)] hover:bg-[var(--op-7)]"
                 }`}
               >
-                {o.color && <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: o.color }} />}
+                {o.disabled ? (
+                  <Lock size={10} className="shrink-0 text-[var(--op-25)]" />
+                ) : (
+                  o.color && <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: o.color }} />
+                )}
                 <span className="truncate">{o.label}</span>
                 {o.sublabel && <span className="text-[var(--op-30)] ml-auto shrink-0">{o.sublabel}</span>}
               </button>
