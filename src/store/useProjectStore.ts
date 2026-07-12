@@ -79,6 +79,7 @@ interface ProjectState {
   removeStatPreset: (kind: "stat" | "resist", id: string) => void;
   setQuestGraphPosition: (nodeId: string, x: number, y: number) => void;
   clearQuestGraphPositions: () => void;
+  setQuestGraphGridEnabled: (enabled: boolean) => void;
   updateUiSettings: (patch: Partial<UiSettings>) => void;
   resetDeleteConfirmSuppression: () => void;
 }
@@ -680,6 +681,11 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
   clearQuestGraphPositions: () => {
     set((s) => ({ project: { ...s.project, questGraphPositions: {} } }));
+    triggerAutosavePulse(set);
+  },
+
+  setQuestGraphGridEnabled: (enabled) => {
+    set((s) => ({ project: { ...s.project, questGraphGridEnabled: enabled } }));
     triggerAutosavePulse(set);
   },
 

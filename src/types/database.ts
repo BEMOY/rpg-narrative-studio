@@ -266,6 +266,7 @@ export interface Project {
   // manually placed. Persisted here instead of on Entry itself since flag/dialogue nodes have
   // no Entry to hang a position off of.
   questGraphPositions?: Record<string, { x: number; y: number }>;
+  questGraphGridEnabled?: boolean;
   uiSettings?: UiSettings;
 }
 

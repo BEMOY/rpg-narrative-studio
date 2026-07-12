@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   ScrollText,
   Flag,
@@ -23,6 +24,8 @@ import {
   CircleAlert,
   Grid2X2,
   Search,
+  ArrowUpRight,
+  ArrowDownLeft,
 } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { ResizablePanel } from "../common/ResizablePanel";
@@ -366,25 +369,43 @@ export function useDialogueQuestLinks(quests: Entry[], dialogues: Dialogue[]) {
 // (an action writes to it) this quest/objective. Uses DIALOGUE_COLOR normally; goes gray
 // (but stays hoverable) when the quest is locked/blocked, per the "нельзя" — link should still
 // be inspectable even though the quest itself can't be interacted with yet.
+// Portal-rendered so the tooltip escapes the quest card's own `overflow-hidden` (needed for its
+// rounded corners) — same reasoning as PortalMenu/EquipmentPresetsModal elsewhere in this app.
+// Opens to the RIGHT of the node card (not just the dot) so it never overlaps the objective
+// text it's sitting next to, matching where there's actually open canvas space in this graph.
 function DialogueLinkDot({ refs, kind, dim }: { refs: DialogueRef[]; kind: "checks" | "completes"; dim: boolean }) {
+  const dotRef = useRef<HTMLSpanElement>(null);
+  const [tooltipPos, setTooltipPos] = useState<{ x: number; y: number } | null>(null);
   if (refs.length === 0) return null;
   const dotColor = dim ? "var(--op-30)" : DIALOGUE_COLOR;
   const Icon = kind === "completes" ? CircleCheck : CircleAlert;
   const label = kind === "completes" ? "завершает" : "проверяет";
+
+  const show = () => {
+    const cardEl = dotRef.current?.closest<HTMLElement>(".quest-node-card");
+    const rect = (cardEl ?? dotRef.current)?.getBoundingClientRect();
+    if (!rect) return;
+    setTooltipPos({ x: rect.right + 8, y: (dotRef.current?.getBoundingClientRect().top ?? rect.top) + 8 });
+  };
+
   return (
-    <span className="relative inline-flex group/dot">
+    <span ref={dotRef} className="relative inline-flex" onMouseEnter={show} onMouseLeave={() => setTooltipPos(null)}>
       <span
         className="w-3.5 h-3.5 rounded-full grid place-items-center shrink-0 transition-colors duration-300 cursor-help"
         style={{ background: dim ? "var(--op-8)" : `${DIALOGUE_COLOR}22`, color: dotColor }}
       >
         <Icon size={9} />
       </span>
-      <span
-        className="pointer-events-none absolute right-full top-1/2 -translate-y-1/2 mr-1.5 whitespace-nowrap rounded-md border px-2 py-1 text-[10px] opacity-0 group-hover/dot:opacity-100 transition-opacity duration-150 z-10"
-        style={{ background: "var(--popover-bg)", borderColor: DIALOGUE_COLOR, color: "var(--op-80)" }}
-      >
-        <span style={{ color: DIALOGUE_COLOR }}>{label}:</span> {refs.map((r) => r.name).join(", ")}
-      </span>
+      {tooltipPos &&
+        createPortal(
+          <span
+            className="fixed pointer-events-none whitespace-nowrap rounded-md border px-2 py-1 text-[10px] z-[200]"
+            style={{ left: tooltipPos.x, top: tooltipPos.y, background: "var(--popover-bg)", borderColor: DIALOGUE_COLOR, color: "var(--op-80)" }}
+          >
+            <span style={{ color: DIALOGUE_COLOR }}>{label}:</span> {refs.map((r) => r.name).join(", ")}
+          </span>,
+          document.body
+        )}
     </span>
   );
 }
@@ -440,7 +461,7 @@ function QuestNodeCard({
 
   return (
     <div
-      className="w-[190px] rounded-lg shadow-lg border-2 transition-all duration-300 overflow-hidden group-hover:scale-[1.03]"
+      className="quest-node-card w-[190px] rounded-lg shadow-lg border-2 transition-all duration-300 overflow-hidden group-hover:scale-[1.03]"
       style={{
         background: "var(--popover-bg)",
         borderColor: cardStatusColor,
@@ -650,6 +671,8 @@ function RoadmapGraph({
   flagDefs,
   onSetObjectiveValue,
   chapters,
+  gridEnabled,
+  onSetGridEnabled,
 }: {
   nodes: RoadmapNode[];
   edges: RoadmapEdge[];
@@ -670,6 +693,8 @@ function RoadmapGraph({
   flagDefs: Record<string, DialogueFlagDef>;
   onSetObjectiveValue: (questId: string, index: number, value: number) => void;
   chapters: string[];
+  gridEnabled: boolean;
+  onSetGridEnabled: (enabled: boolean) => void;
 }) {
   const posRef = useRef<Map<string, NodePos>>(new Map());
   const pinnedRef = useRef<Set<string>>(new Set());
@@ -687,7 +712,6 @@ function RoadmapGraph({
   const [, bump] = useState(0);
   const [zoom, setZoom] = useState(0.65);
   const [pan, setPan] = useState({ x: 30, y: 20 });
-  const [gridEnabled, setGridEnabled] = useState(false);
   const [rippleNodeId, setRippleNodeId] = useState<string | null>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const GRID_SIZE = 40;
@@ -1111,25 +1135,27 @@ function RoadmapGraph({
     setPan({ x: rect.width / 2 - ((minX + maxX) / 2) * fitZoom, y: rect.height / 2 - ((minY + maxY) / 2) * fitZoom });
   };
 
-  // Pan+zoom the viewport to bring a specific node into view (used when a quest is clicked in
-  // the left list, see QuestsView's focusRequest state) — keeps at least the current zoom level
-  // if the user is already zoomed in further than the default, so focusing doesn't yank them
-  // back out.
-  useEffect(() => {
-    if (!focusRequest) return;
-    const p = posRef.current.get(focusRequest.nodeId);
+  // Pan+zoom the viewport to bring a specific node into view, plus a couple of ripple rings
+  // pulsing outward from its border so it's obvious at a glance which quest just got selected
+  // (the pan/zoom alone can be subtle if the node was already mostly on screen). Used both for
+  // the left list's "focus" action (via the focusRequest prop below) AND for clicking a
+  // cross-chapter portal stub (see the portal rendering further down) — same navigation feel
+  // either way.
+  const focusNode = (nodeId: string) => {
+    const p = posRef.current.get(nodeId);
     const rect = viewportRef.current?.getBoundingClientRect();
     if (!p || !rect) return;
     const targetZoom = Math.max(zoom, 0.8);
     setZoom(targetZoom);
     setPan({ x: rect.width / 2 - p.x * targetZoom, y: rect.height / 2 - p.y * targetZoom });
-    setHoveredId(focusRequest.nodeId);
-    // A couple of ripple rings pulse outward from the card's border so it's obvious at a
-    // glance which quest just got selected — the pan/zoom alone can be subtle if the node was
-    // already mostly on screen.
-    setRippleNodeId(focusRequest.nodeId);
-    const t = setTimeout(() => setRippleNodeId(null), 1000);
-    return () => clearTimeout(t);
+    setHoveredId(nodeId);
+    setRippleNodeId(nodeId);
+    setTimeout(() => setRippleNodeId((cur) => (cur === nodeId ? null : cur)), 1000);
+  };
+
+  useEffect(() => {
+    if (!focusRequest) return;
+    focusNode(focusRequest.nodeId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusRequest]);
 
@@ -1148,6 +1174,83 @@ function RoadmapGraph({
 
   const pos = posRef.current;
 
+  // Cross-chapter dependency edges — drawing one long line straight across chapter swimlanes
+  // fights the swimlane force in tick() (the two nodes visibly drag each other into the wrong
+  // band). Instead, each end gets a small "portal" stub docked right next to the REAL node:
+  // the source gets an arrow to a stub labeled with the target's name+chapter (colored by the
+  // target's own status), and the target gets a matching stub docked to its left labeled with
+  // the source's name+chapter (colored by the source's status) — click either to jump straight
+  // to the real node it names, with the same pan+ripple as the left list's focus action.
+  const REAL_HALF_W = 95; // matches QuestNodeCard's w-[190px]
+  const PORTAL_HALF_W = 72;
+  const PORTAL_GAP = 20;
+  const PORTAL_STACK_GAP = 48;
+  interface Portal {
+    key: string;
+    anchorNodeId: string;
+    side: "out" | "in";
+    targetNodeId: string;
+    label: string;
+    chapterLabel: string;
+    color: string;
+    x: number;
+    y: number;
+  }
+  const portalGroups = new Map<string, Omit<Portal, "x" | "y">[]>();
+  const pushPortal = (groupKey: string, portal: Omit<Portal, "x" | "y">) => {
+    if (!portalGroups.has(groupKey)) portalGroups.set(groupKey, []);
+    portalGroups.get(groupKey)!.push(portal);
+  };
+  for (const e of edges) {
+    if (!e.styleKind) continue; // only real quest->quest dependency edges (unlocks/blocks)
+    if (!e.from.startsWith("q:") || !e.to.startsWith("q:")) continue;
+    const fromQ = e.from.slice(2);
+    const toQ = e.to.slice(2);
+    const chFrom = chapterKeyByQuestId.get(fromQ);
+    const chTo = chapterKeyByQuestId.get(toQ);
+    if (chFrom === undefined || chTo === undefined || chFrom === chTo) continue;
+    const fromNode = nodeById.get(e.from);
+    const toNode = nodeById.get(e.to);
+    const fromStatus = statuses.get(fromQ) ?? "available";
+    const toStatus = statuses.get(toQ) ?? "available";
+    pushPortal(`${e.from}:out`, {
+      key: `${e.from}->${e.to}:out`,
+      anchorNodeId: e.from,
+      side: "out",
+      targetNodeId: e.to,
+      label: toNode?.label ?? toQ,
+      chapterLabel: chTo || "Без главы",
+      color: statusColor(toStatus, toNode?.color ?? "#888"),
+    });
+    pushPortal(`${e.to}:in`, {
+      key: `${e.from}->${e.to}:in`,
+      anchorNodeId: e.to,
+      side: "in",
+      targetNodeId: e.from,
+      label: fromNode?.label ?? fromQ,
+      chapterLabel: chFrom || "Без главы",
+      color: statusColor(fromStatus, fromNode?.color ?? "#888"),
+    });
+  }
+  const portals: Portal[] = [];
+  for (const list of portalGroups.values()) {
+    const anchorPos = pos.get(list[0].anchorNodeId);
+    if (!anchorPos) continue;
+    const dir = list[0].side === "out" ? 1 : -1;
+    list.forEach((portal, i) => {
+      const stackOffset = (i - (list.length - 1) / 2) * PORTAL_STACK_GAP;
+      portals.push({
+        ...portal,
+        x: anchorPos.x + dir * (REAL_HALF_W + PORTAL_GAP + PORTAL_HALF_W),
+        y: anchorPos.y + stackOffset,
+      });
+    });
+  }
+  const crossChapterEdgeKeys = new Set<string>();
+  for (const list of portalGroups.values()) {
+    for (const p of list) if (p.side === "out") crossChapterEdgeKeys.add(p.key.replace(":out", ""));
+  }
+
   return (
     <div className="h-full flex flex-col overflow-hidden">
       <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--op-10)] shrink-0">
@@ -1164,7 +1267,7 @@ function RoadmapGraph({
           </button>
           <button
             data-tour="quests-grid-toggle"
-            onClick={() => setGridEnabled((g) => !g)}
+            onClick={() => onSetGridEnabled(!gridEnabled)}
             title={gridEnabled ? "Сетка и привязка: вкл" : "Сетка и привязка: выкл"}
             className={`w-7 h-7 grid place-items-center rounded-md glass hover:bg-[var(--op-10)] ${gridEnabled ? "text-accent bg-accent/10" : ""}`}
           >
@@ -1241,6 +1344,7 @@ function RoadmapGraph({
                 </marker>
               </defs>
               {edges.map((e, i) => {
+                if (crossChapterEdgeKeys.has(`${e.from}->${e.to}`)) return null;
                 const a = pos.get(e.from);
                 const b = pos.get(e.to);
                 if (!a || !b) return null;
@@ -1362,6 +1466,34 @@ function RoadmapGraph({
                   </g>
                 );
               })}
+              {portals
+                .filter((p) => p.side === "out")
+                .map((p) => {
+                  const a = pos.get(p.anchorNodeId);
+                  if (!a) return null;
+                  const x1 = a.x + REAL_HALF_W;
+                  const x2 = p.x - PORTAL_HALF_W - 6;
+                  const markerId = `portal-arrow-${p.key.replace(/[^a-zA-Z0-9]/g, "_")}`;
+                  return (
+                    <g key={p.key} opacity={0.85}>
+                      <defs>
+                        <marker id={markerId} viewBox="0 0 8 8" markerWidth="5" markerHeight="5" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+                          <path d="M0,0 L8,4 L0,8 Z" fill={p.color} />
+                        </marker>
+                      </defs>
+                      <line
+                        x1={x1}
+                        y1={a.y}
+                        x2={x2}
+                        y2={p.y}
+                        stroke={p.color}
+                        strokeWidth={1.8}
+                        strokeDasharray="5 4"
+                        markerEnd={`url(#${markerId})`}
+                      />
+                    </g>
+                  );
+                })}
             </svg>
 
             {nodes.map((n) => {
@@ -1474,6 +1606,40 @@ function RoadmapGraph({
                 </div>
               );
             })}
+
+            {portals.map((p) => (
+              <button
+                key={p.key}
+                onClick={(ev) => {
+                  ev.stopPropagation();
+                  focusNode(p.targetNodeId);
+                }}
+                onMouseDown={(ev) => ev.stopPropagation()}
+                title={`Перейти к «${p.label}» (${p.chapterLabel})`}
+                className="absolute rounded-lg border-2 px-2.5 py-2 text-left shadow-lg cursor-pointer hover:scale-[1.04] transition-transform"
+                style={{
+                  left: p.x,
+                  top: p.y,
+                  width: PORTAL_HALF_W * 2,
+                  transform: "translate(-50%, -50%)",
+                  background: "var(--popover-bg)",
+                  borderColor: p.color,
+                  borderStyle: "dashed",
+                }}
+              >
+                <div className="flex items-center gap-1 text-[9px] uppercase tracking-wider" style={{ color: p.color }}>
+                  {p.side === "out" ? <ArrowUpRight size={10} /> : <ArrowDownLeft size={10} />}
+                  {p.chapterLabel}
+                </div>
+                <div className="text-[11px] text-[var(--op-85)] truncate mt-0.5">{p.label}</div>
+                {rippleNodeId === p.targetNodeId && (
+                  <div className="absolute -inset-1.5 pointer-events-none rounded-lg">
+                    <div className="quest-focus-ripple absolute inset-0 rounded-lg border-2" style={{ borderColor: p.color }} />
+                    <div className="quest-focus-ripple-2 absolute inset-0 rounded-lg border-2" style={{ borderColor: p.color }} />
+                  </div>
+                )}
+              </button>
+            ))}
           </div>
         )}
       </div>
@@ -1636,6 +1802,7 @@ export function QuestsView() {
   const updateEntry = useProjectStore((s) => s.updateEntry);
   const dialogues = useProjectStore((s) => s.project.dialogues);
   const setQuestGraphPosition = useProjectStore((s) => s.setQuestGraphPosition);
+  const setQuestGraphGridEnabled = useProjectStore((s) => s.setQuestGraphGridEnabled);
   const dialogueFlagDefs = useProjectStore((s) => s.project.dialogueFlagDefs);
   const { nodes, edges, quests } = useQuestRoadmap();
   const dialogueLinks = useDialogueQuestLinks(quests, dialogues);
@@ -1847,6 +2014,8 @@ export function QuestsView() {
             flagDefs={dialogueFlagDefs}
             onSetObjectiveValue={setObjectiveValue}
             chapters={project.chapters}
+            gridEnabled={project.questGraphGridEnabled ?? false}
+            onSetGridEnabled={setQuestGraphGridEnabled}
           />
         </div>
       </div>
