@@ -85,6 +85,7 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
 
   const onNodeDragStart = (nodeId: string, e: React.MouseEvent) => {
     e.stopPropagation();
+    e.preventDefault(); // otherwise the browser starts a native text-selection drag on mousedown
     const p = posFor(nodeId);
     dragNodeRef.current = { id: nodeId, startClientX: e.clientX, startClientY: e.clientY, startX: p.x, startY: p.y };
     const onMove = (ev: MouseEvent) => {

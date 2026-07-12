@@ -63,6 +63,20 @@ const IDLE_JITTER = 0.14;
 const MIN_REPULSE_DIST = 70;
 const MAX_VELOCITY = 18;
 
+// Dialogue/flag nodes used to just drift toward the same vertical center band as the quest
+// DAG columns, which let their "проверяет" edges cut diagonally across the whole quest layout
+// and tangle with the dependency edges. Pulling each kind toward its own distinct horizontal
+// lane keeps same-kind nodes clustered together and turns most crossings into a much calmer
+// "fan" shape instead of a knot.
+const DIALOGUE_Y_BAND = HEIGHT * 0.84;
+const FLAG_Y_BAND = HEIGHT * 0.16;
+
+// Quest cards are large fixed-size boxes (~190px wide, height varies with content) — the pure
+// force-based repulsion below can still let two of them settle overlapping if an edge/column
+// pull balances it out first, so a hard position-correction pass enforces this minimum
+// center-to-center distance every frame regardless of what the forces alone would produce.
+const QUEST_MIN_SEPARATION = 230;
+
 const DIALOGUE_COLOR = "#7f9bd1";
 const FLAG_COLOR = "#b08a5a";
 
@@ -588,6 +602,9 @@ function RoadmapGraph({
       if (!isolatedByKind.has(n.kind)) isolatedByKind.set(n.kind, []);
       isolatedByKind.get(n.kind)!.push(n.id);
     }
+    const kindById = new Map<string, NodeKind>();
+    for (const n of nodes) kindById.set(n.id, n.kind);
+    const questIds = ids.filter((id) => kindById.get(id) === "quest");
 
     function tick() {
       const pos = posRef.current;
@@ -691,12 +708,16 @@ function RoadmapGraph({
         const colX = columnXById.get(id);
         if (colX != null) {
           // Quest node, unpinned — pulled toward its dependency-depth column instead of the
-          // canvas center, so prerequisites end up left of whatever they unlock.
+          // canvas center, so prerequisites end up left of whatever they unlock. Quests stay
+          // in the vertical middle band.
           p.vx += (colX - p.x) * 0.01;
+          p.vy += (HEIGHT / 2 - p.y) * 0.0006;
         } else {
           p.vx += (WIDTH / 2 - p.x) * 0.0006;
+          const kind = kindById.get(id);
+          const targetY = kind === "dialogue" ? DIALOGUE_Y_BAND : kind === "flag" ? FLAG_Y_BAND : HEIGHT / 2;
+          p.vy += (targetY - p.y) * 0.0018;
         }
-        p.vy += (HEIGHT / 2 - p.y) * 0.0006;
         p.vx *= 0.9;
         p.vy *= 0.9;
         const speed = Math.hypot(p.vx, p.vy);
@@ -710,6 +731,36 @@ function RoadmapGraph({
         p.x = clamp(p.x + p.vx, 40, WIDTH - 40);
         p.y = clamp(p.y + p.vy, 40, HEIGHT - 40);
       }
+
+      // Hard overlap correction for quest cards specifically — they're the biggest, most
+      // visually important nodes, and pure force-based repulsion can still let a pair settle
+      // overlapped if an edge/column pull balances it out first. Directly separating any pair
+      // still nearer than QUEST_MIN_SEPARATION after the force pass guarantees they never
+      // visually stack, regardless of what the forces alone would have produced.
+      for (let i = 0; i < questIds.length; i++) {
+        const a = pos.get(questIds[i]);
+        if (!a) continue;
+        for (let j = i + 1; j < questIds.length; j++) {
+          const b = pos.get(questIds[j]);
+          if (!b) continue;
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
+          if (dist >= QUEST_MIN_SEPARATION) continue;
+          const push = (QUEST_MIN_SEPARATION - dist) / 2;
+          const nx = dx / dist;
+          const ny = dy / dist;
+          if (draggingRef.current?.id !== questIds[i]) {
+            a.x = clamp(a.x - nx * push, 40, WIDTH - 40);
+            a.y = clamp(a.y - ny * push, 40, HEIGHT - 40);
+          }
+          if (draggingRef.current?.id !== questIds[j]) {
+            b.x = clamp(b.x + nx * push, 40, WIDTH - 40);
+            b.y = clamp(b.y + ny * push, 40, HEIGHT - 40);
+          }
+        }
+      }
+
       frame++;
       bump((n) => n + 1);
       raf = requestAnimationFrame(tick);
@@ -868,13 +919,18 @@ function RoadmapGraph({
           >
             <svg width={WIDTH} height={HEIGHT} className="absolute inset-0 pointer-events-none" style={{ overflow: "visible" }}>
               <defs>
-                <marker id="quest-graph-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+                {/* markerUnits="strokeWidth" (not the previous fixed "userSpaceOnUse") so the
+                    arrowhead scales WITH the line's own thickness automatically — thin 1.4px
+                    "проверяет" edges and thick 5px dependency "ropes" each get a proportional
+                    arrow instead of the same fixed 8px triangle looking oversized on thin
+                    lines and undersized/misaligned on thick ones. */}
+                <marker id="quest-graph-arrow" viewBox="0 0 8 8" markerWidth="5" markerHeight="5" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
                   <path d="M0,0 L8,4 L0,8 Z" fill="var(--op-30)" />
                 </marker>
-                <marker id="quest-graph-arrow-green" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+                <marker id="quest-graph-arrow-green" viewBox="0 0 8 8" markerWidth="5" markerHeight="5" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
                   <path d="M0,0 L8,4 L0,8 Z" fill="#7cc98a" />
                 </marker>
-                <marker id="quest-graph-arrow-red" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+                <marker id="quest-graph-arrow-red" viewBox="0 0 8 8" markerWidth="5" markerHeight="5" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
                   <path d="M0,0 L8,4 L0,8 Z" fill="#e0716f" />
                 </marker>
               </defs>
@@ -928,15 +984,38 @@ function RoadmapGraph({
                   }
                   labelColor = patternColor;
                 }
+                // The stripe pattern tiles are drawn diagonally in the PATTERN's own local
+                // space, which is fixed to the SVG's world axes — without correcting for it, a
+                // horizontal edge and a vertical edge show completely different-looking stripe
+                // angles even though they're meant to be the same "rope" motif. Rotating the
+                // pattern to match each edge's own angle keeps the stripe direction consistent
+                // relative to the line itself, the way a real twisted rope reads the same
+                // regardless of which way it's laid down.
+                const angleDeg = (Math.atan2(dy, dx) * 180) / Math.PI;
                 return (
                   <g key={i} opacity={dim ? 0.1 : 0.9} className="transition-opacity duration-300">
                     {e.styleKind && patternId && (
-                      <pattern id={patternId} width="20" height="20" patternUnits="userSpaceOnUse" style={{ color: patternColor }}>
+                      <pattern
+                        id={patternId}
+                        width="20"
+                        height="20"
+                        patternUnits="userSpaceOnUse"
+                        patternTransform={`rotate(${angleDeg})`}
+                        style={{ color: patternColor }}
+                      >
                         <rect width="20" height="20" fill="#221515" />
                         <path d="M-5,20 L5,0 L15,0 L5,20 Z" fill="currentColor" />
                         <path d="M15,20 L25,0 L35,0 L25,20 Z" fill="currentColor" />
                         {animated && (
-                          <animateTransform attributeName="patternTransform" type="translate" from="0 0" to="20 0" dur="0.8s" repeatCount="indefinite" />
+                          <animateTransform
+                            attributeName="patternTransform"
+                            type="translate"
+                            from="0 0"
+                            to="20 0"
+                            dur="0.8s"
+                            repeatCount="indefinite"
+                            additive="sum"
+                          />
                         )}
                       </pattern>
                     )}
