@@ -104,6 +104,25 @@ const FLAG_COLOR = "#b08a5a";
 // so the whole dependency web visually reads left-to-right instead of a tangled physics blob.
 const COLUMN_BASE_X = 260;
 const COLUMN_SPACING = 340;
+const REAL_HALF_W = 95; // matches QuestNodeCard's w-[190px]
+
+// Rectangle-boundary edge trimming — same idea as DialogueCanvas's boxEdgePoint, generalized
+// with explicit half-width/half-height instead of a {x,y,w,h} box. A single fixed CIRCULAR
+// radius (however tuned) can't represent a rectangular quest card correctly from every angle:
+// too small on the axis it undershoots (line stops short, a visible gap before the card ever
+// starts) or too large on the axis it overshoots (line cuts straight past the card's real
+// border, into its middle). Intersecting the straight line against the target's actual
+// half-width/half-height instead gives a consistent, correct trim no matter which direction
+// the edge approaches from.
+function rectEdgePoint(from: { x: number; y: number }, to: { x: number; y: number }, halfW: number, halfH: number) {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  if (dx === 0 && dy === 0) return { x: to.x, y: to.y };
+  const scaleX = dx !== 0 ? halfW / Math.abs(dx) : Infinity;
+  const scaleY = dy !== 0 ? halfH / Math.abs(dy) : Infinity;
+  const scale = Math.min(scaleX, scaleY);
+  return { x: to.x - dx * scale, y: to.y - dy * scale };
+}
 
 function computeQuestDepths(quests: Entry[]): Map<string, number> {
   const ids = new Set(quests.map((q) => q.id));
@@ -186,23 +205,29 @@ function computeQuestStatuses(quests: Entry[], simCompleted: Set<string>): Map<s
   }
   // Completion (manual "what-if" toggle OR every real objective finished) is resolved for
   // every quest first, since later quests' unlocked/blocked status depends on OTHER quests'
-  // completion, not just their own toggle. A quest that's ONLY "completed" via the ephemeral
-  // simCompleted toggle (never via real objective data) is re-validated against its own
-  // "unlocks" gates every time — so turning a parent's simulation toggle back OFF immediately
-  // un-completes any downstream quest that was only simulated-complete because of it, cascading
-  // as many levels deep as the dependency chain goes. A quest genuinely completed through real
-  // objective progress is never second-guessed here, no matter what its prerequisites are doing
-  // in the sandbox. ("blocks" dependencies need no equivalent cascade: "blocked" isn't stored
+  // completion, not just their own toggle. EVERY candidate completion — whether it came from
+  // the ephemeral simCompleted toggle OR from real, persisted objective progress — is
+  // re-validated against its own "unlocks" gates every time, via the same fixpoint growth. Real
+  // objective progress used to short-circuit this (a quest with objectives finished counted as
+  // completed unconditionally, gates or not), which meant un-completing a prerequisite left any
+  // already-finished descendant stuck showing "completed" forever, with the roadmap having no
+  // way to reflect that its prerequisite chain no longer actually holds. Now BOTH sources only
+  // "stick" while their full prerequisite chain is still satisfied by other quests that are
+  // themselves validly completed — so turning a parent back off cascades all the way down,
+  // however many levels the dependency chain goes. (See the useEffect below that also rolls
+  // back the underlying real objective DATA for anything this invalidates, not just its
+  // displayed status — "blocks" dependencies need no equivalent cascade: "blocked" isn't stored
   // state at all, it's derived fresh below from whatever `completed` ends up being.)
-  const completed = new Set<string>();
+  const candidateComplete = new Set<string>();
   for (const q of quests) {
-    if (objectivesAllDone(q)) completed.add(q.id);
+    if (objectivesAllDone(q) || simCompleted.has(q.id)) candidateComplete.add(q.id);
   }
+  const completed = new Set<string>();
   let growing = true;
   while (growing) {
     growing = false;
     for (const q of quests) {
-      if (completed.has(q.id) || !simCompleted.has(q.id)) continue;
+      if (completed.has(q.id) || !candidateComplete.has(q.id)) continue;
       const gates = unlockedBy.get(q.id) ?? [];
       if (gates.length === 0 || gates.every((id) => completed.has(id))) {
         completed.add(q.id);
@@ -374,6 +399,81 @@ export function useDialogueQuestLinks(quests: Entry[], dialogues: Dialogue[]) {
 // rounded corners) — same reasoning as PortalMenu/EquipmentPresetsModal elsewhere in this app.
 // Opens to the RIGHT of the node card (not just the dot) so it never overlaps the objective
 // text it's sitting next to, matching where there's actually open canvas space in this graph.
+// A chapter's frame in the roadmap: a bordered box (not just a full-width translucent band)
+// that the writer can narrow or widen by dragging its right edge, clamped so it can never
+// shrink past whatever width its own quests' dependency columns actually need. Local drag
+// state lives here (not in RoadmapGraph) purely for isolation — this is otherwise a plain
+// controlled render of `width` from the parent.
+function ChapterFrame({
+  chapterKey,
+  band,
+  color,
+  zoom,
+  minWidth,
+  onResize,
+}: {
+  chapterKey: string;
+  band: { top: number; bottom: number; left: number; width: number; label: string };
+  color: string;
+  zoom: number;
+  minWidth: number;
+  onResize: (width: number) => void;
+}) {
+  const dragRef = useRef<{ startClientX: number; startWidth: number } | null>(null);
+  const [liveWidth, setLiveWidth] = useState<number | null>(null);
+  const width = liveWidth ?? band.width;
+
+  const onHandleDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragRef.current = { startClientX: e.clientX, startWidth: band.width };
+    const move = (ev: MouseEvent) => {
+      if (!dragRef.current) return;
+      const dx = (ev.clientX - dragRef.current.startClientX) / zoom;
+      setLiveWidth(Math.max(minWidth, dragRef.current.startWidth + dx));
+    };
+    const up = () => {
+      dragRef.current = null;
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      setLiveWidth((w) => {
+        if (w != null) onResize(w);
+        return null;
+      });
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
+
+  return (
+    <div
+      className="absolute pointer-events-none rounded-lg"
+      style={{ left: band.left, top: band.top, width, height: band.bottom - band.top }}
+    >
+      <div className="absolute inset-0 rounded-lg" style={{ background: `${color}0d`, border: `1px solid ${color}33` }} />
+      <div
+        className="absolute left-3 top-2 text-[11px] uppercase tracking-wider font-medium px-2 py-0.5 rounded-full"
+        style={{ color, background: `${color}1a`, border: `1px solid ${color}40` }}
+      >
+        {band.label}
+      </div>
+      {/* Resize handle — a slim strip on the frame's right edge, generously hit-testable
+          (wider invisible hit area than its visible sliver) so it's easy to grab without
+          fighting the graph's own pan-drag right next to it. */}
+      <div
+        onMouseDown={onHandleDown}
+        title="Потяните, чтобы изменить ширину главы"
+        className="absolute top-0 bottom-0 w-3 -right-1.5 cursor-ew-resize pointer-events-auto group"
+      >
+        <div
+          className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-0.5 rounded-full opacity-0 group-hover:opacity-70 transition-opacity"
+          style={{ background: color }}
+        />
+      </div>
+    </div>
+  );
+}
+
 function DialogueLinkDot({ refs, kind, dim, zoom }: { refs: DialogueRef[]; kind: "checks" | "completes"; dim: boolean; zoom: number }) {
   const dotRef = useRef<HTMLSpanElement>(null);
   const tooltipElRef = useRef<HTMLDivElement>(null);
@@ -449,7 +549,7 @@ function DialogueLinkDot({ refs, kind, dim, zoom }: { refs: DialogueRef[]; kind:
           // would otherwise stay a fixed screen size while every node around it grows/shrinks.
           <div
             ref={tooltipElRef}
-            className="fixed whitespace-nowrap rounded-md border px-2 py-1 text-[10px] z-[200] flex flex-col gap-0.5"
+            className="fixed whitespace-nowrap rounded-md border px-1.5 py-1.5 text-[10px] z-[200] flex flex-col gap-1"
             style={{
               left: tooltipAnchor.x,
               top: tooltipAnchor.y,
@@ -460,19 +560,21 @@ function DialogueLinkDot({ refs, kind, dim, zoom }: { refs: DialogueRef[]; kind:
               color: "var(--op-80)",
             }}
           >
-            <span className="px-0.5" style={{ color: DIALOGUE_COLOR }}>
-              {labelText}:
-            </span>
+            {/* Same rounded-pill look as the quest-level dialogue badges at the bottom of the
+                card (icon + name + checks/completes label) — this popup and those badges are
+                two views onto the exact same relationship, so they read as the same thing. */}
             {refs.map((r) => (
               <button
                 key={`${r.dialogueId}:${r.nodeId}`}
                 type="button"
                 onClick={() => handleClick(r)}
-                className="text-left rounded px-1 py-0.5 hover:bg-[var(--op-8)] transition-colors cursor-pointer"
-                style={{ color: "var(--op-80)" }}
+                className="flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded-full border truncate max-w-full hover:bg-[var(--op-8)] transition-colors cursor-pointer"
+                style={{ borderColor: DIALOGUE_COLOR, color: "var(--op-70)" }}
                 title="Перейти к ноде диалога"
               >
-                {r.name}
+                <Icon size={9} style={{ color: DIALOGUE_COLOR }} className="shrink-0" />
+                <span className="truncate">{r.name}</span>
+                <span className="opacity-50 shrink-0">{labelText}</span>
               </button>
             ))}
           </div>,
@@ -752,6 +854,8 @@ function RoadmapGraph({
   chapters,
   gridEnabled,
   onSetGridEnabled,
+  savedChapterWidths,
+  onSetChapterWidth,
 }: {
   nodes: RoadmapNode[];
   edges: RoadmapEdge[];
@@ -774,6 +878,8 @@ function RoadmapGraph({
   chapters: string[];
   gridEnabled: boolean;
   onSetGridEnabled: (enabled: boolean) => void;
+  savedChapterWidths: Record<string, number>;
+  onSetChapterWidth: (chapterKey: string, width: number) => void;
 }) {
   const posRef = useRef<Map<string, NodePos>>(new Map());
   const pinnedRef = useRef<Set<string>>(new Set());
@@ -834,15 +940,35 @@ function RoadmapGraph({
     return m;
   }, [quests, chapterKeyByQuestId]);
   const CHAPTER_BAND_PAD = 90;
+  const CHAPTER_LEFT = 40;
+  const DEFAULT_CHAPTER_WIDTH = WIDTH - CHAPTER_LEFT * 2;
+  // The narrowest a chapter's frame is allowed to shrink to — enough to still contain every one
+  // of its quests' own dependency-column X position (their normal left-to-right position stays
+  // driven by dependency depth same as always; this only bounds how far the frame itself can be
+  // dragged in before it'd start clipping nodes that are supposed to be inside it).
+  const chapterMinWidth = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const q of quests) {
+      const key = chapterKeyByQuestId.get(q.id) ?? "";
+      const colX = columnXById.get(`q:${q.id}`) ?? COLUMN_BASE_X;
+      const needed = colX - CHAPTER_LEFT + REAL_HALF_W + 60;
+      m.set(key, Math.max(m.get(key) ?? 320, needed));
+    }
+    return m;
+  }, [quests, chapterKeyByQuestId, columnXById]);
   // Band height used to be a flat 1/n split of the canvas regardless of how many quests were
   // actually in each chapter — a one-quest epilogue got the exact same huge band as a
   // twenty-quest main chapter, wasting space on the light one and cramping the heavy one.
   // Now each band's share of the fixed usable height is proportional to its own quest count
   // (with a MIN_BAND_H floor so a light chapter never collapses to an unreadable sliver, and
   // the leftover space after flooring is redistributed to the remaining bands by their own
-  // weight) — scales sensibly from a single quest up to a huge chapter.
+  // weight) — scales sensibly from a single quest up to a huge chapter. Width, unlike height,
+  // is writer-controlled rather than auto-computed (see the resize handle in the render below)
+  // — how much horizontal room a chapter's dependency chain actually needs to breathe isn't
+  // something a formula can guess well, so it defaults to the full canvas width and the writer
+  // narrows or widens it by hand, clamped to chapterMinWidth above and persisted per chapter.
   const chapterBand = useMemo(() => {
-    const m = new Map<string, { top: number; bottom: number; center: number; label: string }>();
+    const m = new Map<string, { top: number; bottom: number; center: number; label: string; left: number; width: number; right: number }>();
     const n = chapterOrder.length;
     if (n === 0) return m;
     const usableH = HEIGHT - CHAPTER_BAND_PAD * 2;
@@ -864,11 +990,14 @@ function RoadmapGraph({
       const bandH = heights[i];
       const top = cursor;
       const bottom = top + bandH;
-      m.set(key, { top, bottom, center: top + bandH / 2, label: key || "Без главы" });
+      const minW = chapterMinWidth.get(key) ?? 320;
+      const savedW = savedChapterWidths[key];
+      const width = Math.max(minW, savedW ?? DEFAULT_CHAPTER_WIDTH);
+      m.set(key, { top, bottom, center: top + bandH / 2, label: key || "Без главы", left: CHAPTER_LEFT, width, right: CHAPTER_LEFT + width });
       cursor = bottom;
     });
     return m;
-  }, [chapterOrder, questCountByChapter]);
+  }, [chapterOrder, questCountByChapter, chapterMinWidth, savedChapterWidths]);
   const CHAPTER_COLORS = ["#8b7bff", "#5fc9c9", "#e0a95f", "#6fb35c", "#d65a6b", "#5b8dff", "#c98ae0"];
   const chapterColor = (key: string) => CHAPTER_COLORS[Math.max(0, chapterOrder.indexOf(key)) % CHAPTER_COLORS.length];
 
@@ -938,6 +1067,31 @@ function RoadmapGraph({
       }
     });
   }, [nodes, nodeIds, columnXById, chapterKeyByQuestId, chapterBand, savedPositions, onPersistPosition]);
+
+  // Cascade-revert: a quest can have real, persisted objective progress (from clicking its own
+  // "пройден" toggle, or manually ticking subtasks) marking it complete, while ITS OWN unlock
+  // gates are no longer satisfied — e.g. its prerequisite quest just got un-completed in this
+  // same what-if sandbox. computeQuestStatuses already reflects that mismatch in the STATUS it
+  // reports (see the comment there), but the underlying objective DATA doesn't fix itself on
+  // its own — this is what actually rolls it back to default, so the quest genuinely re-locks
+  // instead of just LOOKING locked while still secretly holding finished objective data. Since
+  // computeQuestStatuses resolves the entire dependency fixpoint synchronously in one pass, the
+  // whole orphaned chain (not just the immediate child) is already known the first time this
+  // runs — staggering each one's actual revert by its dependency depth (shallowest/closest to
+  // the toggle first, each subsequent hop firing sooner than the last) turns what would
+  // otherwise be an instant, simultaneous flip into a visible, accelerating ripple down the
+  // chain — the existing status-flip shake effect right below picks up each staggered revert
+  // as it lands and shakes that card at exactly that moment, for free.
+  useEffect(() => {
+    const orphaned = quests.filter((q) => objectivesAllDone(q) && statuses.get(q.id) !== "completed");
+    if (orphaned.length === 0) return;
+    const sorted = [...orphaned].sort((a, b) => (depths.get(a.id) ?? 0) - (depths.get(b.id) ?? 0));
+    const timers = sorted.map((q, i) => {
+      const delay = Math.max(40, 260 - i * 60);
+      return setTimeout(() => onSetAllObjectives(q.id, false), delay);
+    });
+    return () => timers.forEach(clearTimeout);
+  }, [quests, statuses, onSetAllObjectives, depths]);
 
   // Shake feedback on any meaningful status flip — completed turning on OR off, and a quest
   // freshly becoming blocked by someone else's completion. Compares against the previous
@@ -1018,6 +1172,18 @@ function RoadmapGraph({
       const band = chKey != null ? chapterBand.get(chKey) : undefined;
       if (!band) return y;
       return clamp(y, band.top + 20, band.bottom - 20);
+    };
+    // Same hard-safety-net idea, horizontally — now that a chapter's frame has a writer-set
+    // WIDTH (not just the canvas-wide band it used to be), a quest node needs to stay inside
+    // its own chapter's horizontal bounds too, for exactly the same reasons (repulsion/overlap
+    // correction don't know or care about chapter frames).
+    const clampToChapterX = (id: string, x: number) => {
+      if (kindById.get(id) !== "quest") return x;
+      const qId = id.startsWith("q:") ? id.slice(2) : id;
+      const chKey = chapterKeyByQuestId.get(qId);
+      const band = chKey != null ? chapterBand.get(chKey) : undefined;
+      if (!band) return x;
+      return clamp(x, band.left + 20, band.right - 20);
     };
 
     function tick() {
@@ -1136,7 +1302,7 @@ function RoadmapGraph({
             p.vx = 0;
             p.vy = 0;
           }
-          p.x = clamp(p.x + p.vx, 40, WIDTH - 40);
+          p.x = clampToChapterX(id, clamp(p.x + p.vx, 40, WIDTH - 40));
           p.y = clampToChapterBand(id, clamp(p.y + p.vy, 40, HEIGHT - 40));
           continue;
         }
@@ -1169,7 +1335,7 @@ function RoadmapGraph({
           p.vx = 0;
           p.vy = 0;
         }
-        p.x = clamp(p.x + p.vx, 40, WIDTH - 40);
+        p.x = clampToChapterX(id, clamp(p.x + p.vx, 40, WIDTH - 40));
         p.y = clampToChapterBand(id, clamp(p.y + p.vy, 40, HEIGHT - 40));
       }
 
@@ -1192,11 +1358,11 @@ function RoadmapGraph({
           const nx = dx / dist;
           const ny = dy / dist;
           if (draggingRef.current?.id !== questIds[i]) {
-            a.x = clamp(a.x - nx * push, 40, WIDTH - 40);
+            a.x = clampToChapterX(questIds[i], clamp(a.x - nx * push, 40, WIDTH - 40));
             a.y = clampToChapterBand(questIds[i], clamp(a.y - ny * push, 40, HEIGHT - 40));
           }
           if (draggingRef.current?.id !== questIds[j]) {
-            b.x = clamp(b.x + nx * push, 40, WIDTH - 40);
+            b.x = clampToChapterX(questIds[j], clamp(b.x + nx * push, 40, WIDTH - 40));
             b.y = clampToChapterBand(questIds[j], clamp(b.y + ny * push, 40, HEIGHT - 40));
           }
         }
@@ -1371,7 +1537,6 @@ function RoadmapGraph({
   // target's own status), and the target gets a matching stub docked to its left labeled with
   // the source's name+chapter (colored by the source's status) — click either to jump straight
   // to the real node it names, with the same pan+ripple as the left list's focus action.
-  const REAL_HALF_W = 95; // matches QuestNodeCard's w-[190px]
   const PORTAL_HALF_W = 72;
   const PORTAL_GAP = 20;
   const PORTAL_STACK_GAP = 48;
@@ -1492,15 +1657,15 @@ function RoadmapGraph({
               if (!band) return null;
               const color = chapterColor(key);
               return (
-                <div key={`chband-${key}`} className="absolute pointer-events-none" style={{ left: 0, top: band.top, width: WIDTH, height: band.bottom - band.top }}>
-                  <div className="absolute inset-0" style={{ background: `${color}0d`, borderTop: `1px solid ${color}33`, borderBottom: `1px solid ${color}33` }} />
-                  <div
-                    className="absolute left-3 top-2 text-[11px] uppercase tracking-wider font-medium px-2 py-0.5 rounded-full"
-                    style={{ color, background: `${color}1a`, border: `1px solid ${color}40` }}
-                  >
-                    {band.label}
-                  </div>
-                </div>
+                <ChapterFrame
+                  key={`chband-${key}`}
+                  chapterKey={key}
+                  band={band}
+                  color={color}
+                  zoom={zoom}
+                  minWidth={chapterMinWidth.get(key) ?? 320}
+                  onResize={(w) => onSetChapterWidth(key, w)}
+                />
               );
             })}
             {gridEnabled && (
@@ -1541,15 +1706,22 @@ function RoadmapGraph({
                 const dist = Math.sqrt(dx * dx + dy * dy) || 1;
                 const nx = dx / dist;
                 const ny = dy / dist;
-                // Quest cards are much bigger than the small circular dialogue/flag nodes —
-                // trim the line further back so it meets the card's edge instead of cutting
-                // through its middle.
-                const rFrom = nodeById.get(e.from)?.kind === "quest" ? 78 : 26;
-                const rTo = nodeById.get(e.to)?.kind === "quest" ? 78 : 26;
-                const x1 = a.x + nx * rFrom;
-                const y1 = a.y + ny * rFrom;
-                const x2 = b.x - nx * (rTo + 8);
-                const y2 = b.y - ny * (rTo + 8);
+                // Quest cards are much bigger than the small circular dialogue/flag nodes, AND
+                // rectangular rather than circular — rectEdgePoint finds exactly where the line
+                // crosses each end's real bounding box, then EDGE_GAP pushes the trimmed point
+                // back by the same small amount on both ends, so there's always one consistent
+                // gap before the card starts, from any angle, on either side.
+                const EDGE_GAP = 8;
+                const fromIsQuest = nodeById.get(e.from)?.kind === "quest";
+                const toIsQuest = nodeById.get(e.to)?.kind === "quest";
+                const fromHalf = fromIsQuest ? { w: REAL_HALF_W, h: 78 } : { w: 26, h: 26 };
+                const toHalf = toIsQuest ? { w: REAL_HALF_W, h: 78 } : { w: 26, h: 26 };
+                const fromEdge = rectEdgePoint(b, a, fromHalf.w, fromHalf.h);
+                const toEdge = rectEdgePoint(a, b, toHalf.w, toHalf.h);
+                const x1 = fromEdge.x + nx * EDGE_GAP;
+                const y1 = fromEdge.y + ny * EDGE_GAP;
+                const x2 = toEdge.x - nx * EDGE_GAP;
+                const y2 = toEdge.y - ny * EDGE_GAP;
                 const mx = (a.x + b.x) / 2;
                 const my = (a.y + b.y) / 2;
 
@@ -1623,7 +1795,12 @@ function RoadmapGraph({
                       y2={y2}
                       stroke={e.styleKind && patternId ? `url(#${patternId})` : "var(--op-30)"}
                       strokeWidth={e.styleKind ? 5 : 1.4}
-                      strokeLinecap={e.styleKind ? "round" : undefined}
+                      // "butt" (not "round") specifically because these lines always terminate
+                      // at an arrowhead marker — a round cap bulges the stroke half its own
+                      // width PAST the geometric endpoint in the line's direction, which is
+                      // what made the thick 5px "rope" edges visually poke out past their own
+                      // arrowhead tip instead of ending cleanly at it.
+                      strokeLinecap="butt"
                       style={{ transition: "stroke 0.3s ease" }}
                       markerEnd={
                         e.styleKind === "block" && animated
@@ -1987,6 +2164,7 @@ export function QuestsView() {
   const dialogues = useProjectStore((s) => s.project.dialogues);
   const setQuestGraphPosition = useProjectStore((s) => s.setQuestGraphPosition);
   const setQuestGraphGridEnabled = useProjectStore((s) => s.setQuestGraphGridEnabled);
+  const setQuestChapterWidth = useProjectStore((s) => s.setQuestChapterWidth);
   const dialogueFlagDefs = useProjectStore((s) => s.project.dialogueFlagDefs);
   const { nodes, edges, quests } = useQuestRoadmap();
   const dialogueLinks = useDialogueQuestLinks(quests, dialogues);
@@ -2200,6 +2378,8 @@ export function QuestsView() {
             chapters={project.chapters}
             gridEnabled={project.questGraphGridEnabled ?? false}
             onSetGridEnabled={setQuestGraphGridEnabled}
+            savedChapterWidths={project.questGraphChapterWidths ?? {}}
+            onSetChapterWidth={setQuestChapterWidth}
           />
         </div>
       </div>

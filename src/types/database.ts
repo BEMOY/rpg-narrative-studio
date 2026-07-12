@@ -267,6 +267,12 @@ export interface Project {
   // no Entry to hang a position off of.
   questGraphPositions?: Record<string, { x: number; y: number }>;
   questGraphGridEnabled?: boolean;
+  // Writer-resized width for each chapter's frame in the roadmap graph, keyed by chapter name
+  // ("" = the "Без главы" bucket). Only chapters the writer has actually dragged get an entry —
+  // everything else uses the default full-width frame. Height already auto-scales with quest
+  // count (see chapterBand in QuestsView.tsx); width is manual since "how much horizontal room
+  // this chapter's dependency chain needs" isn't something a formula can guess well.
+  questGraphChapterWidths?: Record<string, number>;
   uiSettings?: UiSettings;
 }
 

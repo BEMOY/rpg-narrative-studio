@@ -28,9 +28,17 @@ interface ProjectState {
   // the exact node once it mounts for that dialogue. Not project content, so it isn't part of
   // Project/persisted — it's pure UI intent, cleared once consumed.
   pendingDialogueNodeFocus: { dialogueId: string; nodeId: string; token: number } | null;
+  // Undo/redo history — plain snapshots of past/future `project` values, populated by the
+  // subscribe() watcher set up right after this store is created (see below), not by each
+  // individual action. Ephemeral like everything else on this interface above `project`
+  // itself, cleared whenever a (different) project is loaded or closed.
+  undoStack: Project[];
+  redoStack: Project[];
 
   loadProject: (id: string, data: Project) => void;
   closeProject: () => void;
+  undo: () => void;
+  redo: () => void;
   setCategory: (c: Category | "all") => void;
   setGalleryQuery: (q: string) => void;
   showGallery: () => void;
@@ -87,12 +95,17 @@ interface ProjectState {
   setQuestGraphPosition: (nodeId: string, x: number, y: number) => void;
   clearQuestGraphPositions: () => void;
   setQuestGraphGridEnabled: (enabled: boolean) => void;
+  setQuestChapterWidth: (chapterKey: string, width: number) => void;
   updateUiSettings: (patch: Partial<UiSettings>) => void;
   resetDeleteConfirmSuppression: () => void;
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let cloudTimer: ReturnType<typeof setTimeout> | null = null;
+// Suppresses the undo/redo history subscription (set up right after this store, at the bottom
+// of this file) while undo()/redo() themselves are writing `project` — otherwise stepping
+// backward through history would immediately push a new history entry for that very write.
+let isTimeTraveling = false;
 
 export const useProjectStore = create<ProjectState>((set, get) => ({
   project: sampleProject,
@@ -105,6 +118,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   workspaceView: "gallery",
   activeDialogueId: null,
   pendingDialogueNodeFocus: null,
+  undoStack: [],
+  redoStack: [],
   saving: false,
 
   loadProject: (id, data) => {
@@ -122,11 +137,45 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       resistPresets: data.resistPresets ?? [],
       entries: data.entries.map((e) => ({ ...e, tags: e.tags ?? [], references: e.references ?? [] })),
     };
-    set({ projectId: id, project: safe, openTabs: [], activeTabIndex: -1, activeCategory: "all", activeDialogueId: null });
+    set({
+      projectId: id,
+      project: safe,
+      openTabs: [],
+      activeTabIndex: -1,
+      activeCategory: "all",
+      activeDialogueId: null,
+      undoStack: [],
+      redoStack: [],
+    });
   },
   closeProject: () => {
     if (cloudTimer) clearTimeout(cloudTimer);
-    set({ projectId: null, project: sampleProject, openTabs: [], activeTabIndex: -1, activeCategory: "all", activeDialogueId: null });
+    set({
+      projectId: null,
+      project: sampleProject,
+      openTabs: [],
+      activeTabIndex: -1,
+      activeCategory: "all",
+      activeDialogueId: null,
+      undoStack: [],
+      redoStack: [],
+    });
+  },
+  undo: () => {
+    const { undoStack, redoStack, project } = get();
+    if (undoStack.length === 0) return;
+    const prev = undoStack[undoStack.length - 1];
+    isTimeTraveling = true;
+    set({ project: prev, undoStack: undoStack.slice(0, -1), redoStack: [...redoStack, project] });
+    isTimeTraveling = false;
+  },
+  redo: () => {
+    const { undoStack, redoStack, project } = get();
+    if (redoStack.length === 0) return;
+    const next = redoStack[redoStack.length - 1];
+    isTimeTraveling = true;
+    set({ project: next, redoStack: redoStack.slice(0, -1), undoStack: [...undoStack, project] });
+    isTimeTraveling = false;
   },
   setCategory: (c) => set({ activeCategory: c, activeTabIndex: -1, workspaceView: "gallery" }),
   setGalleryQuery: (q) => set({ galleryQuery: q }),
@@ -717,6 +766,13 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     triggerAutosavePulse(set);
   },
 
+  setQuestChapterWidth: (key, width) => {
+    set((s) => ({
+      project: { ...s.project, questGraphChapterWidths: { ...(s.project.questGraphChapterWidths ?? {}), [key]: width } },
+    }));
+    triggerAutosavePulse(set);
+  },
+
   updateUiSettings: (patch) => {
     set((s) => ({ project: { ...s.project, uiSettings: { ...(s.project.uiSettings ?? {}), ...patch } } }));
     triggerAutosavePulse(set);
@@ -751,3 +807,36 @@ function triggerAutosavePulse(set: (partial: Partial<ProjectState>) => void) {
     if (projectId) saveProjectData(projectId, project).catch((e) => console.error("cloud save failed", e));
   }, 900);
 }
+
+// ---- Undo/redo history ----
+// Rather than touching every one of the many dozens of individual mutating actions above (all
+// of which already funnel through triggerAutosavePulse, but by the time that runs the OLD
+// `project` value is already gone), this subscribes to the store directly — a plain Zustand
+// subscription gets both the previous AND next state on every change, which is exactly what
+// "did `project` change, and if so what was it a moment ago" needs, with zero changes to any
+// action above. Rapid-fire changes (typing into a text field fires one `project` change per
+// keystroke) are coalesced into a single history entry via a short debounce window, so undo
+// reverts "that edit" rather than replaying it one character at a time.
+let lastHistoryPushAt = 0;
+const HISTORY_DEBOUNCE_MS = 400;
+const HISTORY_LIMIT = 60;
+
+useProjectStore.subscribe((state, prevState) => {
+  if (isTimeTraveling) return;
+  if (state.project === prevState.project) return;
+  // Loading or closing a project also swaps `project` wholesale — that's not an edit to undo,
+  // it's a different document entirely, and loadProject/closeProject already reset both stacks
+  // themselves.
+  if (state.projectId !== prevState.projectId) return;
+  const now = Date.now();
+  const coalesce = now - lastHistoryPushAt < HISTORY_DEBOUNCE_MS && state.undoStack.length > 0;
+  lastHistoryPushAt = now;
+  if (coalesce) {
+    if (state.redoStack.length > 0) useProjectStore.setState({ redoStack: [] });
+    return;
+  }
+  useProjectStore.setState({
+    undoStack: [...state.undoStack, prevState.project].slice(-HISTORY_LIMIT),
+    redoStack: [],
+  });
+});

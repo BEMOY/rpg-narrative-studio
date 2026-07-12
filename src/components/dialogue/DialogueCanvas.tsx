@@ -17,7 +17,7 @@ const DIALOGUES_TOUR: TourStep[] = [
   {
     target: '[data-tour="dialogues-canvas"]',
     title: "Холст диалога",
-    body: "Перетяните ноду за верхнюю плашку. Shift+перетаскивание фона — выделить рамкой несколько нод сразу, Delete — удалить выделенные.",
+    body: "Перетяните ноду за верхнюю плашку. Перетаскивание пустого фона — выделить рамкой несколько нод, Delete — удалить выделенные. Камера: WASD или колесо мыши для перемещения, Ctrl+колесо — зум.",
   },
 ];
 
@@ -202,14 +202,13 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
 
   const dragNodeRef = useRef<{ id: string; startClientX: number; startClientY: number; startX: number; startY: number } | null>(null);
   const livePos = useRef<Map<string, { x: number; y: number }>>(new Map());
-  const panDragRef = useRef<{ startClientX: number; startClientY: number; startPanX: number; startPanY: number } | null>(null);
   const [linkDrag, setLinkDrag] = useState<{ from: AnchorKey; x: number; y: number } | null>(null);
   const [dragOverNodeId, setDragOverNodeId] = useState<string | null>(null);
 
-  // Marquee/rubber-band multi-select — Shift+drag from empty canvas space (plain drag stays
-  // "pan", matching how this canvas already worked; adding a modifier avoids changing existing
-  // muscle memory for panning). `marquee` is the box being dragged out right now, in stage-local
-  // unscaled coordinates; `selectedIds` is what's actually selected once the drag finishes.
+  // Marquee/rubber-band multi-select is now the DEFAULT for a plain left-drag on empty canvas
+  // (panning moved to WASD/the wheel, see below) — no modifier key needed anymore. `marquee` is
+  // the box being dragged out right now, in stage-local unscaled coordinates; `selectedIds` is
+  // what's actually selected once the drag finishes.
   const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [deleteConfirm, setDeleteConfirm] = useState<{ ids: string[] } | null>(null);
@@ -274,6 +273,64 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [selectedIds, dialogue.id, dialogue.skipDeleteConfirm, uiSettings?.skipDeleteConfirmGlobal, deleteDialogueNodes]);
+
+  // WASD panning — held keys accumulate in a ref (not React state, so held-down tracking isn't
+  // fighting a render cycle) and a small always-on rAF loop nudges `pan` every frame while any
+  // of them are down. Same editable-target gate as the Delete handler above, so typing "wasd"
+  // into a line's text or the title field doesn't drag the camera around underneath you.
+  const heldMoveKeysRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const isEditableTarget = (el: EventTarget | null) => {
+      if (!(el instanceof HTMLElement)) return false;
+      return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable;
+    };
+    const MOVE_KEYS = new Set(["w", "a", "s", "d"]);
+    const onKeyDown = (e: KeyboardEvent) => {
+      const k = e.key.toLowerCase();
+      if (!MOVE_KEYS.has(k)) return;
+      if (isEditableTarget(e.target)) return;
+      heldMoveKeysRef.current.add(k);
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      heldMoveKeysRef.current.delete(e.key.toLowerCase());
+    };
+    const onBlur = () => heldMoveKeysRef.current.clear();
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, []);
+
+  useEffect(() => {
+    let raf = 0;
+    let last = performance.now();
+    const PAN_SPEED = 640; // screen px/sec — deliberately NOT scaled by zoom, so the camera
+    // always feels equally responsive regardless of how zoomed in/out the canvas currently is.
+    const step = (now: number) => {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      const held = heldMoveKeysRef.current;
+      if (held.size > 0) {
+        let dx = 0;
+        let dy = 0;
+        if (held.has("w")) dy += 1;
+        if (held.has("s")) dy -= 1;
+        if (held.has("a")) dx += 1;
+        if (held.has("d")) dx -= 1;
+        if (dx !== 0 || dy !== 0) {
+          const len = Math.hypot(dx, dy) || 1;
+          setPan((p) => ({ x: p.x + (dx / len) * PAN_SPEED * dt, y: p.y + (dy / len) * PAN_SPEED * dt }));
+        }
+      }
+      raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, []);
 
   const posFor = (nodeId: string) => {
     const live = livePos.current.get(nodeId);
@@ -358,56 +415,39 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
     window.addEventListener("mouseup", onUp);
   };
 
+  // Left-drag on empty canvas is now ALWAYS a marquee select (no Shift needed) — panning moved
+  // to WASD/the wheel below, freeing up plain left-drag entirely for selection, which is the
+  // more common action while editing a dialogue graph.
   const onBgPointerDown = (e: React.MouseEvent) => {
-    if (e.shiftKey) {
-      const stage = stageRef.current;
-      if (!stage) return;
-      const rect = stage.getBoundingClientRect();
-      const startX = (e.clientX - rect.left) / zoom;
-      const startY = (e.clientY - rect.top) / zoom;
-      setMarquee({ x0: startX, y0: startY, x1: startX, y1: startY });
-      const onMove = (ev: MouseEvent) => {
-        const r = stage.getBoundingClientRect();
-        setMarquee((m) => (m ? { ...m, x1: (ev.clientX - r.left) / zoom, y1: (ev.clientY - r.top) / zoom } : m));
-      };
-      const onUp = () => {
-        setMarquee((m) => {
-          if (m) {
-            const minX = Math.min(m.x0, m.x1);
-            const maxX = Math.max(m.x0, m.x1);
-            const minY = Math.min(m.y0, m.y1);
-            const maxY = Math.max(m.y0, m.y1);
-            const picked = new Set<string>();
-            dialogue.nodes.forEach((n) => {
-              const p = posFor(n.id);
-              const box = anchorPos.get(`box:${n.id}`);
-              const w = box?.w ?? NODE_WIDTH;
-              const h = box?.h ?? 200;
-              if (p.x < maxX && p.x + w > minX && p.y < maxY && p.y + h > minY) picked.add(n.id);
-            });
-            setSelectedIds(picked);
-          }
-          return null;
-        });
-        window.removeEventListener("mousemove", onMove);
-        window.removeEventListener("mouseup", onUp);
-      };
-      window.addEventListener("mousemove", onMove);
-      window.addEventListener("mouseup", onUp);
-      return;
-    }
-
-    // Plain click on empty canvas clears the current selection (standard node-editor
-    // convention) before falling through to the existing pan-drag behavior.
-    setSelectedIds(new Set());
-    panDragRef.current = { startClientX: e.clientX, startClientY: e.clientY, startPanX: pan.x, startPanY: pan.y };
+    const stage = stageRef.current;
+    if (!stage) return;
+    const rect = stage.getBoundingClientRect();
+    const startX = (e.clientX - rect.left) / zoom;
+    const startY = (e.clientY - rect.top) / zoom;
+    setMarquee({ x0: startX, y0: startY, x1: startX, y1: startY });
     const onMove = (ev: MouseEvent) => {
-      const d = panDragRef.current;
-      if (!d) return;
-      setPan({ x: d.startPanX + (ev.clientX - d.startClientX), y: d.startPanY + (ev.clientY - d.startClientY) });
+      const r = stage.getBoundingClientRect();
+      setMarquee((m) => (m ? { ...m, x1: (ev.clientX - r.left) / zoom, y1: (ev.clientY - r.top) / zoom } : m));
     };
     const onUp = () => {
-      panDragRef.current = null;
+      setMarquee((m) => {
+        if (m) {
+          const minX = Math.min(m.x0, m.x1);
+          const maxX = Math.max(m.x0, m.x1);
+          const minY = Math.min(m.y0, m.y1);
+          const maxY = Math.max(m.y0, m.y1);
+          const picked = new Set<string>();
+          dialogue.nodes.forEach((n) => {
+            const p = posFor(n.id);
+            const box = anchorPos.get(`box:${n.id}`);
+            const w = box?.w ?? NODE_WIDTH;
+            const h = box?.h ?? 200;
+            if (p.x < maxX && p.x + w > minX && p.y < maxY && p.y + h > minY) picked.add(n.id);
+          });
+          setSelectedIds(picked);
+        }
+        return null;
+      });
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
@@ -415,18 +455,26 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
     window.addEventListener("mouseup", onUp);
   };
 
+  // Plain wheel now PANS the canvas (vertical scroll = vertical pan, horizontal trackpad/shift
+  // scroll = horizontal pan) instead of zooming — Ctrl/Cmd+wheel is the zoom gesture instead
+  // (same convention as Figma/Google Maps/etc), still centered on the cursor so the point under
+  // it stays put while zooming.
   const onWheel = (e: React.WheelEvent) => {
-    const rect = stageRef.current?.parentElement?.getBoundingClientRect();
-    const newZoom = clamp(zoom + (e.deltaY > 0 ? -0.08 : 0.08), MIN_ZOOM, 2);
-    if (!rect) {
+    if (e.ctrlKey || e.metaKey) {
+      const rect = stageRef.current?.parentElement?.getBoundingClientRect();
+      const newZoom = clamp(zoom + (e.deltaY > 0 ? -0.08 : 0.08), MIN_ZOOM, 2);
+      if (!rect) {
+        setZoom(newZoom);
+        return;
+      }
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+      const ratio = newZoom / zoom;
+      setPan((p) => ({ x: mouseX - (mouseX - p.x) * ratio, y: mouseY - (mouseY - p.y) * ratio }));
       setZoom(newZoom);
       return;
     }
-    const mouseX = e.clientX - rect.left;
-    const mouseY = e.clientY - rect.top;
-    const ratio = newZoom / zoom;
-    setPan((p) => ({ x: mouseX - (mouseX - p.x) * ratio, y: mouseY - (mouseY - p.y) * ratio }));
-    setZoom(newZoom);
+    setPan((p) => ({ x: p.x - e.deltaX, y: p.y - e.deltaY }));
   };
 
   // Auto-center + zoom-to-fit over every node's actual measured box (see the `box:<nodeId>`
@@ -652,7 +700,7 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
         </button>
       </div>
 
-      <div data-tour="dialogues-canvas" className="flex-1 relative overflow-hidden cursor-grab active:cursor-grabbing" onWheel={onWheel} onMouseDown={onBgPointerDown}>
+      <div data-tour="dialogues-canvas" className="flex-1 relative overflow-hidden cursor-crosshair" onWheel={onWheel} onMouseDown={onBgPointerDown}>
         <div
           ref={stageRef}
           style={{ position: "absolute", left: 0, top: 0, width: CANVAS_W, height: CANVAS_H, transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin: "0 0" }}
