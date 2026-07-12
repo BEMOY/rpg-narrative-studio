@@ -157,6 +157,12 @@ body {
    (QuestsView.tsx) — overshoots slightly then settles, so it reads as a sudden "denied" jolt
    rather than a gentle fade-in. The fade back out is handled separately via an opacity
    transition, not this keyframe. */
+@keyframes rarity-particle-float {
+  0% { transform: translateY(0) scale(0.6); opacity: 0; }
+  15% { opacity: 1; }
+  100% { transform: translateY(-22px) scale(1); opacity: 0; }
+}
+
 @keyframes quest-block-pop {
   from { transform: scale(1.7); opacity: 0; }
   to { transform: scale(1); opacity: 1; }

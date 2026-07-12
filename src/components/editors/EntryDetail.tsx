@@ -17,13 +17,15 @@ import {
   BookOpen,
   Search,
 } from "lucide-react";
-import type { Category, Entry } from "../../types/database";
-import { CAT_COLOR, CAT_LABEL, CAT_ORDER, isQuest, hasRelationship, canHaveStats } from "../../types/database";
+import type { Category, Entry, StatPreset } from "../../types/database";
+import { CAT_COLOR, CAT_LABEL, CAT_ORDER, isQuest, hasRelationship, canHaveStats, isEquip } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
 import { resizeImageFile } from "../../lib/image";
 import { usePasteImage } from "../../lib/usePasteImage";
 import { MapEditorModal } from "../mapeditor/MapEditorModal";
 import { MapThumbnail, mapHasContent } from "../mapeditor/MapThumbnail";
+import { RarityBadge } from "../common/RarityBadge";
+import { statIcon } from "../../lib/statIcons";
 
 const CAT_ICON: Record<Category, React.ComponentType<any>> = {
   character: User,
@@ -41,8 +43,12 @@ const REL_LABEL: Record<string, string> = { friend: "Друг", neutral: "Ней
 export function EntryDetail({ entry, onEdit }: { entry: Entry; onEdit: () => void }) {
   const showGallery = useProjectStore((s) => s.showGallery);
   const deleteEntry = useProjectStore((s) => s.deleteEntry);
+  const rarities = useProjectStore((s) => s.project.rarities);
+  const statPresets = useProjectStore((s) => s.project.statPresets);
+  const resistPresets = useProjectStore((s) => s.project.resistPresets);
   const color = CAT_COLOR[entry.category];
   const Icon = CAT_ICON[entry.category];
+  const rarity = isEquip(entry.category) ? rarities.find((r) => r.id === entry.rarityId) : undefined;
 
   const remove = () => {
     if (confirm(`Удалить «${entry.name}»? Это необратимо.`)) deleteEntry(entry.id);
@@ -82,6 +88,12 @@ export function EntryDetail({ entry, onEdit }: { entry: Entry; onEdit: () => voi
               <span className="text-[var(--op-40)] normal-case tracking-normal">{entry.chapter}</span>
             </>
           )}
+          {rarity && (
+            <>
+              <span className="text-[var(--op-25)]">·</span>
+              <RarityBadge rarity={rarity} showParticles />
+            </>
+          )}
         </div>
         <h1 className="text-3xl font-medium text-[var(--op-90)]">{entry.name}</h1>
       </div>
@@ -106,7 +118,7 @@ export function EntryDetail({ entry, onEdit }: { entry: Entry; onEdit: () => voi
         </Block>
       )}
 
-      {canHaveStats(entry.category) && entry.stats && Object.keys(entry.stats).length > 0 && (
+      {canHaveStats(entry.category) && !isEquip(entry.category) && entry.stats && Object.keys(entry.stats).length > 0 && (
         <Block title="Статы">
           <div className="grid grid-cols-3 gap-3">
             {Object.entries(entry.stats).map(([k, v]) =>
@@ -119,6 +131,13 @@ export function EntryDetail({ entry, onEdit }: { entry: Entry; onEdit: () => voi
             )}
           </div>
         </Block>
+      )}
+
+      {isEquip(entry.category) && entry.statsEnabled && (
+        <EquipStatDisplayGroup title="Параметры" values={entry.statValues} presets={statPresets} />
+      )}
+      {isEquip(entry.category) && entry.statsEnabled && (
+        <EquipStatDisplayGroup title="Сопротивления (%)" values={entry.resistValues} presets={resistPresets} suffix="%" />
       )}
 
       {isQuest(entry.category) && (
@@ -228,6 +247,58 @@ export function EntryDetail({ entry, onEdit }: { entry: Entry; onEdit: () => voi
         </button>
       </div>
     </div>
+  );
+}
+
+// Read-only rendering of the equipment stat/resist presets assigned to this entry — icon +
+// name + a filled progress bar (value/max) instead of the editable slider used in the editor,
+// since nothing here is interactive. Presets no longer present in the project's library (e.g.
+// deleted since being assigned) are silently skipped rather than showing a broken row.
+function EquipStatDisplayGroup({
+  title,
+  values,
+  presets,
+  suffix = "",
+}: {
+  title: string;
+  values: Record<string, number> | undefined;
+  presets: StatPreset[];
+  suffix?: string;
+}) {
+  const rows = Object.entries(values ?? {})
+    .map(([id, v]) => {
+      const preset = presets.find((p) => p.id === id);
+      return preset ? { preset, value: v } : null;
+    })
+    .filter((r): r is { preset: StatPreset; value: number } => r !== null);
+
+  if (rows.length === 0) return null;
+
+  return (
+    <Block title={title}>
+      <div className="space-y-2">
+        {rows.map(({ preset, value }) => {
+          const Icon = statIcon(preset.icon);
+          const pct = preset.max > 0 ? Math.max(0, Math.min(100, (value / preset.max) * 100)) : 0;
+          return (
+            <div key={preset.id} className="flex items-center gap-2.5">
+              <span className="w-6 h-6 shrink-0 rounded-md grid place-items-center bg-[var(--op-8)] text-accent">
+                <Icon size={12} />
+              </span>
+              <span className="text-xs text-[var(--op-70)] w-24 shrink-0 truncate">{preset.name}</span>
+              <div className="flex-1 h-1.5 rounded-full bg-[var(--op-8)] overflow-hidden">
+                <div className="h-full rounded-full bg-accent/80" style={{ width: `${pct}%` }} />
+              </div>
+              <span className="text-xs mono text-[var(--op-80)] w-14 text-right shrink-0">
+                {value}
+                {suffix} / {preset.max}
+                {suffix}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </Block>
   );
 }
 
