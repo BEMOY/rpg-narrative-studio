@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Plus, ZoomIn, ZoomOut, Maximize2, Type, Settings, Play, FileDown, FileUp, FileCode, Share2 } from "lucide-react";
+import { Plus, ZoomIn, ZoomOut, Maximize2, Type, Settings, Play, FileDown, FileUp, FileCode, Share2, Grid2X2 } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { PortalMenu } from "../common/PortalMenu";
 import type { Dialogue } from "../../types/database";
@@ -24,6 +24,19 @@ const DIALOGUES_TOUR: TourStep[] = [
 const CANVAS_W = 4000;
 const CANVAS_H = 3000;
 export const NODE_WIDTH = 340;
+const DLG_GRID_SIZE = 40;
+
+// Single source of truth for each connector "port" color, shared between the SVG edge
+// lines/arrowheads/endpoint-dots drawn here and the actual DOM port handles rendered in
+// DialogueNodeCard.tsx (bg-teal-400/bg-orange-400/bg-amber-400 there use these exact hexes) —
+// previously the SVG side used its own slightly-different hand-picked colors (and a single
+// shared purple arrowhead for every type), so a connection's start handle, line, and arrowhead
+// could all look like different colors even though they were meant to be "the same" connector.
+export const DLG_PORT_COLORS = {
+  choice: "#2dd4bf", // teal-400
+  else: "#fb923c", // orange-400
+  cont: "#fbbf24", // amber-400
+} as const;
 const MIN_ZOOM = 0.01; // 1% — same reasoning as the Quests roadmap graph's resetView: a large dialogue should still fully zoom-to-fit instead of clipping
 
 function clamp(v: number, lo: number, hi: number) {
@@ -129,9 +142,41 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
   const updateDialogueLine = useProjectStore((s) => s.updateDialogueLine);
   const renameDialogue = useProjectStore((s) => s.renameDialogue);
 
-  const [zoom, setZoom] = useState(0.85);
-  const [pan, setPan] = useState({ x: 60, y: 40 });
+  const [zoom, setZoom] = useState(() => dialogue.camera?.zoom ?? 0.85);
+  const [pan, setPan] = useState(() => (dialogue.camera ? { x: dialogue.camera.x, y: dialogue.camera.y } : { x: 60, y: 40 }));
   const [, bump] = useState(0);
+  const cameraSaveTimerRef = useRef<number | null>(null);
+
+  // Reopening a dialogue used to leave pan/zoom at whatever the PREVIOUSLY open dialogue had
+  // (DialogueCanvas isn't remounted per-dialogue, it's the same component instance re-rendered
+  // with a new `dialogue` prop) — which is what made the view look like it "randomly" jumped
+  // around. Whenever the active dialogue actually changes, restore its own last-saved camera
+  // (or the same 85%/(60,40) default as before, if it's never been opened/moved).
+  useLayoutEffect(() => {
+    const cam = dialogue.camera;
+    if (cam) {
+      setZoom(cam.zoom);
+      setPan({ x: cam.x, y: cam.y });
+    } else {
+      setZoom(0.85);
+      setPan({ x: 60, y: 40 });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dialogue.id]);
+
+  // Persist pan/zoom back onto the dialogue so the restore above has something to read next
+  // time — debounced so a wheel-zoom flurry or a long pan-drag doesn't spam autosave on every
+  // single frame, just once ~400ms after the camera settles.
+  useEffect(() => {
+    if (cameraSaveTimerRef.current) window.clearTimeout(cameraSaveTimerRef.current);
+    cameraSaveTimerRef.current = window.setTimeout(() => {
+      updateDialogue(dialogue.id, { camera: { x: pan.x, y: pan.y, zoom } });
+    }, 400);
+    return () => {
+      if (cameraSaveTimerRef.current) window.clearTimeout(cameraSaveTimerRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [zoom, pan.x, pan.y, dialogue.id]);
   const [colorStylesOpen, setColorStylesOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [testOpen, setTestOpen] = useState(false);
@@ -161,6 +206,13 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
   const updateUiSettings = useProjectStore((s) => s.updateUiSettings);
   const updateDialogue = useProjectStore((s) => s.updateDialogue);
   const deleteDialogueNodes = useProjectStore((s) => s.deleteDialogueNodes);
+  const pendingDialogueNodeFocus = useProjectStore((s) => s.pendingDialogueNodeFocus);
+  const clearDialogueNodeFocus = useProjectStore((s) => s.clearDialogueNodeFocus);
+  const [rippleNodeId, setRippleNodeId] = useState<string | null>(null);
+  // Grid on/off is deliberately a single window-wide switch (Project.uiSettings), NOT stored
+  // per-Dialogue like the camera above — the writer explicitly asked for the two to behave
+  // differently.
+  const dialoguesGridEnabled = uiSettings?.dialoguesGridEnabled ?? false;
 
   const registerAnchor = (key: AnchorKey, el: HTMLElement | null) => {
     if (el) anchorEls.current.set(key, el);
@@ -218,6 +270,36 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
     const n = dialogue.nodes.find((x) => x.id === nodeId);
     return n ? { x: n.x, y: n.y } : { x: 0, y: 0 };
   };
+
+  // Consumes a cross-window "go to this exact node" request — set by e.g. clicking a dialogue
+  // link in the Quests roadmap card's popup (see requestDialogueNodeFocus/DialogueLinkDot in
+  // QuestsView.tsx). Only reacts once this IS the dialogue that was requested (switching
+  // workspaceView/activeDialogueId already happened as part of that same store action, so by
+  // the time this dialogue is showing, `dialogue.id` should already match). Pans/zooms to the
+  // node and pulses the same ripple effect used for quest-focus, then clears the request so it
+  // doesn't refire on the next unrelated render.
+  useEffect(() => {
+    if (!pendingDialogueNodeFocus || pendingDialogueNodeFocus.dialogueId !== dialogue.id) return;
+    const nodeId = pendingDialogueNodeFocus.nodeId;
+    const n = dialogue.nodes.find((x) => x.id === nodeId);
+    const viewport = stageRef.current?.parentElement;
+    const rect = viewport?.getBoundingClientRect();
+    if (n && rect) {
+      const p = posFor(nodeId);
+      const box = anchorPos.get(`box:${nodeId}`);
+      const w = box?.w ?? NODE_WIDTH;
+      const h = box?.h ?? 220;
+      const cx = p.x + w / 2;
+      const cy = p.y + h / 2;
+      const targetZoom = clamp(Math.max(zoom, 0.7), MIN_ZOOM, 2);
+      setZoom(targetZoom);
+      setPan({ x: rect.width / 2 - cx * targetZoom, y: rect.height / 2 - cy * targetZoom });
+    }
+    setRippleNodeId(nodeId);
+    setTimeout(() => setRippleNodeId((cur) => (cur === nodeId ? null : cur)), 1000);
+    clearDialogueNodeFocus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingDialogueNodeFocus, dialogue.id]);
 
   const onNodeDragStart = (nodeId: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -527,6 +609,13 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
         <button onClick={resetView} className="w-8 h-8 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]" title="Сбросить вид (авто-центровка)">
           <Maximize2 size={13} />
         </button>
+        <button
+          onClick={() => updateUiSettings({ dialoguesGridEnabled: !dialoguesGridEnabled })}
+          title={dialoguesGridEnabled ? "Сетка: вкл" : "Сетка: выкл"}
+          className={`w-8 h-8 grid place-items-center rounded-md glass hover:bg-[var(--op-10)] ${dialoguesGridEnabled ? "text-accent bg-accent/10" : ""}`}
+        >
+          <Grid2X2 size={13} />
+        </button>
       </div>
 
       <div data-tour="dialogues-canvas" className="flex-1 relative overflow-hidden cursor-grab active:cursor-grabbing" onWheel={onWheel} onMouseDown={onBgPointerDown}>
@@ -534,10 +623,31 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
           ref={stageRef}
           style={{ position: "absolute", left: 0, top: 0, width: CANVAS_W, height: CANVAS_H, transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin: "0 0" }}
         >
+          {dialoguesGridEnabled && (
+            <div
+              className="absolute inset-0 pointer-events-none"
+              style={{
+                backgroundImage:
+                  "linear-gradient(to right, var(--op-8) 1px, transparent 1px), linear-gradient(to bottom, var(--op-8) 1px, transparent 1px)",
+                backgroundSize: `${DLG_GRID_SIZE}px ${DLG_GRID_SIZE}px`,
+              }}
+            />
+          )}
           <svg width={CANVAS_W} height={CANVAS_H} className="absolute inset-0 pointer-events-none" style={{ overflow: "visible" }}>
             <defs>
-              <marker id="dlg-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
-                <path d="M0,0 L8,4 L0,8 Z" fill="var(--accent, #8b7bff)" />
+              {/* One arrowhead marker per connector "port" color, matching the actual DOM dot
+                  each edge starts from exactly (see the bg-teal-400/bg-orange-400/bg-amber-400
+                  port handles in DialogueNodeCard.tsx) — previously every edge used the same
+                  purple accent arrowhead regardless of its own line color, which is what made
+                  connections look mismatched/inconsistent at the point they actually land. */}
+              <marker id="dlg-arrow-cont" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+                <path d="M0,0 L8,4 L0,8 Z" fill={DLG_PORT_COLORS.cont} />
+              </marker>
+              <marker id="dlg-arrow-choice" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+                <path d="M0,0 L8,4 L0,8 Z" fill={DLG_PORT_COLORS.choice} />
+              </marker>
+              <marker id="dlg-arrow-else" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+                <path d="M0,0 L8,4 L0,8 Z" fill={DLG_PORT_COLORS.else} />
               </marker>
             </defs>
             {dialogue.nodes.map((n) => {
@@ -549,8 +659,8 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
                   const to = boxEdgePoint(from, box);
                   lines.push(
                     <g key={`cont-${n.id}`}>
-                      <path d={curvePath(from, to)} fill="none" stroke="var(--op-30)" strokeWidth={1.6} markerEnd="url(#dlg-arrow)" />
-                      <circle cx={to.x} cy={to.y} r={3} fill="var(--op-30)" />
+                      <path d={curvePath(from, to)} fill="none" stroke={DLG_PORT_COLORS.cont} strokeWidth={1.6} markerEnd="url(#dlg-arrow-cont)" />
+                      <circle cx={to.x} cy={to.y} r={3} fill={DLG_PORT_COLORS.cont} />
                     </g>
                   );
                 }
@@ -563,8 +673,8 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
                 const to = boxEdgePoint(from, box);
                 lines.push(
                   <g key={`choice-${c.id}`}>
-                    <path d={curvePath(from, to)} fill="none" stroke="#5fc9c9" strokeWidth={1.6} markerEnd="url(#dlg-arrow)" />
-                    <circle cx={to.x} cy={to.y} r={3} fill="#5fc9c9" />
+                    <path d={curvePath(from, to)} fill="none" stroke={DLG_PORT_COLORS.choice} strokeWidth={1.6} markerEnd="url(#dlg-arrow-choice)" />
+                    <circle cx={to.x} cy={to.y} r={3} fill={DLG_PORT_COLORS.choice} />
                   </g>
                 );
               });
@@ -576,8 +686,8 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
                 const to = boxEdgePoint(from, box);
                 lines.push(
                   <g key={`else-${l.id}`}>
-                    <path d={curvePath(from, to)} fill="none" stroke="#e0a95f" strokeWidth={1.6} strokeDasharray="4 3" markerEnd="url(#dlg-arrow)" />
-                    <circle cx={to.x} cy={to.y} r={3} fill="#e0a95f" />
+                    <path d={curvePath(from, to)} fill="none" stroke={DLG_PORT_COLORS.else} strokeWidth={1.6} strokeDasharray="4 3" markerEnd="url(#dlg-arrow-else)" />
+                    <circle cx={to.x} cy={to.y} r={3} fill={DLG_PORT_COLORS.else} />
                   </g>
                 );
               });
@@ -622,6 +732,12 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
                   registerAnchor={registerAnchor}
                   onLinkDragStart={onLinkDragStart}
                 />
+                {rippleNodeId === n.id && (
+                  <div className="absolute -inset-1.5 pointer-events-none rounded-lg">
+                    <div className="quest-focus-ripple absolute inset-0 rounded-lg border-2" style={{ borderColor: "var(--accent, #8b7bff)" }} />
+                    <div className="quest-focus-ripple-2 absolute inset-0 rounded-lg border-2" style={{ borderColor: "var(--accent, #8b7bff)" }} />
+                  </div>
+                )}
               </div>
             );
           })}

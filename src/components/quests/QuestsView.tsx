@@ -302,6 +302,7 @@ function useQuestRoadmap() {
 export interface DialogueRef {
   dialogueId: string;
   name: string;
+  nodeId: string;
 }
 
 export interface QuestDialogueLinks {
@@ -330,11 +331,11 @@ export function useDialogueQuestLinks(quests: Entry[], dialogues: Dialogue[]) {
       return map.get(key)!;
     };
     const addUnique = (list: DialogueRef[], ref: DialogueRef) => {
-      if (!list.some((r) => r.dialogueId === ref.dialogueId)) list.push(ref);
+      if (!list.some((r) => r.dialogueId === ref.dialogueId && r.nodeId === ref.nodeId)) list.push(ref);
     };
     for (const d of dialogues) {
-      const ref: DialogueRef = { dialogueId: d.id, name: d.name };
       for (const n of d.nodes) {
+        const ref: DialogueRef = { dialogueId: d.id, name: d.name, nodeId: n.id };
         const conditions = [...n.lines.map((l) => l.condition), ...n.choices.map((c) => c.condition)];
         for (const c of conditions) {
           if (!c) continue;
@@ -375,28 +376,70 @@ export function useDialogueQuestLinks(quests: Entry[], dialogues: Dialogue[]) {
 // text it's sitting next to, matching where there's actually open canvas space in this graph.
 function DialogueLinkDot({ refs, kind, dim, zoom }: { refs: DialogueRef[]; kind: "checks" | "completes"; dim: boolean; zoom: number }) {
   const dotRef = useRef<HTMLSpanElement>(null);
-  const [tooltipPos, setTooltipPos] = useState<{ x: number; y: number } | null>(null);
+  const tooltipElRef = useRef<HTMLDivElement>(null);
+  const cardElRef = useRef<HTMLElement | null>(null);
+  const [tooltipAnchor, setTooltipAnchor] = useState<{ x: number; y: number; h: number } | null>(null);
+  const requestDialogueNodeFocus = useProjectStore((s) => s.requestDialogueNodeFocus);
   if (refs.length === 0) return null;
   const dotColor = dim ? "var(--op-30)" : DIALOGUE_COLOR;
   const Icon = kind === "completes" ? CircleCheck : CircleAlert;
-  const label = kind === "completes" ? "завершает" : "проверяет";
+  const labelText = kind === "completes" ? "завершает" : "проверяет";
 
-  const show = () => {
-    const cardEl = dotRef.current?.closest<HTMLElement>(".quest-node-card");
-    const rect = (cardEl ?? dotRef.current)?.getBoundingClientRect();
-    if (!rect) return;
-    setTooltipPos({ x: rect.right + 8 * zoom, y: (dotRef.current?.getBoundingClientRect().top ?? rect.top) + 8 * zoom });
+  const open = () => {
+    const dotRect = dotRef.current?.getBoundingClientRect();
+    if (!dotRect) return;
+    cardElRef.current = dotRef.current?.closest<HTMLElement>(".quest-node-card") ?? null;
+    // Anchored to the dot's OWN rect (not the card's), so the popup lines up exactly to the
+    // right of the icon at the icon's own vertical position, rather than snapping to the
+    // card's edge/top like before.
+    setTooltipAnchor({ x: dotRect.right + 6 * zoom, y: dotRect.top + dotRect.height / 2, h: dotRect.height });
+  };
+
+  // Hover-bridging + "reasonable distance" close behavior: while the popup is open, track the
+  // mouse globally instead of relying on the dot's own onMouseLeave (which fires the instant the
+  // cursor crosses into the portaled tooltip, since that tooltip lives elsewhere in the DOM).
+  // The popup stays open as long as the cursor is either still inside the quest node card OR
+  // within a small padding of the tooltip itself; it closes once both conditions fail.
+  useEffect(() => {
+    if (!tooltipAnchor) return;
+    const PAD_CARD = 8;
+    const PAD_TOOLTIP = 32;
+    const onMove = (e: MouseEvent) => {
+      const { clientX: x, clientY: y } = e;
+      const cardRect = cardElRef.current?.getBoundingClientRect();
+      const insideCard =
+        !!cardRect &&
+        x >= cardRect.left - PAD_CARD &&
+        x <= cardRect.right + PAD_CARD &&
+        y >= cardRect.top - PAD_CARD &&
+        y <= cardRect.bottom + PAD_CARD;
+      const tipRect = tooltipElRef.current?.getBoundingClientRect();
+      const nearTooltip =
+        !!tipRect &&
+        x >= tipRect.left - PAD_TOOLTIP &&
+        x <= tipRect.right + PAD_TOOLTIP &&
+        y >= tipRect.top - PAD_TOOLTIP &&
+        y <= tipRect.bottom + PAD_TOOLTIP;
+      if (!insideCard && !nearTooltip) setTooltipAnchor(null);
+    };
+    window.addEventListener("mousemove", onMove);
+    return () => window.removeEventListener("mousemove", onMove);
+  }, [tooltipAnchor]);
+
+  const handleClick = (r: DialogueRef) => {
+    requestDialogueNodeFocus(r.dialogueId, r.nodeId);
+    setTooltipAnchor(null);
   };
 
   return (
-    <span ref={dotRef} className="relative inline-flex" onMouseEnter={show} onMouseLeave={() => setTooltipPos(null)}>
+    <span ref={dotRef} className="relative inline-flex" onMouseEnter={open}>
       <span
         className="w-3.5 h-3.5 rounded-full grid place-items-center shrink-0 transition-colors duration-300 cursor-help"
         style={{ background: dim ? "var(--op-8)" : `${DIALOGUE_COLOR}22`, color: dotColor }}
       >
         <Icon size={9} />
       </span>
-      {tooltipPos &&
+      {tooltipAnchor &&
         createPortal(
           // Positioned in real screen pixels (getBoundingClientRect already reflects the
           // graph's own pan/zoom transform), but the tooltip's own CONTENT needs an explicit
@@ -404,20 +447,35 @@ function DialogueLinkDot({ refs, kind, dim, zoom }: { refs: DialogueRef[]; kind:
           // outside the transformed world div (it's portaled straight to <body> to escape the
           // card's overflow-hidden), so it doesn't inherit that transform automatically and
           // would otherwise stay a fixed screen size while every node around it grows/shrinks.
-          <span
-            className="fixed pointer-events-none whitespace-nowrap rounded-md border px-2 py-1 text-[10px] z-[200]"
+          <div
+            ref={tooltipElRef}
+            className="fixed whitespace-nowrap rounded-md border px-2 py-1 text-[10px] z-[200] flex flex-col gap-0.5"
             style={{
-              left: tooltipPos.x,
-              top: tooltipPos.y,
-              transform: `scale(${zoom})`,
-              transformOrigin: "top left",
+              left: tooltipAnchor.x,
+              top: tooltipAnchor.y,
+              transform: `translateY(-50%) scale(${zoom})`,
+              transformOrigin: "left center",
               background: "var(--popover-bg)",
               borderColor: DIALOGUE_COLOR,
               color: "var(--op-80)",
             }}
           >
-            <span style={{ color: DIALOGUE_COLOR }}>{label}:</span> {refs.map((r) => r.name).join(", ")}
-          </span>,
+            <span className="px-0.5" style={{ color: DIALOGUE_COLOR }}>
+              {labelText}:
+            </span>
+            {refs.map((r) => (
+              <button
+                key={`${r.dialogueId}:${r.nodeId}`}
+                type="button"
+                onClick={() => handleClick(r)}
+                className="text-left rounded px-1 py-0.5 hover:bg-[var(--op-8)] transition-colors cursor-pointer"
+                style={{ color: "var(--op-80)" }}
+                title="Перейти к ноде диалога"
+              >
+                {r.name}
+              </button>
+            ))}
+          </div>,
           document.body
         )}
     </span>
@@ -807,9 +865,25 @@ function RoadmapGraph({
         if (saved) {
           // User dragged this node in a previous session — restore it verbatim instead of
           // letting the force layout re-seed it, so a reload doesn't undo manual arranging.
-          pos.set(n.id, { x: saved.x, y: saved.y, vx: 0, vy: 0 });
+          // EXCEPT for the vertical axis on quest nodes: if the quest's chapter was reassigned
+          // (or this position predates the chapter-swimlane feature entirely) since it was last
+          // dragged, a stale saved Y would otherwise pin it in the wrong band FOREVER — pinned
+          // nodes skip the chapter-targeting force completely (see tick() below), so nothing
+          // would ever correct it on its own. Clamp the restored Y into the quest's CURRENT
+          // band right away and persist that correction back, so this is a one-time fix rather
+          // than something that has to re-happen on every load.
+          let restoredY = saved.y;
+          if (n.kind === "quest" && n.entryId) {
+            const chKey = chapterKeyByQuestId.get(n.entryId);
+            const band = chKey != null ? chapterBand.get(chKey) : undefined;
+            if (band && (restoredY < band.top || restoredY > band.bottom)) {
+              restoredY = clamp(restoredY, band.top + 20, band.bottom - 20);
+              onPersistPosition(n.id, saved.x, restoredY);
+            }
+          }
+          pos.set(n.id, { x: saved.x, y: restoredY, vx: 0, vy: 0 });
           pinnedRef.current.add(n.id);
-          anchorRef.current.set(n.id, { x: saved.x, y: saved.y });
+          anchorRef.current.set(n.id, { x: saved.x, y: restoredY });
           return;
         }
         const colX = columnXById.get(n.id);
@@ -825,7 +899,7 @@ function RoadmapGraph({
         }
       }
     });
-  }, [nodes, nodeIds, columnXById]);
+  }, [nodes, nodeIds, columnXById, chapterKeyByQuestId, chapterBand, savedPositions, onPersistPosition]);
 
   // Shake feedback on any meaningful status flip — completed turning on OR off, and a quest
   // freshly becoming blocked by someone else's completion. Compares against the previous
@@ -969,8 +1043,28 @@ function RoadmapGraph({
         }
         if (pinnedRef.current.has(id)) {
           // Pinned (previously dragged) nodes stay anchored near where they were dropped,
-          // but keep a gentle perpetual bob instead of freezing dead — matches GraphView.
-          const anchor = anchorRef.current.get(id) ?? p;
+          // but keep a gentle perpetual bob instead of freezing dead — matches GraphView. A
+          // pinned QUEST node additionally gets a weak, ongoing pull toward its chapter's own
+          // band (much weaker than the anchor pull, so it doesn't fight a deliberate drag
+          // within the band) — this is what self-heals a node whose chapter got reassigned
+          // WITHOUT reloading the page (the one-time seed-time correction above only runs once,
+          // on first mount, so a live edit needs this instead).
+          let anchor = anchorRef.current.get(id) ?? p;
+          if (kindById.get(id) === "quest") {
+            const qId = id.startsWith("q:") ? id.slice(2) : id;
+            const chKey = chapterKeyByQuestId.get(qId);
+            const band = chKey != null ? chapterBand.get(chKey) : undefined;
+            if (band && (anchor.y < band.top || anchor.y > band.bottom)) {
+              // The anchor itself is stale (chapter reassigned live, without a reload) — snap
+              // it into the band once so subsequent frames pull toward the CORRECT spot instead
+              // of fighting between the old anchor and the new band forever, and persist the
+              // fix so it sticks.
+              const correctedY = clamp(anchor.y, band.top + 20, band.bottom - 20);
+              anchorRef.current.set(id, { x: anchor.x, y: correctedY });
+              anchor = anchorRef.current.get(id)!;
+              onPersistPosition(id, anchor.x, correctedY);
+            }
+          }
           p.vx += (anchor.x - p.x) * 0.03;
           p.vy += (anchor.y - p.y) * 0.03;
           p.vx *= 0.88;
@@ -1055,7 +1149,7 @@ function RoadmapGraph({
     }
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [nodes, edges, columnXById, crossChapterEdgeSet]);
+  }, [nodes, edges, columnXById, crossChapterEdgeSet, chapterKeyByQuestId, chapterBand, onPersistPosition]);
 
   const onNodePointerDown = (n: RoadmapNode, e: React.MouseEvent) => {
     e.stopPropagation();

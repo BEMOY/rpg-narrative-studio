@@ -475,6 +475,11 @@ export interface Dialogue {
   // global equivalent lives on Project.uiSettings.skipDeleteConfirmGlobal instead. Both are
   // recoverable from the new Settings panel's "reset dismissed warnings" action.
   skipDeleteConfirm?: boolean;
+  // Last camera (pan + zoom) the writer left this dialogue's canvas at, so reopening it resumes
+  // exactly where they left off instead of falling back to whatever pan/zoom the PREVIOUSLY
+  // open dialogue happened to be at (DialogueCanvas isn't remounted per-dialogue, so its pan/zoom
+  // state used to just carry over unchanged — this is what made the view look "random").
+  camera?: { x: number; y: number; zoom: number };
 }
 
 // App/Codex-wide UI preferences that aren't really "project content" (nothing here affects any
@@ -485,6 +490,9 @@ export interface UiSettings {
   tutorialsEnabled?: boolean; // default true when undefined
   dismissedTutorials?: string[]; // tour ids the writer dismissed with "не показывать снова"
   skipDeleteConfirmGlobal?: boolean;
+  // Background grid on/off for the Dialogues canvas — deliberately a single window-wide switch
+  // (not per-Dialogue) per the writer's request, unlike the per-dialogue camera above.
+  dialoguesGridEnabled?: boolean;
 }
 
 // MARKUP_TAGS moved to src/lib/dialogueMarkup.ts (now alongside the parser/renderer it drives).

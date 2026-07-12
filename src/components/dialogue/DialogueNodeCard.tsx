@@ -572,13 +572,6 @@ export function DialogueNodeCard({
       }`}
       onMouseDown={(e) => e.stopPropagation()}
     >
-      {/* No longer a fixed connection point — incoming edges now dock wherever they cross this
-          card's own bounding box along the line from their source (see boxEdgePoint in
-          DialogueCanvas.tsx), drawn as a small colored dot per edge right at that crossing
-          point. This is now purely decorative: a quiet reminder that the whole card accepts
-          drops, not just one spot. */}
-      <div className="absolute -left-1 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-emerald-400/50 border border-[var(--popover-bg)] pointer-events-none" />
-
       <div
         onMouseDown={onDragHandleDown}
         className="flex items-center gap-2 px-3 py-2 border-b border-[var(--op-10)] cursor-grab active:cursor-grabbing"

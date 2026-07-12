@@ -23,6 +23,11 @@ interface ProjectState {
   workspaceView: "gallery" | "graph" | "dialogues" | "quests";
   activeDialogueId: string | null;
   saving: boolean;
+  // Ephemeral cross-window navigation request — set when a dialogue-relation dot/chip
+  // elsewhere (e.g. the Quests roadmap card) is clicked, so DialogueCanvas can pan+ripple to
+  // the exact node once it mounts for that dialogue. Not project content, so it isn't part of
+  // Project/persisted — it's pure UI intent, cleared once consumed.
+  pendingDialogueNodeFocus: { dialogueId: string; nodeId: string; token: number } | null;
 
   loadProject: (id: string, data: Project) => void;
   closeProject: () => void;
@@ -32,6 +37,8 @@ interface ProjectState {
   showGraph: () => void;
   showDialogues: () => void;
   showQuests: () => void;
+  requestDialogueNodeFocus: (dialogueId: string, nodeId: string) => void;
+  clearDialogueNodeFocus: () => void;
   openEntry: (id: string) => void;
   closeTab: (index: number) => void;
   setActiveTab: (index: number) => void;
@@ -97,6 +104,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   hiddenCategories: [],
   workspaceView: "gallery",
   activeDialogueId: null,
+  pendingDialogueNodeFocus: null,
   saving: false,
 
   loadProject: (id, data) => {
@@ -126,6 +134,15 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   showGraph: () => set({ activeTabIndex: -1, workspaceView: "graph" }),
   showDialogues: () => set({ activeTabIndex: -1, workspaceView: "dialogues" }),
   showQuests: () => set({ activeTabIndex: -1, workspaceView: "quests" }),
+
+  requestDialogueNodeFocus: (dialogueId, nodeId) =>
+    set({
+      activeTabIndex: -1,
+      workspaceView: "dialogues",
+      activeDialogueId: dialogueId,
+      pendingDialogueNodeFocus: { dialogueId, nodeId, token: Date.now() },
+    }),
+  clearDialogueNodeFocus: () => set({ pendingDialogueNodeFocus: null }),
 
   openEntry: (id) => {
     const tabs = get().openTabs;
