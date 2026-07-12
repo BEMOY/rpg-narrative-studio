@@ -154,6 +154,14 @@ export interface Entry {
   questDependencies?: QuestDependency[]; // isQuest(category) — Codex-only, see QuestDependency
   slot?: EquipSlot; // isEquip(category)
 
+  // isEquip(category) — preset-driven stat/resistance bonuses (see StatPreset). Keyed by the
+  // StatPreset's own id, value is the slider's current position (0..preset.max). Kept
+  // separate from the older free-form `stats` field above, which stays in place for
+  // character/item/object entries.
+  statsEnabled?: boolean;
+  statValues?: Record<string, number>;
+  resistValues?: Record<string, number>;
+
   // equip/item economy + export fields — see docs/14_Export_System.md Field Mapping: Items
   value?: number;
   stack?: number;
@@ -201,6 +209,18 @@ export interface RarityObject {
   style: ColorStyle;
 }
 
+// A reusable, project-wide equipment stat/resistance definition — created once via the
+// preset library modal, then assignable (with its own per-entry value) on any equipment
+// card. Two separate libraries exist (Project.statPresets / resistPresets) since "Параметры"
+// (flat bonuses like attack/defense) and "Сопротивления" (elemental resist %) are visually and
+// conceptually distinct groups, even though they share this exact same shape.
+export interface StatPreset {
+  id: string;
+  name: string;
+  icon: string; // key into STAT_ICONS (src/lib/statIcons.ts)
+  max: number; // slider upper bound; lower bound is always 0
+}
+
 export type DialogueFlagType = "bool" | "number";
 
 // Registered per flag (see Flags manager) — missing entries default to type "bool", default
@@ -223,6 +243,8 @@ export interface Project {
   dialogueFlags: string[];
   dialogueFlagDefs: Record<string, DialogueFlagDef>;
   colorStyles: DialogueColorStyle[];
+  statPresets: StatPreset[];
+  resistPresets: StatPreset[];
 }
 
 // Mirrors the real engine's color_lookup()/color_eval()/color_eval_glyph() system

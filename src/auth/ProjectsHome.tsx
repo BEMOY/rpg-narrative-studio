@@ -18,7 +18,7 @@ import {
   type ProjectRow,
 } from "../cloud/projects";
 import { countNeedsReply, listAllReportThreads } from "../cloud/reports";
-import type { RarityObject } from "../types/database";
+import type { RarityObject, StatPreset } from "../types/database";
 
 const DEFAULT_RARITIES: RarityObject[] = [
   { uuid: "r-common", id: "common", name: "COMMON", order: 0, style: { kind: "solid", c1: "#c8cdd7" } },
@@ -26,6 +26,25 @@ const DEFAULT_RARITIES: RarityObject[] = [
   { uuid: "r-rare", id: "rare", name: "RARE", order: 2, style: { kind: "solid", c1: "#5fafff" } },
   { uuid: "r-epic", id: "epic", name: "EPIC", order: 3, style: { kind: "gradient", c1: "#be82ff", c2: "#965ae6" } },
   { uuid: "r-legendary", id: "legendary", name: "LEGENDARY", order: 4, style: { kind: "gradient_anim", c1: "#ffd25a", c2: "#ff8c28", speed: 0.004 } },
+];
+
+const DEFAULT_STAT_PRESETS: StatPreset[] = [
+  { id: "stat_attack", name: "Атака", icon: "sword", max: 100 },
+  { id: "stat_defense", name: "Защита", icon: "shield", max: 100 },
+  { id: "stat_magic", name: "Магия", icon: "sparkles", max: 100 },
+  { id: "stat_speed", name: "Скорость", icon: "wind", max: 100 },
+  { id: "stat_luck", name: "Удача", icon: "clover", max: 100 },
+  { id: "stat_crit", name: "Крит %", icon: "target", max: 100 },
+  { id: "stat_dodge", name: "Уклон %", icon: "footprints", max: 100 },
+  { id: "stat_health", name: "Здоровье", icon: "heart", max: 999 },
+  { id: "stat_mana", name: "Мана", icon: "droplet", max: 999 },
+];
+
+const DEFAULT_RESIST_PRESETS: StatPreset[] = [
+  { id: "res_fire", name: "Огонь", icon: "flame", max: 100 },
+  { id: "res_ice", name: "Лёд", icon: "snowflake", max: 100 },
+  { id: "res_lightning", name: "Молния", icon: "zap", max: 100 },
+  { id: "res_poison", name: "Яд", icon: "biohazard", max: 100 },
 ];
 
 export function ProjectsHome({ onOpen }: { onOpen: (row: ProjectRow) => void }) {
@@ -93,6 +112,8 @@ export function ProjectsHome({ onOpen }: { onOpen: (row: ProjectRow) => void }) 
         dialogueFlags: [],
         dialogueFlagDefs: {},
         colorStyles: [],
+        statPresets: DEFAULT_STAT_PRESETS,
+        resistPresets: DEFAULT_RESIST_PRESETS,
       });
       onOpen(row);
     } catch (e: any) {

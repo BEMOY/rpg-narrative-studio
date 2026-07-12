@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Category, Dialogue, DialogueChoice, DialogueColorStyle, DialogueFlagDef, DialogueLine, DialogueNode, Entry, Project } from "../types/database";
+import type { Category, Dialogue, DialogueChoice, DialogueColorStyle, DialogueFlagDef, DialogueLine, DialogueNode, Entry, Project, StatPreset } from "../types/database";
 import { sampleProject } from "../data/sampleProject";
 import { saveProjectData } from "../cloud/projects";
 import { createChoice, createDialogue as makeDialogue, createLine, createNode, normalizeDialogue } from "../lib/dialogueDefaults";
@@ -73,6 +73,8 @@ interface ProjectState {
   setColorStyle: (style: DialogueColorStyle) => void;
   removeColorStyle: (name: string) => void;
   importDialogue: (dialogue: Dialogue, folderId: string | null) => void;
+  addStatPreset: (kind: "stat" | "resist", preset: Omit<StatPreset, "id">) => void;
+  removeStatPreset: (kind: "stat" | "resist", id: string) => void;
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -101,6 +103,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       dialogueFlags: data.dialogueFlags ?? [],
       dialogueFlagDefs: data.dialogueFlagDefs ?? {},
       colorStyles: data.colorStyles ?? [],
+      statPresets: data.statPresets ?? [],
+      resistPresets: data.resistPresets ?? [],
       entries: data.entries.map((e) => ({ ...e, tags: e.tags ?? [], references: e.references ?? [] })),
     };
     set({ projectId: id, project: safe, openTabs: [], activeTabIndex: -1, activeCategory: "all", activeDialogueId: null });
@@ -601,6 +605,25 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   importDialogue: (dialogue, folderId) => {
     const normalized = { ...normalizeDialogue(dialogue), id: nextId("dlg"), folderId };
     set((s) => ({ project: { ...s.project, dialogues: [...s.project.dialogues, normalized] }, activeDialogueId: normalized.id }));
+    triggerAutosavePulse(set);
+  },
+
+  // Stat/resist presets are project-wide (shared across every equipment card, see
+  // src/components/editors/EquipmentPresetsModal.tsx) rather than per-entry — same pattern as
+  // rarities/chapters. Removing a preset from the library intentionally leaves any
+  // Entry.statValues/resistValues entries pointing at its old id in place but orphaned; they're
+  // simply never rendered again since the card only shows values for presets it can still find
+  // in the library, so no extra cleanup pass is needed.
+  addStatPreset: (kind, preset) => {
+    const key = kind === "stat" ? "statPresets" : "resistPresets";
+    const withId: StatPreset = { ...preset, id: nextId(kind === "stat" ? "stat" : "res") };
+    set((s) => ({ project: { ...s.project, [key]: [...s.project[key], withId] } }));
+    triggerAutosavePulse(set);
+  },
+
+  removeStatPreset: (kind, id) => {
+    const key = kind === "stat" ? "statPresets" : "resistPresets";
+    set((s) => ({ project: { ...s.project, [key]: s.project[key].filter((p) => p.id !== id) } }));
     triggerAutosavePulse(set);
   },
 }));

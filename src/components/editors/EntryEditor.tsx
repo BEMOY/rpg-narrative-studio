@@ -1,4 +1,4 @@
-import { Trash2, Plus, X, Upload, ImageOff, ChevronDown } from "lucide-react";
+import { Trash2, Plus, X, Upload, ImageOff, ChevronDown, Sword, Shield, HardHat, Gem } from "lucide-react";
 import { useRef, useState } from "react";
 import type { DialogueSide, DialogueSpeakerData, Entry, EquipSlot, Objective, QuestDependency, QuestDependencyKind, QuestRewards, Relationship } from "../../types/database";
 import { canHaveStats, hasRelationship, isEquip, isQuest } from "../../types/database";
@@ -7,8 +7,13 @@ import { resizeImageFile } from "../../lib/image";
 import { usePasteImage } from "../../lib/usePasteImage";
 import { SearchSelect } from "../dialogue/SearchSelect";
 import { nextId } from "../../lib/mapDefaults";
+import { statIcon } from "../../lib/statIcons";
+import { EquipmentPresetsModal } from "./EquipmentPresetsModal";
+import type { StatPreset } from "../../types/database";
 
-const SLOTS: EquipSlot[] = ["head", "body", "weapon", "offhand"];
+const SLOTS: EquipSlot[] = ["weapon", "body", "head", "offhand"];
+const SLOT_LABEL: Record<EquipSlot, string> = { weapon: "Оружие", body: "Броня", head: "Шлем", offhand: "Аксессуар" };
+const SLOT_ICON: Record<EquipSlot, React.ComponentType<any>> = { weapon: Sword, body: Shield, head: HardHat, offhand: Gem };
 const RELATIONSHIPS: Relationship[] = ["friend", "neutral", "enemy"];
 const SUGGESTED_STATS = ["attack", "defense", "magic", "speed", "luck", "crit", "dodge", "capacity", "level", "xp", "xp_max"];
 
@@ -41,17 +46,26 @@ export function EntryEditor({ entry, onDone }: { entry: Entry; onDone: () => voi
       <TagsSection entry={entry} />
 
       {isEquip(entry.category) && (
-        <Section title="Slot & Rarity">
-          <Field label="Slot">
-            <select className="input" value={entry.slot ?? "weapon"} onChange={(e) => updateEntry(entry.id, { slot: e.target.value as EquipSlot })}>
-              {SLOTS.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Rarity">
+        <Section title="Слот экипировки">
+          <div className="flex gap-2">
+            {SLOTS.map((s) => {
+              const Icon = SLOT_ICON[s];
+              const active = (entry.slot ?? "weapon") === s;
+              return (
+                <button
+                  key={s}
+                  onClick={() => updateEntry(entry.id, { slot: s })}
+                  className={`flex-1 flex flex-col items-center gap-1.5 py-2.5 rounded-md border transition-colors ${
+                    active ? "border-accent bg-accent/10 text-accent" : "border-[var(--op-10)] text-[var(--op-45)] hover:text-[var(--op-75)] hover:border-[var(--op-20)]"
+                  }`}
+                >
+                  <Icon size={16} />
+                  <span className="text-[11px]">{SLOT_LABEL[s]}</span>
+                </button>
+              );
+            })}
+          </div>
+          <Field label="Редкость">
             <select className="input" value={entry.rarityId ?? "common"} onChange={(e) => updateEntry(entry.id, { rarityId: e.target.value })}>
               {rarities
                 .slice()
@@ -65,6 +79,8 @@ export function EntryEditor({ entry, onDone }: { entry: Entry; onDone: () => voi
           </Field>
         </Section>
       )}
+
+      {isEquip(entry.category) && <EquipStatsSection entry={entry} />}
 
       {(entry.category === "item" || entry.category === "equipment") && (
         <Section title="Economy">
@@ -98,7 +114,7 @@ export function EntryEditor({ entry, onDone }: { entry: Entry; onDone: () => voi
         </Section>
       )}
 
-      {canHaveStats(entry.category) && (
+      {canHaveStats(entry.category) && !isEquip(entry.category) && (
         <Section title="Stats">
           <div className="grid grid-cols-2 gap-3">
             {SUGGESTED_STATS.map((key) => (
@@ -141,6 +157,116 @@ export function EntryEditor({ entry, onDone }: { entry: Entry; onDone: () => voi
         </div>
       </div>
     </div>
+  );
+}
+
+// One "Параметры" or "Сопротивления" row group — same shape for both, just a different
+// preset library and value bag on the entry (statValues vs resistValues).
+function EquipStatGroup({
+  entry,
+  kind,
+  title,
+}: {
+  entry: Entry;
+  kind: "stat" | "resist";
+  title: string;
+}) {
+  const updateEntry = useProjectStore((s) => s.updateEntry);
+  const presets = useProjectStore((s) => (kind === "stat" ? s.project.statPresets : s.project.resistPresets));
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  const values = (kind === "stat" ? entry.statValues : entry.resistValues) ?? {};
+  const valuesKey = kind === "stat" ? "statValues" : "resistValues";
+  const assignedIds = Object.keys(values);
+  const assignedPresets = assignedIds.map((id) => presets.find((p) => p.id === id)).filter((p): p is StatPreset => Boolean(p));
+
+  const setValue = (id: string, v: number) => updateEntry(entry.id, { [valuesKey]: { ...values, [id]: v } });
+  const removeValue = (id: string) => {
+    const next = { ...values };
+    delete next[id];
+    updateEntry(entry.id, { [valuesKey]: next });
+  };
+  const pick = (p: StatPreset) => {
+    if (Object.prototype.hasOwnProperty.call(values, p.id)) return;
+    updateEntry(entry.id, { [valuesKey]: { ...values, [p.id]: Math.round(p.max / 2) } });
+  };
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <span className="text-xs uppercase tracking-wider text-[var(--op-35)]">{title}</span>
+      </div>
+      <div className="space-y-1.5">
+        {assignedPresets.map((p) => {
+          const Icon = statIcon(p.icon);
+          const value = values[p.id] ?? 0;
+          return (
+            <div key={p.id} className="flex items-center gap-2 rounded-md bg-[var(--op-4)] px-2.5 py-1.5">
+              <span className="w-6 h-6 shrink-0 rounded-md grid place-items-center bg-[var(--op-8)] text-accent">
+                <Icon size={12} />
+              </span>
+              <span className="text-xs text-[var(--op-70)] w-20 shrink-0 truncate">{p.name}</span>
+              <input
+                type="range"
+                min={0}
+                max={p.max}
+                value={value}
+                onChange={(e) => setValue(p.id, Number(e.target.value))}
+                className="flex-1 min-w-[50px]"
+              />
+              <input
+                type="number"
+                min={0}
+                max={p.max}
+                value={value}
+                onChange={(e) => setValue(p.id, Math.max(0, Math.min(p.max, Number(e.target.value) || 0)))}
+                className="input w-14 text-xs py-1 shrink-0"
+              />
+              <button onClick={() => removeValue(p.id)} className="opacity-40 hover:opacity-100 hover:text-red-300 shrink-0">
+                <X size={13} />
+              </button>
+            </div>
+          );
+        })}
+        <button
+          onClick={() => setPickerOpen(true)}
+          className="w-full flex items-center justify-center gap-1.5 text-xs py-1.5 rounded-md border border-dashed border-[var(--op-15)] text-[var(--op-40)] hover:text-[var(--op-70)] hover:border-[var(--op-30)]"
+        >
+          <Plus size={11} /> Добавить
+        </button>
+      </div>
+      {pickerOpen && (
+        <EquipmentPresetsModal kind={kind} assignedIds={assignedIds} onPick={pick} onClose={() => setPickerOpen(false)} />
+      )}
+    </div>
+  );
+}
+
+function EquipStatsSection({ entry }: { entry: Entry }) {
+  const updateEntry = useProjectStore((s) => s.updateEntry);
+  const enabled = entry.statsEnabled ?? false;
+
+  return (
+    <Section title="Характеристики">
+      <label className="flex items-center gap-2.5 cursor-pointer select-none w-fit">
+        <button
+          type="button"
+          onClick={() => updateEntry(entry.id, { statsEnabled: !enabled })}
+          className="relative w-9 h-[18px] rounded-full transition-colors shrink-0"
+          style={{ background: enabled ? "#cda559" : "var(--op-15)" }}
+        >
+          <span className={`absolute top-[2px] w-[14px] h-[14px] rounded-full bg-white shadow transition-all ${enabled ? "left-[17px]" : "left-[2px]"}`} />
+        </button>
+        <span className="text-sm text-[var(--op-70)]">Включить характеристики</span>
+      </label>
+
+      {enabled && (
+        <div className="space-y-4 pt-1">
+          <EquipStatGroup entry={entry} kind="stat" title="Параметры" />
+          <EquipStatGroup entry={entry} kind="resist" title="Сопротивления (%)" />
+        </div>
+      )}
+    </Section>
   );
 }
 

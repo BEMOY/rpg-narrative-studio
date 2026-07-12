@@ -1,4 +1,4 @@
-import type { Entry, Project, RarityObject } from "../types/database";
+import type { Entry, Project, RarityObject, StatPreset } from "../types/database";
 
 // Seeded from the user's existing scr_rarity_init GML — see docs/12_Editors.md (Rarity Editor)
 const rarities: RarityObject[] = [
@@ -14,6 +14,27 @@ const rarities: RarityObject[] = [
     style: { kind: "gradient_anim", c1: "#ffd25a", c2: "#ff8c28", speed: 0.004 },
   },
   { uuid: "r-cursed", id: "cursed", name: "CURSED", order: 6, style: { kind: "pulse", c1: "#aa46dc", c2: "#501478", speed: 0.004 } },
+];
+
+// A sensible starter library so a fresh project isn't a totally blank slate — freely
+// editable/removable from the equipment stats preset modal (see EquipmentPresetsModal.tsx).
+const statPresets: StatPreset[] = [
+  { id: "stat_attack", name: "Атака", icon: "sword", max: 100 },
+  { id: "stat_defense", name: "Защита", icon: "shield", max: 100 },
+  { id: "stat_magic", name: "Магия", icon: "sparkles", max: 100 },
+  { id: "stat_speed", name: "Скорость", icon: "wind", max: 100 },
+  { id: "stat_luck", name: "Удача", icon: "clover", max: 100 },
+  { id: "stat_crit", name: "Крит %", icon: "target", max: 100 },
+  { id: "stat_dodge", name: "Уклон %", icon: "footprints", max: 100 },
+  { id: "stat_health", name: "Здоровье", icon: "heart", max: 999 },
+  { id: "stat_mana", name: "Мана", icon: "droplet", max: 999 },
+];
+
+const resistPresets: StatPreset[] = [
+  { id: "res_fire", name: "Огонь", icon: "flame", max: 100 },
+  { id: "res_ice", name: "Лёд", icon: "snowflake", max: 100 },
+  { id: "res_lightning", name: "Молния", icon: "zap", max: 100 },
+  { id: "res_poison", name: "Яд", icon: "biohazard", max: 100 },
 ];
 
 function base(partial: Partial<Entry> & Pick<Entry, "uuid" | "id" | "category" | "name">): Entry {
@@ -223,4 +244,6 @@ export const sampleProject: Project = {
   dialogueFlags: [],
   dialogueFlagDefs: {},
   colorStyles: [],
+  statPresets,
+  resistPresets,
 };
