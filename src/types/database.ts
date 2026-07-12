@@ -273,6 +273,11 @@ export interface Project {
   // count (see chapterBand in QuestsView.tsx); width is manual since "how much horizontal room
   // this chapter's dependency chain needs" isn't something a formula can guess well.
   questGraphChapterWidths?: Record<string, number>;
+  // Writer-stretched height for a chapter's frame, ON TOP of its auto-computed proportional
+  // height (see chapterBand in QuestsView.tsx) — this only ever GROWS a band beyond its fair
+  // share, never shrinks it below (unlike width, which can be narrowed down to a fit-content
+  // minimum too), since height already has a sensible auto-computed default.
+  questGraphChapterHeights?: Record<string, number>;
   uiSettings?: UiSettings;
 }
 

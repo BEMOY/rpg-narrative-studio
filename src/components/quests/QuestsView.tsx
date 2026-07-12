@@ -411,6 +411,7 @@ function ChapterFrame({
   zoom,
   minWidth,
   onResize,
+  onResizeHeight,
 }: {
   chapterKey: string;
   band: { top: number; bottom: number; left: number; width: number; label: string };
@@ -418,10 +419,15 @@ function ChapterFrame({
   zoom: number;
   minWidth: number;
   onResize: (width: number) => void;
+  onResizeHeight: (height: number) => void;
 }) {
   const dragRef = useRef<{ startClientX: number; startWidth: number } | null>(null);
   const [liveWidth, setLiveWidth] = useState<number | null>(null);
   const width = liveWidth ?? band.width;
+  const bandHeight = band.bottom - band.top;
+  const dragHRef = useRef<{ startClientY: number; startHeight: number } | null>(null);
+  const [liveHeight, setLiveHeight] = useState<number | null>(null);
+  const height = liveHeight ?? bandHeight;
 
   const onHandleDown = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -445,11 +451,35 @@ function ChapterFrame({
     window.addEventListener("mouseup", up);
   };
 
+  // Height only ever STRETCHES past its auto-computed size (see chapterBand) — dragging down
+  // grows it, there's no dragging back below the auto value here. Note: since chapters below
+  // this one are stacked directly under it, they only shift down once the drag actually
+  // commits (onResizeHeight, on mouseup) — a brief visual overlap with the next chapter while
+  // still dragging is an accepted trade-off for keeping this a simple, self-contained preview.
+  const onHandleDownV = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragHRef.current = { startClientY: e.clientY, startHeight: bandHeight };
+    const move = (ev: MouseEvent) => {
+      if (!dragHRef.current) return;
+      const dy = (ev.clientY - dragHRef.current.startClientY) / zoom;
+      setLiveHeight(Math.max(bandHeight, dragHRef.current.startHeight + dy));
+    };
+    const up = () => {
+      dragHRef.current = null;
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      setLiveHeight((h) => {
+        if (h != null) onResizeHeight(h);
+        return null;
+      });
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
+
   return (
-    <div
-      className="absolute pointer-events-none rounded-lg"
-      style={{ left: band.left, top: band.top, width, height: band.bottom - band.top }}
-    >
+    <div className="absolute pointer-events-none rounded-lg" style={{ left: band.left, top: band.top, width, height }}>
       <div className="absolute inset-0 rounded-lg" style={{ background: `${color}0d`, border: `1px solid ${color}33` }} />
       <div
         className="absolute left-3 top-2 text-[11px] uppercase tracking-wider font-medium px-2 py-0.5 rounded-full"
@@ -457,9 +487,9 @@ function ChapterFrame({
       >
         {band.label}
       </div>
-      {/* Resize handle — a slim strip on the frame's right edge, generously hit-testable
-          (wider invisible hit area than its visible sliver) so it's easy to grab without
-          fighting the graph's own pan-drag right next to it. */}
+      {/* Resize handles — slim strips on the frame's right and bottom edges, generously
+          hit-testable (wider invisible hit area than their visible sliver) so they're easy to
+          grab without fighting the graph's own pan-drag right next to them. */}
       <div
         onMouseDown={onHandleDown}
         title="Потяните, чтобы изменить ширину главы"
@@ -467,6 +497,16 @@ function ChapterFrame({
       >
         <div
           className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-0.5 rounded-full opacity-0 group-hover:opacity-70 transition-opacity"
+          style={{ background: color }}
+        />
+      </div>
+      <div
+        onMouseDown={onHandleDownV}
+        title="Потяните вниз, чтобы растянуть высоту главы"
+        className="absolute left-0 right-0 h-3 -bottom-1.5 cursor-ns-resize pointer-events-auto group"
+      >
+        <div
+          className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-0.5 rounded-full opacity-0 group-hover:opacity-70 transition-opacity"
           style={{ background: color }}
         />
       </div>
@@ -856,6 +896,8 @@ function RoadmapGraph({
   onSetGridEnabled,
   savedChapterWidths,
   onSetChapterWidth,
+  savedChapterHeights,
+  onSetChapterHeight,
 }: {
   nodes: RoadmapNode[];
   edges: RoadmapEdge[];
@@ -880,6 +922,8 @@ function RoadmapGraph({
   onSetGridEnabled: (enabled: boolean) => void;
   savedChapterWidths: Record<string, number>;
   onSetChapterWidth: (chapterKey: string, width: number) => void;
+  savedChapterHeights: Record<string, number>;
+  onSetChapterHeight: (chapterKey: string, height: number) => void;
 }) {
   const posRef = useRef<Map<string, NodePos>>(new Map());
   const pinnedRef = useRef<Set<string>>(new Set());
@@ -891,6 +935,20 @@ function RoadmapGraph({
   // never by dragging.
   const shakeRef = useRef<Map<string, number>>(new Map());
   const prevStatusRef = useRef<Map<string, QuestStatus>>(new Map());
+  // Cascade-revert scheduling + visual snapshot — see the effect below for the full
+  // explanation. `cascadeScheduledRef` tracks which quest ids currently have an in-flight
+  // staggered revert (so re-running the effect doesn't restart/cancel everyone else's
+  // countdown), `cascadeTimersRef` holds the actual setTimeout handles (so a quest can have its
+  // pending revert CANCELED if it stops being orphaned before its timer fires — e.g. the parent
+  // got re-completed by hand in the meantime), and `cascadeSnapshotRef` freezes each pending
+  // quest's pre-revert entry so it keeps rendering as "still completed" until the moment its
+  // own timer actually lands, instead of the whole chain visually flipping to locked at once
+  // (status is a pure, synchronous function of the dependency graph — it updates instantly for
+  // the WHOLE chain the moment the root toggle changes, well before any individual revert has
+  // actually fired).
+  const cascadeScheduledRef = useRef<Set<string>>(new Set());
+  const cascadeTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const cascadeSnapshotRef = useRef<Map<string, Entry>>(new Map());
   // Real React state (not a ref) since this drives an actual CSS opacity transition for the
   // "blocked" red-X pop, rather than feeding the imperative physics loop.
   const [blockFlash, setBlockFlash] = useState<Map<string, "in" | "out">>(new Map());
@@ -984,7 +1042,11 @@ function RoadmapGraph({
     const remaining = Math.max(0, usableH - flooredTotal);
     const flexIdx = chapterOrder.map((_, i) => i).filter((i) => !flooredIdx.has(i));
     const flexWeightSum = flexIdx.reduce((sum, i) => sum + weights[i], 0) || 1;
-    const heights = chapterOrder.map((_, i) => (flooredIdx.has(i) ? MIN_BAND_H : (remaining * weights[i]) / flexWeightSum));
+    const autoHeights = chapterOrder.map((_, i) => (flooredIdx.has(i) ? MIN_BAND_H : (remaining * weights[i]) / flexWeightSum));
+    // Writer-stretched height only ever GROWS a band past its auto-computed fair share —
+    // there's no "fit content" floor to fight here like width has, since the proportional
+    // split above is already a sensible default on its own.
+    const heights = chapterOrder.map((key, i) => Math.max(autoHeights[i], savedChapterHeights[key] ?? 0));
     let cursor = CHAPTER_BAND_PAD;
     chapterOrder.forEach((key, i) => {
       const bandH = heights[i];
@@ -997,7 +1059,26 @@ function RoadmapGraph({
       cursor = bottom;
     });
     return m;
-  }, [chapterOrder, questCountByChapter, chapterMinWidth, savedChapterWidths]);
+  }, [chapterOrder, questCountByChapter, chapterMinWidth, savedChapterWidths, savedChapterHeights]);
+  // Union bounding box of every chapter's actual frame — used to size the background grid so
+  // it covers exactly the chapter areas' footprint (no more, no less), instead of the fixed
+  // WIDTH/HEIGHT canvas constants, which no longer match once chapters can grow taller/wider
+  // than their auto-computed defaults via the resize handles.
+  const chapterAreaBounds = useMemo(() => {
+    let left = Infinity;
+    let top = Infinity;
+    let right = -Infinity;
+    let bottom = -Infinity;
+    for (const band of chapterBand.values()) {
+      left = Math.min(left, band.left);
+      top = Math.min(top, band.top);
+      right = Math.max(right, band.right);
+      bottom = Math.max(bottom, band.bottom);
+    }
+    if (!isFinite(left)) return { left: 0, top: 0, width: WIDTH, height: HEIGHT };
+    return { left, top, width: right - left, height: bottom - top };
+  }, [chapterBand]);
+
   const CHAPTER_COLORS = ["#8b7bff", "#5fc9c9", "#e0a95f", "#6fb35c", "#d65a6b", "#5b8dff", "#c98ae0"];
   const chapterColor = (key: string) => CHAPTER_COLORS[Math.max(0, chapterOrder.indexOf(key)) % CHAPTER_COLORS.length];
 
@@ -1072,34 +1153,72 @@ function RoadmapGraph({
   // "пройден" toggle, or manually ticking subtasks) marking it complete, while ITS OWN unlock
   // gates are no longer satisfied — e.g. its prerequisite quest just got un-completed in this
   // same what-if sandbox. computeQuestStatuses already reflects that mismatch in the STATUS it
-  // reports (see the comment there), but the underlying objective DATA doesn't fix itself on
-  // its own — this is what actually rolls it back to default, so the quest genuinely re-locks
-  // instead of just LOOKING locked while still secretly holding finished objective data. Since
-  // computeQuestStatuses resolves the entire dependency fixpoint synchronously in one pass, the
-  // whole orphaned chain (not just the immediate child) is already known the first time this
-  // runs. The ripple plays from the FAR end of the chain backward toward whatever quest was
-  // actually toggled — the deepest/farthest descendant reverts first, then its own parent, and
-  // so on up to the quest immediately downstream of the toggle — with the very first hop held
-  // for a full second (long enough to actually register as "something happened") and each
-  // subsequent gap shrinking geometrically, so the cadence visibly speeds up as it goes rather
-  // than everything firing in a barely-distinguishable instant. The existing status-flip shake
-  // effect right below picks up each staggered revert as it lands and shakes that card at
-  // exactly that moment, for free.
+  // reports, but the underlying objective DATA doesn't fix itself on its own — this is what
+  // actually rolls it back to default, so the quest genuinely re-locks instead of just LOOKING
+  // locked while still secretly holding finished objective data.
+  //
+  // Two things this has to get right that a naive "find orphans, schedule reverts" effect
+  // doesn't:
+  //  1. computeQuestStatuses resolves the ENTIRE dependency fixpoint synchronously — the moment
+  //     the root toggle changes, EVERY downstream quest's displayed status already flips to
+  //     "locked" in that same render, long before any staggered revert has actually fired. If
+  //     rendering just reads `statuses` directly, the whole chain visually snaps to locked
+  //     instantly and the staggered timing becomes invisible. cascadeSnapshotRef freezes each
+  //     newly-orphaned quest's entry (still showing "completed") the moment it's detected, and
+  //     the render below (where `entry`/`status` are read for each card) uses that snapshot
+  //     instead of the live value for as long as the quest stays in cascadeScheduledRef — so a
+  //     card only visually flips at the exact moment ITS OWN staggered timer lands.
+  //  2. This effect re-runs every time `quests` changes — including because ITS OWN scheduled
+  //     onSetAllObjectives call just fired. Without tracking what's already scheduled, that
+  //     re-run would treat every STILL-orphaned quest as "newly" orphaned and restart their
+  //     countdown from scratch, and — worse — if a quest stops being orphaned mid-flight (the
+  //     writer re-completed the parent by hand before this quest's own timer landed) there was
+  //     no way to cancel its now-stale pending revert, so it could fire anyway and leave a
+  //     freshly-valid quest incorrectly un-completed (or vice versa, leave a should-have-reverted
+  //     quest's stale "done" objective data around to silently reappear as "completed" the next
+  //     time its gate happens to be satisfied again). cascadeScheduledRef/cascadeTimersRef make
+  //     this idempotent: already-scheduled ids are left alone on re-runs, and anything that's no
+  //     longer orphaned gets its pending timer explicitly canceled and its snapshot dropped.
   useEffect(() => {
     const orphaned = quests.filter((q) => objectivesAllDone(q) && statuses.get(q.id) !== "completed");
-    if (orphaned.length === 0) return;
+    const orphanedIds = new Set(orphaned.map((q) => q.id));
+
+    for (const id of Array.from(cascadeScheduledRef.current)) {
+      if (!orphanedIds.has(id)) {
+        cascadeScheduledRef.current.delete(id);
+        const t = cascadeTimersRef.current.get(id);
+        if (t) clearTimeout(t);
+        cascadeTimersRef.current.delete(id);
+        cascadeSnapshotRef.current.delete(id);
+      }
+    }
+
+    const newlyOrphaned = orphaned.filter((q) => !cascadeScheduledRef.current.has(q.id));
+    if (newlyOrphaned.length === 0) return;
+
     // Deepest/farthest first, shallowest (closest to whatever was actually toggled) last.
-    const sorted = [...orphaned].sort((a, b) => (depths.get(b.id) ?? 0) - (depths.get(a.id) ?? 0));
+    const sorted = [...newlyOrphaned].sort((a, b) => (depths.get(b.id) ?? 0) - (depths.get(a.id) ?? 0));
     const GAP_START = 1000; // ms — the first, most noticeable hop
     const GAP_FLOOR = 90;
     const GAP_DECAY = 0.6; // each subsequent gap is ~60% of the previous one — an accelerating cadence
     let cumulative = 0;
-    const timers = sorted.map((q, i) => {
-      const gap = Math.max(GAP_FLOOR, GAP_START * Math.pow(GAP_DECAY, i));
+    for (const q of sorted) {
+      cascadeScheduledRef.current.add(q.id);
+      cascadeSnapshotRef.current.set(q.id, q);
+      const gap = Math.max(GAP_FLOOR, GAP_START * Math.pow(GAP_DECAY, cascadeScheduledRef.current.size - 1));
       cumulative += gap;
-      return setTimeout(() => onSetAllObjectives(q.id, false), cumulative);
-    });
-    return () => timers.forEach(clearTimeout);
+      const timer = setTimeout(() => {
+        cascadeScheduledRef.current.delete(q.id);
+        cascadeTimersRef.current.delete(q.id);
+        cascadeSnapshotRef.current.delete(q.id);
+        onSetAllObjectives(q.id, false);
+        // Shake exactly now — the moment this specific card's snapshot is dropped and it
+        // actually catches up to its true (locked) status — instead of relying on the generic
+        // status-flip shake effect, which would otherwise fire for the whole chain at once.
+        shakeRef.current.set(`q:${q.id}`, 22);
+      }, cumulative);
+      cascadeTimersRef.current.set(q.id, timer);
+    }
   }, [quests, statuses, onSetAllObjectives, depths]);
 
   // Shake feedback on any meaningful status flip — completed turning on OR off, and a quest
@@ -1115,7 +1234,13 @@ function RoadmapGraph({
       if (!prev.has(id)) continue; // skip the very first computation (initial load, no real "transition" yet)
       const completedChanged = (status === "completed") !== (prevStatus === "completed");
       const freshlyBlocked = status === "blocked" && prevStatus !== "blocked";
-      if (completedChanged || freshlyBlocked) {
+      // A completedChanged transition caused by cascade-revert is intentionally NOT shaken
+      // here — that quest is still showing its frozen pre-revert snapshot (see
+      // cascadeSnapshotRef above) and gets its own shake fired at the exact moment its
+      // staggered timer actually lands, from inside the cascade-scheduling effect itself.
+      // Shaking it here too would fire the animation immediately, well before the card has
+      // visually caught up, defeating the whole point of staggering it.
+      if ((completedChanged && !cascadeScheduledRef.current.has(id)) || freshlyBlocked) {
         shakeRef.current.set(`q:${id}`, 22);
       }
       if (freshlyBlocked) {
@@ -1524,12 +1649,29 @@ function RoadmapGraph({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusRequest]);
 
+  // Full transitive closure over the edges graph (BFS in both directions), not just direct
+  // one-hop neighbors — hovering a quest highlights its ENTIRE chain, ancestors and
+  // descendants alike, "inheriting" down through however many hops it takes, instead of only
+  // lighting up whichever single quest is directly adjacent to it.
   const connected = useMemo(() => {
     if (!hoveredId) return null;
-    const s = new Set<string>([hoveredId]);
+    const adjacency = new Map<string, string[]>();
     for (const e of edges) {
-      if (e.from === hoveredId) s.add(e.to);
-      if (e.to === hoveredId) s.add(e.from);
+      if (!adjacency.has(e.from)) adjacency.set(e.from, []);
+      if (!adjacency.has(e.to)) adjacency.set(e.to, []);
+      adjacency.get(e.from)!.push(e.to);
+      adjacency.get(e.to)!.push(e.from);
+    }
+    const s = new Set<string>([hoveredId]);
+    const queue = [hoveredId];
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      for (const next of adjacency.get(cur) ?? []) {
+        if (!s.has(next)) {
+          s.add(next);
+          queue.push(next);
+        }
+      }
     }
     return s;
   }, [hoveredId, edges]);
@@ -1674,16 +1816,25 @@ function RoadmapGraph({
                   zoom={zoom}
                   minWidth={chapterMinWidth.get(key) ?? 320}
                   onResize={(w) => onSetChapterWidth(key, w)}
+                  onResizeHeight={(h) => onSetChapterHeight(key, h)}
                 />
               );
             })}
             {gridEnabled && (
               <div
-                className="absolute inset-0 pointer-events-none"
+                className="absolute pointer-events-none"
                 style={{
+                  left: chapterAreaBounds.left,
+                  top: chapterAreaBounds.top,
+                  width: chapterAreaBounds.width,
+                  height: chapterAreaBounds.height,
                   backgroundImage:
                     "linear-gradient(to right, var(--op-8) 1px, transparent 1px), linear-gradient(to bottom, var(--op-8) 1px, transparent 1px)",
                   backgroundSize: `${GRID_SIZE}px ${GRID_SIZE}px`,
+                  // Keep the grid lines aligned to world-space (not restarting at 0,0 of this
+                  // cropped box), so cells line up with the same grid a node would snap to
+                  // regardless of where the chapter area's bounding box happens to start.
+                  backgroundPosition: `${-chapterAreaBounds.left}px ${-chapterAreaBounds.top}px`,
                 }}
               />
             )}
@@ -1747,7 +1898,14 @@ function RoadmapGraph({
                 if (e.styleKind) {
                   const sourceNode = nodeById.get(e.from);
                   const targetNode = nodeById.get(e.to);
-                  const sourceStatus = sourceNode?.entryId ? statuses.get(sourceNode.entryId) : undefined;
+                  // Same pending-cascade override as the card render above — an edge leading
+                  // OUT of a quest that's still visually showing "completed" (its own revert
+                  // hasn't landed yet) should keep flowing/green too, not desync from its source.
+                  const sourceStatus = sourceNode?.entryId
+                    ? cascadeSnapshotRef.current.has(sourceNode.entryId)
+                      ? "completed"
+                      : statuses.get(sourceNode.entryId)
+                    : undefined;
                   const sourceDone = sourceStatus === "completed";
                   patternId = `quest-dep-stripe-${i}`;
                   if (e.styleKind === "block" && sourceDone) {
@@ -1878,8 +2036,15 @@ function RoadmapGraph({
               };
 
               if (n.kind === "quest" && n.entryId) {
-                const entry = entryById.get(n.entryId);
-                const status = statuses.get(n.entryId) ?? "available";
+                // While a cascade-revert is pending for this quest (see cascadeSnapshotRef in
+                // the effect above), keep rendering its FROZEN pre-revert entry/status instead
+                // of the live ones — the live `statuses` map already flipped this quest to
+                // "locked" the instant the root toggle changed (that computation is a pure,
+                // synchronous function of the whole dependency graph), but this specific card
+                // shouldn't visually catch up until its own staggered timer actually lands.
+                const pendingEntry = cascadeSnapshotRef.current.get(n.entryId);
+                const entry = pendingEntry ?? entryById.get(n.entryId);
+                const status = pendingEntry ? "completed" : statuses.get(n.entryId) ?? "available";
                 // Reflect the DERIVED status on the toggle, not just the raw manual set — a
                 // quest whose objectives are all finished should show as "on" even before
                 // anyone touches its toggle.
@@ -2174,6 +2339,7 @@ export function QuestsView() {
   const setQuestGraphPosition = useProjectStore((s) => s.setQuestGraphPosition);
   const setQuestGraphGridEnabled = useProjectStore((s) => s.setQuestGraphGridEnabled);
   const setQuestChapterWidth = useProjectStore((s) => s.setQuestChapterWidth);
+  const setQuestChapterHeight = useProjectStore((s) => s.setQuestChapterHeight);
   const dialogueFlagDefs = useProjectStore((s) => s.project.dialogueFlagDefs);
   const { nodes, edges, quests } = useQuestRoadmap();
   const dialogueLinks = useDialogueQuestLinks(quests, dialogues);
@@ -2389,6 +2555,8 @@ export function QuestsView() {
             onSetGridEnabled={setQuestGraphGridEnabled}
             savedChapterWidths={project.questGraphChapterWidths ?? {}}
             onSetChapterWidth={setQuestChapterWidth}
+            savedChapterHeights={project.questGraphChapterHeights ?? {}}
+            onSetChapterHeight={setQuestChapterHeight}
           />
         </div>
       </div>

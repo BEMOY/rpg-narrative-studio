@@ -96,6 +96,7 @@ interface ProjectState {
   clearQuestGraphPositions: () => void;
   setQuestGraphGridEnabled: (enabled: boolean) => void;
   setQuestChapterWidth: (chapterKey: string, width: number) => void;
+  setQuestChapterHeight: (chapterKey: string, height: number) => void;
   updateUiSettings: (patch: Partial<UiSettings>) => void;
   resetDeleteConfirmSuppression: () => void;
 }
@@ -769,6 +770,13 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   setQuestChapterWidth: (key, width) => {
     set((s) => ({
       project: { ...s.project, questGraphChapterWidths: { ...(s.project.questGraphChapterWidths ?? {}), [key]: width } },
+    }));
+    triggerAutosavePulse(set);
+  },
+
+  setQuestChapterHeight: (key, height) => {
+    set((s) => ({
+      project: { ...s.project, questGraphChapterHeights: { ...(s.project.questGraphChapterHeights ?? {}), [key]: height } },
     }));
     triggerAutosavePulse(set);
   },
