@@ -294,8 +294,9 @@ function LineBlock({
           <div className="flex items-center gap-1.5 text-[10px] text-orange-300 bg-orange-500/10 rounded-md px-2 py-1.5">
             <span
               ref={(el) => registerAnchor(`else:${line.id}`, el)}
-              className="p-2 -m-2 shrink-0 cursor-crosshair grid place-items-center hover:bg-orange-400/10 rounded-full transition-colors"
               onMouseDown={(e) => onLinkDragStart(`else:${line.id}`, e)}
+              title="Перетяните, чтобы изменить альтернативную ноду"
+              className="p-2 -m-2 shrink-0 cursor-crosshair grid place-items-center hover:bg-orange-400/15 rounded-full transition-colors"
             >
               <span className="block w-2.5 h-2.5 rounded-full bg-orange-400" />
             </span>
@@ -305,13 +306,22 @@ function LineBlock({
             </button>
           </div>
         ) : (
-          <div
-            ref={(el) => registerAnchor(`else:${line.id}`, el)}
-            onMouseDown={(e) => onLinkDragStart(`else:${line.id}`, e)}
-            className="flex items-center gap-1.5 text-[10px] text-orange-300/70 bg-orange-500/5 border border-dashed border-orange-500/30 rounded-md px-2 py-1.5 cursor-crosshair hover:bg-orange-500/10"
-          >
-            <span className="block w-2.5 h-2.5 rounded-full border-2 border-dashed border-orange-400/70 shrink-0" />
-            если условие НЕ выполнено — перетяните к ноде (или в пустое место — создастся новая)
+          <div className="flex items-center gap-2 text-[10px] text-orange-300/70 bg-orange-500/5 border border-dashed border-orange-500/30 rounded-md px-2 py-1.5">
+            {/* A dedicated port, same treatment as the choice connector — generous invisible
+                hit-area (p-2 -m-2), hover highlight, a tooltip, AND a slow pulsing ring so the
+                eye is drawn to "this is the draggable thing" instead of reading as decoration
+                next to the sentence. Only this dot starts the drag now (not the whole row),
+                matching how the choice port works, so the interaction model is consistent. */}
+            <span
+              ref={(el) => registerAnchor(`else:${line.id}`, el)}
+              onMouseDown={(e) => onLinkDragStart(`else:${line.id}`, e)}
+              title="Перетяните на другую ноду (или в пустое место — создастся новая)"
+              className="relative shrink-0 w-5 h-5 grid place-items-center cursor-crosshair rounded-full hover:bg-orange-400/20 transition-colors"
+            >
+              <span className="absolute inset-0.5 rounded-full border-2 border-dashed border-orange-400/70 else-port-pulse" />
+              <span className="block w-2 h-2 rounded-full bg-orange-400/90" />
+            </span>
+            <span>если условие НЕ выполнено — перетяните точку слева к ноде (или в пустое место — создастся новая)</span>
           </div>
         )
       )}

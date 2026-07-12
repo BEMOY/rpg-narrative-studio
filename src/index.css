@@ -157,6 +157,17 @@ body {
    (QuestsView.tsx) — overshoots slightly then settles, so it reads as a sudden "denied" jolt
    rather than a gentle fade-in. The fade back out is handled separately via an opacity
    transition, not this keyframe. */
+/* Draws the eye to the unconnected "else" (alternative line) connector dot in
+   DialogueNodeCard.tsx — a plain static dashed circle read as decoration next to the
+   sentence; a slow breathing pulse reads as "this is interactive, grab me". */
+@keyframes else-port-pulse-kf {
+  0%, 100% { transform: scale(1); opacity: 0.75; }
+  50% { transform: scale(1.35); opacity: 0.25; }
+}
+.else-port-pulse {
+  animation: else-port-pulse-kf 1.8s ease-in-out infinite;
+}
+
 @keyframes rarity-particle-float {
   0% { transform: translateY(0) scale(0.6); opacity: 0; }
   15% { opacity: 1; }
