@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { X, Play, RotateCcw, Lock } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import type { Dialogue, DialogueCondition, Entry } from "../../types/database";
@@ -147,6 +147,27 @@ export function TestPlayModal({ dialogue, onClose }: { dialogue: Dialogue; onClo
   // node just falls through to continueTo/redirect silently, per the "don't show choices for
   // content that never appeared" rule), and never alongside an active line-level redirect.
   const choosing = !ended && !!node && atLastLine && phase === "done" && !redirectTarget && visibleLines.length > 0 && allChoices.length > 0;
+
+  // Auto-advance the instant a node with nothing to show is entered — a line-level redirect
+  // (elseNodeId) or a node with zero visible lines and zero choices used to just sit there
+  // showing "нет видимых реплик" until the player clicked through it, which reads as a broken
+  // beat rather than an invisible/instant branch. Keyed on nodeId alone so this fires exactly
+  // once per node-entry (not on every flag change while already sitting on the node), and only
+  // after node/redirectTarget/visibleLines have been freshly recomputed for that new node.
+  // useLayoutEffect (not useEffect) so this resolves before the browser paints — otherwise a
+  // node with nothing to show would flash "нет видимых реплик" for one frame before jumping
+  // away, instead of the redirect/skip reading as instant.
+  useLayoutEffect(() => {
+    if (ended || !node) return;
+    if (redirectTarget) {
+      goToNode(redirectTarget);
+      return;
+    }
+    if (visibleLines.length === 0 && allChoices.length === 0) {
+      goToNode(node.continueTo);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodeId]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
