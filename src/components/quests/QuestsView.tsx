@@ -513,6 +513,7 @@ function QuestNodeCard({
   onSetObjectiveValue: (index: number, value: number) => void;
   zoom: number;
 }) {
+  const requestDialogueNodeFocus = useProjectStore((s) => s.requestDialogueNodeFocus);
   const objectives = entry?.objectives ?? [];
   const rewards = entry?.rewards;
   const items = rewards?.items ?? [];
@@ -661,30 +662,34 @@ function QuestNodeCard({
           </div>
         )}
         {questDialogueLinks && (questDialogueLinks.checks.length > 0 || questDialogueLinks.completes.length > 0) && (
-          <div className="flex items-center gap-1 flex-wrap">
+          <div className="flex items-center gap-1 flex-wrap" onMouseDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
             {questDialogueLinks.completes.map((r) => (
-              <span
-                key={`c-${r.dialogueId}`}
-                className="flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded-full border truncate max-w-full"
+              <button
+                key={`c-${r.dialogueId}-${r.nodeId}`}
+                type="button"
+                onClick={() => requestDialogueNodeFocus(r.dialogueId, r.nodeId)}
+                className="flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded-full border truncate max-w-full hover:bg-[var(--op-8)] transition-colors cursor-pointer"
                 style={{ borderColor: DIALOGUE_COLOR, color: "var(--op-70)" }}
-                title={`Завершает: ${r.name}`}
+                title={`Перейти к ноде — завершает: ${r.name}`}
               >
                 <CircleCheck size={9} style={{ color: DIALOGUE_COLOR }} className="shrink-0" />
                 <span className="truncate">{r.name}</span>
                 <span className="opacity-50 shrink-0">завершает</span>
-              </span>
+              </button>
             ))}
             {questDialogueLinks.checks.map((r) => (
-              <span
-                key={`k-${r.dialogueId}`}
-                className="flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded-full border truncate max-w-full"
+              <button
+                key={`k-${r.dialogueId}-${r.nodeId}`}
+                type="button"
+                onClick={() => requestDialogueNodeFocus(r.dialogueId, r.nodeId)}
+                className="flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded-full border truncate max-w-full hover:bg-[var(--op-8)] transition-colors cursor-pointer"
                 style={{ borderColor: DIALOGUE_COLOR, color: "var(--op-70)" }}
-                title={`Проверяет: ${r.name}`}
+                title={`Перейти к ноде — проверяет: ${r.name}`}
               >
                 <CircleAlert size={9} style={{ color: DIALOGUE_COLOR }} className="shrink-0" />
                 <span className="truncate">{r.name}</span>
                 <span className="opacity-50 shrink-0">проверяет</span>
-              </span>
+              </button>
             ))}
           </div>
         )}

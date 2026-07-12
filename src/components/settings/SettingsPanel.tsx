@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { X, Check, Plus, Trash2, RotateCcw } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { useTheme, type ThemeSpec } from "../../lib/theme";
@@ -61,7 +62,15 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
     setTimeout(() => setResetNotice(null), 1800);
   };
 
-  return (
+  // Portaled straight to <body> — this panel can now be opened from the global TopBar, whose
+  // own root div has the ".glass" backdrop-filter treatment. A `filter`/`backdrop-filter`
+  // ancestor establishes a new containing block for `position: fixed` descendants (same class
+  // of bug PortalMenu.tsx already works around for dropdowns), so without the portal this
+  // modal's "fixed inset-0" backdrop was only covering TopBar's own thin strip at the top of
+  // the screen instead of the whole viewport — everything below it stayed fully visible and
+  // clickable, and the backdrop's own onMouseDown-to-close never fired for clicks outside that
+  // strip either.
+  return createPortal(
     <div className="fixed inset-0 z-50 bg-black/70 grid place-items-center p-4" onMouseDown={onClose}>
       <div
         className="popover rounded-xl w-full max-w-md max-h-[85vh] flex flex-col overflow-hidden shadow-2xl"
@@ -207,6 +216,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

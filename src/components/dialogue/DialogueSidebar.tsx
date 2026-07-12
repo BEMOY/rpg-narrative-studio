@@ -329,6 +329,7 @@ export function DialogueSidebar() {
   });
   const [search, setSearch] = useState("");
   const [characterFilter, setCharacterFilter] = useState<string | undefined>(undefined);
+  const [locationFilter, setLocationFilter] = useState<string | undefined>(undefined);
 
   const setMode = (mode: "folders" | "chapters") => {
     setViewMode(mode);
@@ -352,6 +353,13 @@ export function DialogueSidebar() {
     return entries.filter((e) => e.category === "character" && used.has(e.id)).map((e) => ({ id: e.id, label: e.name }));
   }, [dialogues, entries]);
 
+  // Same "only offer what's actually used" treatment as the character filter above — only
+  // locations that at least one dialogue is actually set to show up here.
+  const locationOptions = useMemo(() => {
+    const used = new Set(dialogues.map((d) => d.locationEntryId).filter((id): id is string => !!id));
+    return entries.filter((e) => e.category === "location" && used.has(e.id)).map((e) => ({ id: e.id, label: e.name }));
+  }, [dialogues, entries]);
+
   const dialogueSpeakerIds = useMemo(() => {
     const m = new Map<string, Set<string>>();
     for (const d of dialogues) {
@@ -365,14 +373,19 @@ export function DialogueSidebar() {
   const matchesFilter = (d: Dialogue) => {
     if (search.trim() && !d.name.toLowerCase().includes(search.trim().toLowerCase())) return false;
     if (characterFilter && !(dialogueSpeakerIds.get(d.id)?.has(characterFilter) ?? false)) return false;
+    if (locationFilter && d.locationEntryId !== locationFilter) return false;
     return true;
   };
 
-  const filteredDialogues = useMemo(() => dialogues.filter(matchesFilter), [dialogues, search, characterFilter, dialogueSpeakerIds]);
+  const filteredDialogues = useMemo(
+    () => dialogues.filter(matchesFilter),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [dialogues, search, characterFilter, locationFilter, dialogueSpeakerIds]
+  );
 
   const tree = buildTree(folders, filteredDialogues, null);
   const rootDialogues = filteredDialogues.filter((d) => d.folderId === null);
-  const filterActive = search.trim().length > 0 || !!characterFilter;
+  const filterActive = search.trim().length > 0 || !!characterFilter || !!locationFilter;
 
   const addFolder = () => {
     const name = prompt("Название папки:", "Новая папка");
@@ -445,6 +458,14 @@ export function DialogueSidebar() {
           placeholder="фильтр по персонажу…"
           searchPlaceholder="Поиск персонажа…"
           clearLabel="— все персонажи —"
+        />
+        <SearchSelect
+          value={locationFilter}
+          onChange={setLocationFilter}
+          options={locationOptions}
+          placeholder="фильтр по локации…"
+          searchPlaceholder="Поиск локации…"
+          clearLabel="— все локации —"
         />
       </div>
       <div
