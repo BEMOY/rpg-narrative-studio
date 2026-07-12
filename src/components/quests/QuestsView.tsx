@@ -1077,18 +1077,27 @@ function RoadmapGraph({
   // instead of just LOOKING locked while still secretly holding finished objective data. Since
   // computeQuestStatuses resolves the entire dependency fixpoint synchronously in one pass, the
   // whole orphaned chain (not just the immediate child) is already known the first time this
-  // runs — staggering each one's actual revert by its dependency depth (shallowest/closest to
-  // the toggle first, each subsequent hop firing sooner than the last) turns what would
-  // otherwise be an instant, simultaneous flip into a visible, accelerating ripple down the
-  // chain — the existing status-flip shake effect right below picks up each staggered revert
-  // as it lands and shakes that card at exactly that moment, for free.
+  // runs. The ripple plays from the FAR end of the chain backward toward whatever quest was
+  // actually toggled — the deepest/farthest descendant reverts first, then its own parent, and
+  // so on up to the quest immediately downstream of the toggle — with the very first hop held
+  // for a full second (long enough to actually register as "something happened") and each
+  // subsequent gap shrinking geometrically, so the cadence visibly speeds up as it goes rather
+  // than everything firing in a barely-distinguishable instant. The existing status-flip shake
+  // effect right below picks up each staggered revert as it lands and shakes that card at
+  // exactly that moment, for free.
   useEffect(() => {
     const orphaned = quests.filter((q) => objectivesAllDone(q) && statuses.get(q.id) !== "completed");
     if (orphaned.length === 0) return;
-    const sorted = [...orphaned].sort((a, b) => (depths.get(a.id) ?? 0) - (depths.get(b.id) ?? 0));
+    // Deepest/farthest first, shallowest (closest to whatever was actually toggled) last.
+    const sorted = [...orphaned].sort((a, b) => (depths.get(b.id) ?? 0) - (depths.get(a.id) ?? 0));
+    const GAP_START = 1000; // ms — the first, most noticeable hop
+    const GAP_FLOOR = 90;
+    const GAP_DECAY = 0.6; // each subsequent gap is ~60% of the previous one — an accelerating cadence
+    let cumulative = 0;
     const timers = sorted.map((q, i) => {
-      const delay = Math.max(40, 260 - i * 60);
-      return setTimeout(() => onSetAllObjectives(q.id, false), delay);
+      const gap = Math.max(GAP_FLOOR, GAP_START * Math.pow(GAP_DECAY, i));
+      cumulative += gap;
+      return setTimeout(() => onSetAllObjectives(q.id, false), cumulative);
     });
     return () => timers.forEach(clearTimeout);
   }, [quests, statuses, onSetAllObjectives, depths]);
