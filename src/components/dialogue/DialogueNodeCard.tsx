@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Star, Trash2, Plus, X, GripHorizontal, Palette } from "lucide-react";
+import { Star, Trash2, Plus, X, GripHorizontal, Palette, Check } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { ConditionEditor } from "./ConditionEditor";
 import { SearchSelect } from "./SearchSelect";
@@ -222,17 +222,22 @@ function LineBlock({
   line,
   index,
   canRemove,
+  registerAnchor,
+  onLinkDragStart,
 }: {
   dialogue: Dialogue;
   node: DialogueNode;
   line: DialogueLine;
   index: number;
   canRemove: boolean;
+  registerAnchor: (key: string, el: HTMLElement | null) => void;
+  onLinkDragStart: (from: string, e: React.MouseEvent) => void;
 }) {
   const updateDialogueLine = useProjectStore((s) => s.updateDialogueLine);
   const deleteDialogueLine = useProjectStore((s) => s.deleteDialogueLine);
   const entries = useProjectStore((s) => s.project.entries);
   const characters = entries.filter((e) => e.category === "character");
+  const elseTarget = dialogue.nodes.find((n) => n.id === line.elseNodeId);
 
   const patch = (p: Partial<DialogueLine>) => updateDialogueLine(dialogue.id, node.id, line.id, p);
 
@@ -285,23 +290,37 @@ function LineBlock({
       </div>
 
       {line.condition && (
-        <div className="flex items-center gap-1.5">
-          <span className="text-[10px] text-[var(--op-35)] shrink-0">если условие НЕ выполнено → перейти к ноде:</span>
-          <div className="flex-1 min-w-0">
-            <SearchSelect
-              value={line.elseNodeId}
-              onChange={(id) => patch({ elseNodeId: id })}
-              options={dialogue.nodes.map((n) => ({ id: n.id, label: n.lines[0]?.text?.slice(0, 30) || n.id }))}
-              placeholder="не задано (просто пропустить)"
-              searchPlaceholder="Поиск ноды…"
-              clearLabel="— не задано —"
-            />
+        elseTarget ? (
+          <div className="flex items-center gap-1.5 text-[10px] text-orange-300 bg-orange-500/10 rounded-md px-2 py-1.5">
+            <span
+              ref={(el) => registerAnchor(`else:${line.id}`, el)}
+              className="p-2 -m-2 shrink-0 cursor-crosshair grid place-items-center hover:bg-orange-400/10 rounded-full transition-colors"
+              onMouseDown={(e) => onLinkDragStart(`else:${line.id}`, e)}
+            >
+              <span className="block w-2.5 h-2.5 rounded-full bg-orange-400" />
+            </span>
+            если условие НЕ выполнено → {elseTarget.lines[0]?.speaker || elseTarget.id}
+            <button onClick={() => patch({ elseNodeId: undefined })} className="opacity-50 hover:opacity-100 ml-auto">
+              <X size={11} />
+            </button>
           </div>
-        </div>
+        ) : (
+          <div
+            ref={(el) => registerAnchor(`else:${line.id}`, el)}
+            onMouseDown={(e) => onLinkDragStart(`else:${line.id}`, e)}
+            className="flex items-center gap-1.5 text-[10px] text-orange-300/70 bg-orange-500/5 border border-dashed border-orange-500/30 rounded-md px-2 py-1.5 cursor-crosshair hover:bg-orange-500/10"
+          >
+            <span className="block w-2.5 h-2.5 rounded-full border-2 border-dashed border-orange-400/70 shrink-0" />
+            если условие НЕ выполнено — перетяните к ноде (или в пустое место — создастся новая)
+          </div>
+        )
       )}
 
-      <label className="flex items-center gap-1.5 text-[10px] text-[var(--op-45)]">
-        <input type="checkbox" checked={line.noSkip} onChange={(e) => patch({ noSkip: e.target.checked })} />
+      <label className="flex items-center gap-1.5 text-[10px] text-[var(--op-45)] cursor-pointer select-none w-fit">
+        <input type="checkbox" checked={line.noSkip ?? false} onChange={(e) => patch({ noSkip: e.target.checked })} className="sr-only peer" />
+        <span className="w-3.5 h-3.5 rounded-[4px] border border-[var(--op-20)] bg-[var(--op-5)] grid place-items-center shrink-0 transition-colors peer-checked:bg-accent/80 peer-checked:border-accent">
+          <Check size={10} className="text-[var(--popover-bg)] opacity-0 peer-checked:opacity-100" strokeWidth={3} />
+        </span>
         непропускаемая (нельзя проскипать печать)
       </label>
     </div>
@@ -536,7 +555,16 @@ export function DialogueNodeCard({
 
       <div className="p-2.5 space-y-2">
         {node.lines.map((l, i) => (
-          <LineBlock key={l.id} dialogue={dialogue} node={node} line={l} index={i} canRemove={node.lines.length > 0} />
+          <LineBlock
+            key={l.id}
+            dialogue={dialogue}
+            node={node}
+            line={l}
+            index={i}
+            canRemove={node.lines.length > 0}
+            registerAnchor={registerAnchor}
+            onLinkDragStart={onLinkDragStart}
+          />
         ))}
         <button
           onClick={() => addDialogueLine(dialogue.id, node.id)}

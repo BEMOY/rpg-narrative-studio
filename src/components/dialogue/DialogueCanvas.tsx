@@ -16,7 +16,7 @@ function clamp(v: number, lo: number, hi: number) {
   return Math.max(lo, Math.min(hi, v));
 }
 
-type AnchorKey = string; // "in:<nodeId>" | "cont:<nodeId>" | "choice:<choiceId>"
+type AnchorKey = string; // "in:<nodeId>" | "cont:<nodeId>" | "choice:<choiceId>" | "else:<lineId>"
 
 export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
   const dialogueFlags = useProjectStore((s) => s.project.dialogueFlags);
@@ -27,6 +27,7 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
   const setDialogueStartNode = useProjectStore((s) => s.setDialogueStartNode);
   const setNodeContinuation = useProjectStore((s) => s.setNodeContinuation);
   const setChoiceTarget = useProjectStore((s) => s.setChoiceTarget);
+  const updateDialogueLine = useProjectStore((s) => s.updateDialogueLine);
   const renameDialogue = useProjectStore((s) => s.renameDialogue);
 
   const [zoom, setZoom] = useState(0.85);
@@ -179,6 +180,10 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
         const choiceId = from.slice(7);
         const owner = dialogue.nodes.find((n) => n.choices.some((c) => c.id === choiceId));
         if (owner && owner.id !== targetNodeId) setChoiceTarget(dialogue.id, owner.id, choiceId, targetNodeId);
+      } else if (from.startsWith("else:")) {
+        const lineId = from.slice(5);
+        const owner = dialogue.nodes.find((n) => n.lines.some((l) => l.id === lineId));
+        if (owner && owner.id !== targetNodeId) updateDialogueLine(dialogue.id, owner.id, lineId, { elseNodeId: targetNodeId });
       }
     };
     window.addEventListener("mousemove", move);
@@ -334,6 +339,24 @@ export function DialogueCanvas({ dialogue }: { dialogue: Dialogue }) {
                     fill="none"
                     stroke="#5fc9c9"
                     strokeWidth={1.6}
+                    markerEnd="url(#dlg-arrow)"
+                  />
+                );
+              });
+              n.lines.forEach((l) => {
+                if (!l.condition || !l.elseNodeId) return;
+                const from = anchorPos.get(`else:${l.id}`);
+                const to = anchorPos.get(`in:${l.elseNodeId}`);
+                if (!from || !to) return;
+                const mx = (from.x + to.x) / 2;
+                lines.push(
+                  <path
+                    key={`else-${l.id}`}
+                    d={`M ${from.x} ${from.y} C ${mx} ${from.y}, ${mx} ${to.y}, ${to.x} ${to.y}`}
+                    fill="none"
+                    stroke="#e0a95f"
+                    strokeWidth={1.6}
+                    strokeDasharray="4 3"
                     markerEnd="url(#dlg-arrow)"
                   />
                 );
