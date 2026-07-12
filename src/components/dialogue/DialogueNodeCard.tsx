@@ -1,5 +1,5 @@
-import { useRef, useState } from "react";
-import { Star, Trash2, Plus, X, GripHorizontal, Palette, Check } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Star, Trash2, Plus, X, GripHorizontal, Palette, Check, Play } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { ConditionEditor } from "./ConditionEditor";
 import { SearchSelect } from "./SearchSelect";
@@ -8,9 +8,15 @@ import { PortalMenu } from "../common/PortalMenu";
 import { FlagValueInput } from "./FlagValueInput";
 import type { ColorStyleMode, Dialogue, DialogueChoice, DialogueLine, DialogueNode, DialogueSide, QuestAction, QuestActionKind } from "../../types/database";
 import { CAT_COLOR, isQuest } from "../../types/database";
-import { MARKUP_TAGS, FALLBACK_COLOR_GUESSES, mixHex } from "../../lib/dialogueMarkup";
+import { MARKUP_TAGS, FALLBACK_COLOR_GUESSES, mixHex, parseDialogueMarkup } from "../../lib/dialogueMarkup";
 import { nextId } from "../../lib/mapDefaults";
 import { objectiveDisplayMode } from "../../lib/questCompile";
+
+// Same per-glyph typewriter timing TestPlayModal.tsx uses for the real dialogue test-runner —
+// kept identical here so the "▶" preview button in the reply editor plays a line at the exact
+// same pace (including [speed=N]/[pause=N] markup and a linked character's own text_speed) as
+// it would actually appear in-game, not just a generic/simplified animation.
+const BASE_MS_PER_CHAR = 26;
 
 // Applies a markup tag around the current selection (or right before it, for "prefix" tags)
 // in a plain <textarea>. Shared between the generic tag-button row and the dedicated color
@@ -136,9 +142,50 @@ function ColorTagButton({
   );
 }
 
-function LineTextEditor({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+function LineTextEditor({ value, onChange, speakerEntryId }: { value: string; onChange: (v: string) => void; speakerEntryId?: string }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const colorStyles = useProjectStore((s) => s.project.colorStyles);
+  const entries = useProjectStore((s) => s.project.entries);
+  const speakerData = speakerEntryId ? entries.find((e) => e.id === speakerEntryId)?.dialogueSpeaker : undefined;
+
+  // Mini preview "play" button — reveals the reply the same way the real dialogue would
+  // (typewriter, glyph-by-glyph, respecting [speed=N]/[pause=N] markup and the linked
+  // character's own text_speed). Hidden while actively playing, shown again once it's done
+  // (or before it's ever been played, so the button is there to press in the first place).
+  const [playPhase, setPlayPhase] = useState<"idle" | "playing" | "done">("idle");
+  const [revealCount, setRevealCount] = useState(0);
+  const playTimerRef = useRef<ReturnType<typeof setTimeout>>();
+
+  useEffect(() => {
+    return () => {
+      if (playTimerRef.current) clearTimeout(playTimerRef.current);
+    };
+  }, []);
+
+  const playLine = () => {
+    if (playTimerRef.current) clearTimeout(playTimerRef.current);
+    const glyphs = parseDialogueMarkup(value);
+    if (glyphs.length === 0) {
+      setPlayPhase("done");
+      return;
+    }
+    setRevealCount(0);
+    setPlayPhase("playing");
+    const speedFactor = speakerData?.textSpeed ? speakerData.textSpeed / 0.3 : 1;
+    let i = 0;
+    const step = () => {
+      i++;
+      setRevealCount(i);
+      if (i >= glyphs.length) {
+        setPlayPhase("done");
+        return;
+      }
+      const g = glyphs[i - 1];
+      const delay = Math.max(4, (BASE_MS_PER_CHAR * speedFactor) / (g.speed || 1)) + g.pauseAfter * 16;
+      playTimerRef.current = setTimeout(step, delay);
+    };
+    playTimerRef.current = setTimeout(step, Math.max(4, BASE_MS_PER_CHAR * speedFactor));
+  };
 
   // Applying an effect: select a range of text first, then click the effect's name — "wrap"
   // tags (wave/shake/c=.../speed) wrap the selection in [tag]...[/tag]; "prefix" (pause, a
@@ -180,8 +227,18 @@ function LineTextEditor({ value, onChange }: { value: string; onChange: (v: stri
         className="input text-xs w-full resize-y min-h-[52px]"
       />
       {value.trim() && (
-        <div className="mt-1 px-2 py-1.5 rounded bg-black/25 text-[11px] leading-relaxed">
-          <MarkupText text={value} styles={colorStyles} />
+        <div className="relative mt-1 pl-2 pr-7 py-1.5 rounded bg-black/25 text-[11px] leading-relaxed">
+          <MarkupText text={value} styles={colorStyles} revealCount={playPhase === "playing" ? revealCount : undefined} />
+          {playPhase !== "playing" && (
+            <button
+              type="button"
+              onClick={playLine}
+              title="Проиграть реплику"
+              className="absolute top-1 right-1 w-5 h-5 grid place-items-center rounded-full bg-[var(--op-10)] text-[var(--op-50)] hover:text-accent hover:bg-[var(--op-15)] transition-colors"
+            >
+              <Play size={10} fill="currentColor" />
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -298,7 +355,7 @@ function LineBlock({
         />
       </div>
 
-      <LineTextEditor value={line.text} onChange={(text) => patch({ text })} />
+      <LineTextEditor value={line.text} onChange={(text) => patch({ text })} speakerEntryId={line.speakerEntryId} />
 
       <div className="flex items-center justify-between gap-2">
         <ConditionEditor value={line.condition} onChange={(c) => patch({ condition: c })} label="показывать реплику если…" />

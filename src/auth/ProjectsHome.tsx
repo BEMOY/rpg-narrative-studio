@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Plus, LogOut, Copy, KeyRound, FolderOpen, Pencil, Trash2, ShieldCheck, ChevronDown, ChevronRight, MessageSquare } from "lucide-react";
 import { ThemeMenu } from "../components/ThemeMenu";
+import { ChangelogBell } from "../components/changelog/ChangelogBell";
 import { AdminInboxPanel } from "../components/reports/AdminInboxPanel";
 import { supabase } from "../lib/supabaseClient";
 import {
@@ -195,6 +196,7 @@ export function ProjectsHome({ onOpen }: { onOpen: (row: ProjectRow) => void }) 
               )}
             </button>
           )}
+          <ChangelogBell />
           <button
             onClick={() => supabase.auth.signOut()}
             className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md glass hover:bg-[var(--op-10)]"
