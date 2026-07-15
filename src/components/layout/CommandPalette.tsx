@@ -1,19 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Search, User, MapPin, Flag, Swords, Shirt, Package, Box, BookOpen, CornerDownLeft } from "lucide-react";
+import { Search, CornerDownLeft } from "lucide-react";
+import { CAT_ICON } from "../../lib/categoryIcons";
 import { useProjectStore } from "../../store/useProjectStore";
 import { CAT_COLOR, CAT_LABEL, type Category, type Entry } from "../../types/database";
-
-const CAT_ICON: Record<Category, React.ComponentType<any>> = {
-  character: User,
-  location: MapPin,
-  main_quest: Flag,
-  side_quest: Swords,
-  equipment: Shirt,
-  item: Package,
-  object: Box,
-  lore: BookOpen,
-};
 
 export function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void }) {
   const entries = useProjectStore((s) => s.project.entries);

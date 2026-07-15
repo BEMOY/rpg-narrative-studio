@@ -11,20 +11,10 @@
 // entry or dialogue row opens it directly as its own tab, which is the new capability this
 // component adds.
 import { useState } from "react";
-import { ChevronRight, ChevronDown, Folder, LayoutGrid, User, MapPin, Flag, Swords, Shirt, Package, Box, BookOpen, MessagesSquare } from "lucide-react";
+import { ChevronRight, ChevronDown, Folder, LayoutGrid, MessagesSquare } from "lucide-react";
+import { CAT_ICON } from "../../lib/categoryIcons";
 import { useProjectStore } from "../../store/useProjectStore";
 import { CAT_COLOR, CAT_LABEL, CAT_ORDER, type Category, type Entry, type Dialogue } from "../../types/database";
-
-const CAT_ICON: Record<Category, React.ComponentType<any>> = {
-  character: User,
-  location: MapPin,
-  main_quest: Flag,
-  side_quest: Swords,
-  equipment: Shirt,
-  item: Package,
-  object: Box,
-  lore: BookOpen,
-};
 
 const NO_CHAPTER = "__no_chapter__";
 

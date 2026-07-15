@@ -27,10 +27,14 @@ import {
   Search,
   ArrowUpRight,
   ArrowDownLeft,
+  Clapperboard,
+  MapPin,
+  ArrowRight,
+  ArrowLeft,
 } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { ResizablePanel } from "../common/ResizablePanel";
-import { CAT_COLOR, isQuest, type Entry, type Dialogue, type DialogueFlagDef } from "../../types/database";
+import { CAT_COLOR, isQuest, isScene, type Entry, type Dialogue, type DialogueFlagDef } from "../../types/database";
 import { compileQuestsScript, objectiveDisplayMode, objectiveProgress } from "../../lib/questCompile";
 import { FlagsManagerModal } from "../dialogue/FlagsManagerModal";
 import { Tour, type TourStep } from "../tour/Tour";
@@ -2428,6 +2432,119 @@ function QuestsExportModal({ entries, onClose }: { entries: Entry[]; onClose: ()
 
 // ---- main view ----
 
+// Simple, non-physics "story flow" view for Scene entries — grouped by the same Chapter tag
+// quests use, one card per scene showing its bound location and step count, with a small chip
+// row listing where each of its transitions leads. Deliberately NOT wired into the
+// force-directed RoadmapGraph above (see the doc comment on viewMode in QuestsView) — this is
+// its own lightweight layout, safe to build fresh without touching that tuned physics system.
+function ScenesFlowView({ onBackToQuests }: { onBackToQuests: () => void }) {
+  const entries = useProjectStore((s) => s.project.entries);
+  const chapters = useProjectStore((s) => s.project.chapters);
+  const openEntry = useProjectStore((s) => s.openEntry);
+
+  const scenes = entries.filter((e) => isScene(e.category));
+  const byId = new Map(entries.map((e) => [e.id, e]));
+
+  const groups: { label: string; scenes: Entry[] }[] = [];
+  const byChapter = new Map<string, Entry[]>();
+  for (const sc of scenes) {
+    const key = sc.chapter && chapters.includes(sc.chapter) ? sc.chapter : "";
+    if (!byChapter.has(key)) byChapter.set(key, []);
+    byChapter.get(key)!.push(sc);
+  }
+  for (const list of byChapter.values()) list.sort((a, b) => a.name.localeCompare(b.name, "ru"));
+  for (const ch of chapters) {
+    const list = byChapter.get(ch);
+    if (list?.length) groups.push({ label: ch, scenes: list });
+  }
+  const noChapter = byChapter.get("");
+  if (noChapter?.length) groups.push({ label: "Без главы", scenes: noChapter });
+
+  return (
+    <div className="h-full flex flex-col overflow-hidden">
+      <div className="flex items-center gap-2 px-5 py-4 border-b border-[var(--op-10)] shrink-0">
+        <button
+          onClick={onBackToQuests}
+          title="Вернуться к квестам"
+          className="w-7 h-7 grid place-items-center rounded-md glass hover:bg-[var(--op-10)] text-[var(--op-60)]"
+        >
+          <ArrowLeft size={14} />
+        </button>
+        <Clapperboard size={18} className="text-[var(--op-70)]" />
+        <span className="text-lg font-medium text-[#ece4d2]">Сцены</span>
+        <span className="text-xs mono text-[var(--op-30)] bg-[var(--op-5)] border border-[var(--op-10)] rounded-full px-2 py-0.5 ml-auto">
+          {scenes.length}
+        </span>
+      </div>
+      <div className="flex-1 overflow-y-auto p-5 space-y-6">
+        {scenes.length === 0 && (
+          <div className="text-sm text-[var(--op-30)]">
+            Пока нет ни одной сцены — создайте её в Проводнике (категория «Сцены») или в Галерее.
+          </div>
+        )}
+        {groups.map((g) => (
+          <div key={g.label}>
+            <div className="text-xs uppercase tracking-wider text-[var(--op-35)] mb-2">{g.label}</div>
+            <div className="flex flex-wrap gap-3">
+              {g.scenes.map((sc) => {
+                const location = byId.get(sc.sceneMapId ?? "");
+                const flow = sc.sceneFlow ?? [];
+                const transitions = (sc.sceneTransitions ?? []).filter((t) => t.targetSceneId);
+                return (
+                  <div
+                    key={sc.id}
+                    className="w-[220px] rounded-lg border-2 shadow-lg overflow-hidden"
+                    style={{ borderColor: CAT_COLOR.scene, background: "var(--popover-bg)" }}
+                  >
+                    <button
+                      onClick={() => openEntry(sc.id)}
+                      className="w-full text-left px-3 py-2 border-b border-[var(--op-10)] hover:bg-[var(--op-6)]"
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <Clapperboard size={13} style={{ color: CAT_COLOR.scene }} className="shrink-0" />
+                        <span className="text-sm font-medium text-[var(--op-90)] truncate">{sc.name}</span>
+                      </div>
+                    </button>
+                    <div className="px-3 py-2 space-y-1.5 text-xs text-[var(--op-55)]">
+                      <div className="flex items-center gap-1.5">
+                        <MapPin size={11} className="shrink-0 text-[var(--op-40)]" />
+                        <span className="truncate">{location?.name ?? "локация не выбрана"}</span>
+                      </div>
+                      <div className="text-[var(--op-40)]">
+                        {flow.length === 0 ? "нет шагов" : `${flow.length} шаг(ов) флоу`}
+                      </div>
+                      {transitions.length > 0 && (
+                        <div className="flex flex-wrap gap-1 pt-1">
+                          {transitions.map((t) => {
+                            const target = byId.get(t.targetSceneId!);
+                            if (!target) return null;
+                            return (
+                              <button
+                                key={t.id}
+                                onClick={() => openEntry(target.id)}
+                                className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full border truncate max-w-full hover:bg-[var(--op-8)]"
+                                style={{ borderColor: CAT_COLOR.scene, color: "var(--op-70)" }}
+                                title={t.label || `Переход к «${target.name}»`}
+                              >
+                                <ArrowRight size={9} style={{ color: CAT_COLOR.scene }} className="shrink-0" />
+                                <span className="truncate">{t.label || target.name}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function QuestsView() {
   const openEntry = useProjectStore((s) => s.openEntry);
   const showDialogues = useProjectStore((s) => s.showDialogues);
@@ -2446,6 +2563,14 @@ export function QuestsView() {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [flagsOpen, setFlagsOpen] = useState(false);
+  // Scene is a Dynarain Phase 1 addition — a peer of Quest (see Entry.sceneFlow's doc comment
+  // in types/database.ts), not part of the quest dependency graph itself. Rather than folding
+  // Scene nodes into the existing force-directed RoadmapGraph (which has quest-specific physics,
+  // chapter-band targeting, and drag-position persistence wired deeply throughout — touching
+  // that to make it generic over two entity kinds risked regressing a system that's already
+  // been carefully tuned), this adds a separate, simpler "Сцены" view toggled right here: same
+  // tab, same chapter organization, its own lightweight (non-physics) flow layout.
+  const [viewMode, setViewMode] = useState<"quests" | "scenes">("quests");
   const [focusRequest, setFocusRequest] = useState<{ nodeId: string; token: number } | null>(null);
   const [listCategoryFilter, setListCategoryFilter] = useState<"all" | "main_quest" | "side_quest">("all");
   const [listSearch, setListSearch] = useState("");
@@ -2531,6 +2656,10 @@ export function QuestsView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filteredQuests, project.chapters]);
 
+  if (viewMode === "scenes") {
+    return <ScenesFlowView onBackToQuests={() => setViewMode("quests")} />;
+  }
+
   return (
     <div className="h-full flex overflow-hidden">
       <ResizablePanel panelKey="quests-list" side="left" defaultWidth={280} min={220} max={440}>
@@ -2538,6 +2667,13 @@ export function QuestsView() {
         <div className="flex items-center gap-2 px-4 py-4 border-b border-[var(--op-10)] shrink-0">
           <ScrollText size={18} className="text-[var(--op-70)]" />
           <span className="text-lg font-medium text-[#ece4d2]">Квесты</span>
+          <button
+            onClick={() => setViewMode("scenes")}
+            title="Переключиться на вид сцен"
+            className="text-[10px] px-2 py-1 rounded-md glass hover:bg-[var(--op-10)] text-[var(--op-55)]"
+          >
+            Сцены →
+          </button>
           <Flag size={12} className="text-[var(--op-45)] shrink-0" />
           <span className="text-xs text-[var(--op-45)]">Флаги</span>
           <button

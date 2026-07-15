@@ -10,7 +10,16 @@ export type Category =
   | "equipment"
   | "item"
   | "object"
-  | "lore";
+  | "lore"
+  // Dynarain Phase 1: Scene is a peer of Quest, not a child of it — see the doc comment on
+  // SceneStep/SceneTransition below and the Dynarain spec (2026-07-15) for why. Cutscene and
+  // Battle are added now too (as bare placeholder categories with no special fields yet beyond
+  // name/description) purely so Scene's flow-step editor has real entities to reference via the
+  // normal entry-picker UI instead of a raw free-text id field — their own dedicated editors
+  // (multi-track timeline / tactical grid + minigame designer) are Phase 2 and Phase 3 work.
+  | "scene"
+  | "cutscene"
+  | "battle";
 
 export const CAT_ORDER: Category[] = [
   "character",
@@ -21,6 +30,9 @@ export const CAT_ORDER: Category[] = [
   "item",
   "object",
   "lore",
+  "scene",
+  "cutscene",
+  "battle",
 ];
 
 export const CAT_LABEL: Record<Category, string> = {
@@ -32,6 +44,9 @@ export const CAT_LABEL: Record<Category, string> = {
   item: "Предметы",
   object: "Игровые объекты",
   lore: "Лор",
+  scene: "Сцены",
+  cutscene: "Катсцены",
+  battle: "Бои",
 };
 
 // hex accent per category — same palette family as Codex, remapped onto the glass/dark design system
@@ -44,6 +59,9 @@ export const CAT_COLOR: Record<Category, string> = {
   item: "#c77b9e",
   object: "#5e9bb5",
   lore: "#6f93c4",
+  scene: "#d68fb0",
+  cutscene: "#e0a458",
+  battle: "#c0605d",
 };
 
 export function isQuest(c: Category): boolean {
@@ -57,6 +75,15 @@ export function canHaveStats(c: Category): boolean {
 }
 export function isEquip(c: Category): boolean {
   return c === "equipment";
+}
+export function isScene(c: Category): boolean {
+  return c === "scene";
+}
+export function isCutscene(c: Category): boolean {
+  return c === "cutscene";
+}
+export function isBattle(c: Category): boolean {
+  return c === "battle";
 }
 
 export type EquipSlot = "head" | "body" | "weapon" | "offhand";
@@ -176,6 +203,15 @@ export interface Entry {
   statsEnabled?: boolean;
   statValues?: Record<string, number>;
   resistValues?: Record<string, number>;
+
+  // isScene(category) -- the cinematic/spatial content layer described in the Dynarain spec
+  // (2026-07-15): a Scene is one location plus a branching flow of cutscene/dialogue/battle
+  // steps, and is a PEER of Quest (not a child of it) -- a Scene's dialogue can branch into
+  // starting a Quest, and a Quest's objective can point at a Scene's dialogue node, the same
+  // way objectives already link to dialogue nodes today, but neither owns the other.
+  sceneMapId?: string; // the one Entry of category "location" this scene is bound to
+  sceneFlow?: SceneStep[]; // ordered; a scene always has exactly one location, see sceneMapId
+  sceneTransitions?: SceneTransition[]; // "on finishing this scene, hand off to Scene X"
 
   // equip/item economy + export fields — see docs/14_Export_System.md Field Mapping: Items
   value?: number;
@@ -467,6 +503,30 @@ export interface QuestAction {
   questId: string;
   objectiveIndex?: number; // "advance" only — which objective in quest_progress(id, index, amount)
   amount?: number; // "advance" only — defaults to 1
+}
+
+// One beat in a Scene's flow (see Entry.sceneFlow / isScene). "dialogue" points at a
+// project.dialogues entry (dialogues are their own collection, not Entry-based); "cutscene" and
+// "battle" point at Entry ids of those categories (standalone, reusable — the same cutscene or
+// battle can be referenced from more than one scene, per the Dynarain spec); "trigger-zone"
+// points at a MapZone id living inside the scene's own bound map (Entry.sceneMapId) — scoped to
+// that one map since a Scene only ever has one location.
+export type SceneStepKind = "cutscene" | "dialogue" | "battle" | "trigger-zone";
+
+export interface SceneStep {
+  id: string;
+  kind: SceneStepKind;
+  refId?: string; // dialogueId / cutsceneId / battleId / zoneId depending on kind
+  note?: string; // free-text label shown on the step card, e.g. "Босс появляется"
+}
+
+// "On finishing this scene, hand off to Scene X" — a scene that needs to move somewhere else
+// (forest -> cave) ends with one of these instead of trying to model multiple locations inside
+// a single Scene (see the Dynarain spec's "one Scene = one location" decision).
+export interface SceneTransition {
+  id: string;
+  targetSceneId?: string;
+  label?: string;
 }
 
 export interface DialogueChoice {

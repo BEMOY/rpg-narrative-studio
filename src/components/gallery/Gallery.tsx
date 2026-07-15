@@ -1,4 +1,5 @@
-import { Search, Plus, User, MapPin, Flag, Swords, Shirt, Package, Box, BookOpen, LayoutGrid, CheckSquare, Square, ListChecks, Filter, Trash2, X } from "lucide-react";
+import { Search, Plus, LayoutGrid, CheckSquare, Square, ListChecks, Filter, Trash2, X } from "lucide-react";
+import { CAT_ICON } from "../../lib/categoryIcons";
 import { useMemo, useRef, useState } from "react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { MapThumbnail, mapHasContent } from "../mapeditor/MapThumbnail";
@@ -21,17 +22,6 @@ import {
   type Category,
   type Entry,
 } from "../../types/database";
-
-const CAT_ICON: Record<Category, React.ComponentType<any>> = {
-  character: User,
-  location: MapPin,
-  main_quest: Flag,
-  side_quest: Swords,
-  equipment: Shirt,
-  item: Package,
-  object: Box,
-  lore: BookOpen,
-};
 
 function questStatus(e: Entry): "todo" | "active" | "done" {
   const objs = e.objectives ?? [];

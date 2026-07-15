@@ -18,6 +18,7 @@ import {
   Search,
   Check,
 } from "lucide-react";
+import { CAT_ICON } from "../../lib/categoryIcons";
 import type { Category, Entry, StatPreset } from "../../types/database";
 import { CAT_COLOR, CAT_LABEL, CAT_ORDER, isQuest, hasRelationship, canHaveStats, isEquip } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
@@ -29,17 +30,6 @@ import { RarityBadge } from "../common/RarityBadge";
 import { statIcon } from "../../lib/statIcons";
 import { SLOT_LABEL, SLOT_ICON } from "../../lib/equipSlot";
 import { themedAlert, themedConfirm } from "../../lib/modals";
-
-const CAT_ICON: Record<Category, React.ComponentType<any>> = {
-  character: User,
-  location: MapPin,
-  main_quest: Flag,
-  side_quest: Swords,
-  equipment: Shirt,
-  item: Package,
-  object: Box,
-  lore: BookOpen,
-};
 
 const REL_LABEL: Record<string, string> = { friend: "Друг", neutral: "Нейтрален", enemy: "Враг" };
 

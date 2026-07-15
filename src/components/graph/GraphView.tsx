@@ -16,6 +16,7 @@ import {
   BookOpen,
   Waypoints,
 } from "lucide-react";
+import { CAT_ICON } from "../../lib/categoryIcons";
 import { useProjectStore } from "../../store/useProjectStore";
 import { PortalMenu } from "../common/PortalMenu";
 import { CAT_COLOR, CAT_LABEL, CAT_ORDER, isQuest, type Category } from "../../types/database";
@@ -26,17 +27,6 @@ const GRAPH_TOUR: TourStep[] = [
   { target: '[data-tour="graph-reset"]', title: "Сбросить вид", body: "Авто-центровка и масштаб под все узлы сразу — полезно после того, как граф разрастётся." },
   { target: '[data-tour="graph-canvas"]', title: "Сам граф", body: "Перетаскивайте узлы, наводите для подсветки связей, кликайте, чтобы открыть запись. Колесо мыши — зум." },
 ];
-
-const CAT_ICON: Record<Category, React.ComponentType<any>> = {
-  character: User,
-  location: MapPin,
-  main_quest: Flag,
-  side_quest: Swords,
-  equipment: Shirt,
-  item: Package,
-  object: Box,
-  lore: BookOpen,
-};
 
 interface NodePos {
   x: number;
