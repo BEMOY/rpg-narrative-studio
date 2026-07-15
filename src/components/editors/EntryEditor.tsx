@@ -7,6 +7,7 @@ import { resizeImageFile } from "../../lib/image";
 import { usePasteImage } from "../../lib/usePasteImage";
 import { SearchSelect } from "../dialogue/SearchSelect";
 import { nextId } from "../../lib/mapDefaults";
+import { normalizeOutcomesForKind } from "../../lib/sceneDefaults";
 import { statIcon } from "../../lib/statIcons";
 import { EquipmentPresetsModal } from "./EquipmentPresetsModal";
 import type { StatPreset } from "../../types/database";
@@ -760,25 +761,6 @@ const SCENE_STEP_KIND_LABEL: Record<SceneStepKind, string> = {
   "trigger-zone": "Зона-триггер",
 };
 
-// Forces a step's outcomes to match what its kind allows, whenever the step is first created or
-// its kind is switched. Cutscene/trigger-zone always collapse down to exactly one auto-labelled
-// "Далее" outcome (there's nothing to branch on); battle always collapses to exactly the two
-// fixed "Победа"/"Поражение" outcomes (each independently routable); dialogue is left untouched
-// since its outcome list is entirely free-form and writer-managed (see the doc comment on
-// SceneOutcome in types/database.ts).
-function normalizeOutcomesForKind(kind: SceneStepKind, existing: SceneOutcome[]): SceneOutcome[] {
-  if (kind === "battle") {
-    const win = existing.find((o) => o.label === "Победа") ?? { id: nextId("out"), label: "Победа" };
-    const lose = existing.find((o) => o.label === "Поражение") ?? { id: nextId("out"), label: "Поражение" };
-    return [win, lose];
-  }
-  if (kind === "cutscene" || kind === "trigger-zone") {
-    const first = existing[0] ?? { id: nextId("out"), label: "Далее" };
-    return [{ ...first, label: "Далее" }];
-  }
-  return existing;
-}
-
 // The Scene entity (Dynarain Phase 1) — one location plus a BRANCHING flow of
 // cutscene/dialogue/battle/trigger-zone steps, each with one or more labelled outcomes that
 // route either to another step in the same scene or out to a SceneTransition. A peer of Quest,
@@ -824,15 +806,15 @@ function ScenePanel({ entry }: { entry: Entry }) {
 
   const patchOutcome = (stepIdx: number, outcomeIdx: number, p: Partial<SceneOutcome>) => {
     const step = flow[stepIdx];
-    patchStep(stepIdx, { outcomes: step.outcomes.map((o, oi) => (oi === outcomeIdx ? { ...o, ...p } : o)) });
+    patchStep(stepIdx, { outcomes: (step.outcomes ?? []).map((o, oi) => (oi === outcomeIdx ? { ...o, ...p } : o)) });
   };
   const addOutcome = (stepIdx: number) => {
     const step = flow[stepIdx];
-    patchStep(stepIdx, { outcomes: [...step.outcomes, { id: nextId("out"), label: "" }] });
+    patchStep(stepIdx, { outcomes: [...(step.outcomes ?? []), { id: nextId("out"), label: "" }] });
   };
   const removeOutcome = (stepIdx: number, outcomeIdx: number) => {
     const step = flow[stepIdx];
-    patchStep(stepIdx, { outcomes: step.outcomes.filter((_, oi) => oi !== outcomeIdx) });
+    patchStep(stepIdx, { outcomes: (step.outcomes ?? []).filter((_, oi) => oi !== outcomeIdx) });
   };
 
   const transitions = entry.sceneTransitions ?? [];
@@ -896,7 +878,7 @@ function ScenePanel({ entry }: { entry: Entry }) {
                       patchStep(i, {
                         kind: v as SceneStepKind,
                         refId: undefined,
-                        outcomes: normalizeOutcomesForKind(v as SceneStepKind, step.outcomes),
+                        outcomes: normalizeOutcomesForKind(v as SceneStepKind, step.outcomes ?? []),
                       })
                     }
                     options={(Object.keys(SCENE_STEP_KIND_LABEL) as SceneStepKind[]).map((k) => ({ value: k, label: SCENE_STEP_KIND_LABEL[k] }))}
@@ -921,6 +903,14 @@ function ScenePanel({ entry }: { entry: Entry }) {
                       : `Выбрать: ${SCENE_STEP_KIND_LABEL[step.kind].toLowerCase()}…`
                   }
                 />
+                {refOptionsFor(step.kind).length === 0 && (step.kind !== "trigger-zone" || entry.sceneMapId) && (
+                  <div className="text-[11px] text-[var(--op-30)]">
+                    {step.kind === "cutscene" && "Нет ни одной катсцены — создайте её в Проводнике (категория «Катсцены»), тогда сможете выбрать её здесь."}
+                    {step.kind === "battle" && "Нет ни одного боя — создайте его в Проводнике (категория «Бои»), тогда сможете выбрать его здесь."}
+                    {step.kind === "dialogue" && "Нет ни одного диалога — создайте его в разделе «Диалоги», тогда сможете выбрать его здесь."}
+                    {step.kind === "trigger-zone" && "На выбранной локации нет зон — добавьте их на слое «Зоны» в редакторе карты."}
+                  </div>
+                )}
                 <input
                   className="input text-xs"
                   placeholder="Заметка (необязательно)"
@@ -930,12 +920,12 @@ function ScenePanel({ entry }: { entry: Entry }) {
 
                 <div className="pl-2 border-l-2 border-[var(--op-7)] space-y-1">
                   <div className="text-[10px] uppercase tracking-wide text-[var(--op-30)]">Исходы</div>
-                  {step.outcomes.length === 0 && (
+                  {(step.outcomes ?? []).length === 0 && (
                     <div className="text-xs text-[var(--op-30)]">
                       {step.kind === "dialogue" ? "Нет исходов — добавьте хотя бы один, иначе шаг тупиковый." : "…"}
                     </div>
                   )}
-                  {step.outcomes.map((outcome, oi) => (
+                  {(step.outcomes ?? []).map((outcome, oi) => (
                     <div key={outcome.id} className="flex items-center gap-1.5">
                       {step.kind === "dialogue" ? (
                         <input

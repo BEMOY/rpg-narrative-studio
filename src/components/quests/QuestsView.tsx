@@ -30,7 +30,6 @@ import {
   Clapperboard,
   MapPin,
   ArrowRight,
-  ArrowLeft,
 } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { ResizablePanel } from "../common/ResizablePanel";
@@ -2434,10 +2433,13 @@ function QuestsExportModal({ entries, onClose }: { entries: Entry[]; onClose: ()
 
 // Simple, non-physics "story flow" view for Scene entries — grouped by the same Chapter tag
 // quests use, one card per scene showing its bound location and step count, with a small chip
-// row listing where each of its transitions leads. Deliberately NOT wired into the
-// force-directed RoadmapGraph above (see the doc comment on viewMode in QuestsView) — this is
-// its own lightweight layout, safe to build fresh without touching that tuned physics system.
-function ScenesFlowView({ onBackToQuests }: { onBackToQuests: () => void }) {
+// row listing where each of its transitions leads. A peer top-level pinned view (see
+// workspaceView in useProjectStore.ts), not folded into the quest dependency roadmap below:
+// Scene is a peer of Quest, not part of its graph, and that force-directed RoadmapGraph has
+// quest-specific physics/chapter-band/drag-position logic tuned deeply enough that making it
+// generic over a second entity kind risked regressing an already-tuned system — this is its own
+// lightweight layout instead, safe to build fresh without touching that.
+export function ScenesFlowView() {
   const entries = useProjectStore((s) => s.project.entries);
   const chapters = useProjectStore((s) => s.project.chapters);
   const openEntry = useProjectStore((s) => s.openEntry);
@@ -2463,13 +2465,6 @@ function ScenesFlowView({ onBackToQuests }: { onBackToQuests: () => void }) {
   return (
     <div className="h-full flex flex-col overflow-hidden">
       <div className="flex items-center gap-2 px-5 py-4 border-b border-[var(--op-10)] shrink-0">
-        <button
-          onClick={onBackToQuests}
-          title="Вернуться к квестам"
-          className="w-7 h-7 grid place-items-center rounded-md glass hover:bg-[var(--op-10)] text-[var(--op-60)]"
-        >
-          <ArrowLeft size={14} />
-        </button>
         <Clapperboard size={18} className="text-[var(--op-70)]" />
         <span className="text-lg font-medium text-[#ece4d2]">Сцены</span>
         <span className="text-xs mono text-[var(--op-30)] bg-[var(--op-5)] border border-[var(--op-10)] rounded-full px-2 py-0.5 ml-auto">
@@ -2493,7 +2488,7 @@ function ScenesFlowView({ onBackToQuests }: { onBackToQuests: () => void }) {
                 // step's outcome.endTransitionId) -- sc.sceneTransitions is the set of transitions
                 // that EXIST, but a transition only really "exits" the scene once some outcome
                 // points at it, matching the outcome-attached-transitions model.
-                const usedTransitionIds = new Set(flow.flatMap((s) => s.outcomes.map((o) => o.endTransitionId).filter((id): id is string => !!id)));
+                const usedTransitionIds = new Set(flow.flatMap((s) => (s.outcomes ?? []).map((o) => o.endTransitionId).filter((id): id is string => !!id)));
                 const transitions = (sc.sceneTransitions ?? []).filter((t) => t.targetSceneId && usedTransitionIds.has(t.id));
                 return (
                   <div
@@ -2568,14 +2563,6 @@ export function QuestsView() {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [flagsOpen, setFlagsOpen] = useState(false);
-  // Scene is a Dynarain Phase 1 addition — a peer of Quest (see Entry.sceneFlow's doc comment
-  // in types/database.ts), not part of the quest dependency graph itself. Rather than folding
-  // Scene nodes into the existing force-directed RoadmapGraph (which has quest-specific physics,
-  // chapter-band targeting, and drag-position persistence wired deeply throughout — touching
-  // that to make it generic over two entity kinds risked regressing a system that's already
-  // been carefully tuned), this adds a separate, simpler "Сцены" view toggled right here: same
-  // tab, same chapter organization, its own lightweight (non-physics) flow layout.
-  const [viewMode, setViewMode] = useState<"quests" | "scenes">("quests");
   const [focusRequest, setFocusRequest] = useState<{ nodeId: string; token: number } | null>(null);
   const [listCategoryFilter, setListCategoryFilter] = useState<"all" | "main_quest" | "side_quest">("all");
   const [listSearch, setListSearch] = useState("");
@@ -2661,10 +2648,6 @@ export function QuestsView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filteredQuests, project.chapters]);
 
-  if (viewMode === "scenes") {
-    return <ScenesFlowView onBackToQuests={() => setViewMode("quests")} />;
-  }
-
   return (
     <div className="h-full flex overflow-hidden">
       <ResizablePanel panelKey="quests-list" side="left" defaultWidth={280} min={220} max={440}>
@@ -2672,13 +2655,6 @@ export function QuestsView() {
         <div className="flex items-center gap-2 px-4 py-4 border-b border-[var(--op-10)] shrink-0">
           <ScrollText size={18} className="text-[var(--op-70)]" />
           <span className="text-lg font-medium text-[#ece4d2]">Квесты</span>
-          <button
-            onClick={() => setViewMode("scenes")}
-            title="Переключиться на вид сцен"
-            className="text-[10px] px-2 py-1 rounded-md glass hover:bg-[var(--op-10)] text-[var(--op-55)]"
-          >
-            Сцены →
-          </button>
           <Flag size={12} className="text-[var(--op-45)] shrink-0" />
           <span className="text-xs text-[var(--op-45)]">Флаги</span>
           <button

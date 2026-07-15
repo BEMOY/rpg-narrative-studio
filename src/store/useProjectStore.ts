@@ -4,6 +4,7 @@ import { sampleProject } from "../data/sampleProject";
 import { saveProjectData } from "../cloud/projects";
 import { createChoice, createDialogue as makeDialogue, createLine, createNode, normalizeDialogue } from "../lib/dialogueDefaults";
 import { nextId } from "../lib/mapDefaults";
+import { normalizeSceneEntry } from "../lib/sceneDefaults";
 
 interface EntryTab {
   kind: "entry";
@@ -20,7 +21,7 @@ interface ProjectState {
   activeCategory: Category | "all";
   galleryQuery: string;
   hiddenCategories: Category[];
-  workspaceView: "gallery" | "graph" | "dialogues" | "quests";
+  workspaceView: "gallery" | "graph" | "dialogues" | "quests" | "scenes";
   activeDialogueId: string | null;
   saving: boolean;
   // Ephemeral cross-window navigation request — set when a dialogue-relation dot/chip
@@ -45,6 +46,7 @@ interface ProjectState {
   showGraph: () => void;
   showDialogues: () => void;
   showQuests: () => void;
+  showScenes: () => void;
   requestDialogueNodeFocus: (dialogueId: string, nodeId: string) => void;
   clearDialogueNodeFocus: () => void;
   openEntry: (id: string) => void;
@@ -149,7 +151,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       resistPresets: data.resistPresets ?? [],
       characterStatPresets: data.characterStatPresets ?? [],
       characterResistPresets: data.characterResistPresets ?? [],
-      entries: data.entries.map((e) => ({ ...e, tags: e.tags ?? [], references: e.references ?? [] })),
+      entries: data.entries.map((e) => normalizeSceneEntry({ ...e, tags: e.tags ?? [], references: e.references ?? [] })),
     };
     set({
       projectId: id,
@@ -197,6 +199,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   showGraph: () => set({ activeTabIndex: -1, workspaceView: "graph" }),
   showDialogues: () => set({ activeTabIndex: -1, workspaceView: "dialogues" }),
   showQuests: () => set({ activeTabIndex: -1, workspaceView: "quests" }),
+  showScenes: () => set({ activeTabIndex: -1, workspaceView: "scenes" }),
 
   requestDialogueNodeFocus: (dialogueId, nodeId) =>
     set({

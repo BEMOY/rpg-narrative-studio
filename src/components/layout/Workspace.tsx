@@ -1,10 +1,10 @@
-import { X, LayoutGrid, Waypoints, MessagesSquare, ScrollText } from "lucide-react";
+import { X, LayoutGrid, Waypoints, MessagesSquare, ScrollText, Clapperboard } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { EntryPanel } from "../editors/EntryPanel";
 import { Gallery } from "../gallery/Gallery";
 import { GraphView } from "../graph/GraphView";
 import { DialoguesView } from "../dialogue/DialoguesView";
-import { QuestsView } from "../quests/QuestsView";
+import { QuestsView, ScenesFlowView } from "../quests/QuestsView";
 import { CAT_COLOR } from "../../types/database";
 
 export function Workspace() {
@@ -15,6 +15,7 @@ export function Workspace() {
   const showGraph = useProjectStore((s) => s.showGraph);
   const showDialogues = useProjectStore((s) => s.showDialogues);
   const showQuests = useProjectStore((s) => s.showQuests);
+  const showScenes = useProjectStore((s) => s.showScenes);
   const workspaceView = useProjectStore((s) => s.workspaceView);
   const closeTab = useProjectStore((s) => s.closeTab);
   const entries = useProjectStore((s) => s.project.entries);
@@ -61,6 +62,15 @@ export function Workspace() {
           <ScrollText size={12} />
           Квесты
         </div>
+        <div
+          onClick={showScenes}
+          className={`flex items-center gap-2 px-3 text-sm cursor-pointer border-r border-[var(--op-10)] shrink-0 ${
+            activeIndex === -1 && workspaceView === "scenes" ? "bg-[var(--op-6)] text-[var(--op-90)]" : "text-[var(--op-40)] hover:text-[var(--op-70)]"
+          }`}
+        >
+          <Clapperboard size={12} />
+          Сцены
+        </div>
         {tabs.map((tab, i) => {
           const entry = entries.find((e) => e.id === tab.id);
           return (
@@ -96,6 +106,8 @@ export function Workspace() {
           <DialoguesView />
         ) : workspaceView === "quests" ? (
           <QuestsView />
+        ) : workspaceView === "scenes" ? (
+          <ScenesFlowView />
         ) : (
           <Gallery />
         )}
