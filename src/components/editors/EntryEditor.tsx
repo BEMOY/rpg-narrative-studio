@@ -1,11 +1,12 @@
 import { Trash2, Plus, X, Upload, ImageOff, ChevronDown, ArrowUp, ArrowDown } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
-import type { CharacterAnimState, DialogueSide, DialogueSpeakerData, Entry, EquipSlot, Objective, QuestDependency, QuestDependencyKind, QuestRewards, Relationship, SceneOutcome, SceneStep, SceneStepKind, SceneTransition, SpriteStrip } from "../../types/database";
-import { canHaveStats, hasRelationship, isEquip, isQuest, isScene } from "../../types/database";
+import type { AudioFxClip, AudioFxKind, CameraClip, CharacterAnimState, CharacterClip, CutsceneDialogueClip, DialogueSide, DialogueSpeakerData, Entry, EquipSlot, Objective, QuestDependency, QuestDependencyKind, QuestRewards, Relationship, SceneOutcome, SceneStep, SceneStepKind, SceneTransition, SpriteStrip } from "../../types/database";
+import { canHaveStats, hasRelationship, isCutscene, isEquip, isQuest, isScene } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
 import { resizeImageFile, getImageDimensions, readImageFileLossless } from "../../lib/image";
 import { usePasteImage } from "../../lib/usePasteImage";
 import { SpriteAnimator } from "../common/SpriteAnimator";
+import { CutscenePreview } from "./CutscenePreview";
 import { SearchSelect } from "../dialogue/SearchSelect";
 import { nextId } from "../../lib/mapDefaults";
 import { normalizeOutcomesForKind } from "../../lib/sceneDefaults";
@@ -134,6 +135,7 @@ export function EntryEditor({ entry, onDone }: { entry: Entry; onDone: () => voi
       {isQuest(entry.category) && <QuestPanel entry={entry} />}
 
       {isScene(entry.category) && <ScenePanel entry={entry} />}
+      {isCutscene(entry.category) && <CutscenePanel entry={entry} />}
 
       {entry.category === "character" && <DialogueSpeakerSection entry={entry} />}
 
@@ -1154,6 +1156,286 @@ function ScenePanel({ entry }: { entry: Entry }) {
         </div>
       </div>
     </Section>
+  );
+}
+
+
+// Small inline label+number-input pair used throughout CutscenePanel's clip rows -- Field
+// (below) is a full-width label/input row meant for the general Section forms, too wide for
+// packing several numeric params onto one clip row.
+function NumField({ label, value, onChange, step }: { label: string; value: number; onChange: (v: number) => void; step?: number }) {
+  return (
+    <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1">
+      {label}
+      <input
+        type="number"
+        step={step}
+        className="input text-xs w-20"
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+      />
+    </label>
+  );
+}
+
+const AUDIOFX_KIND_LABEL: Record<AudioFxKind, string> = {
+  sound: "Звук",
+  music: "Музыка",
+  fade: "Затемнение",
+  flash: "Вспышка",
+};
+
+const CHAR_ANIM_OPTIONS: CharacterAnimState[] = ["idle", "walk", "run"];
+
+// The Cutscene entity (Dynarain Phase 2) -- see the doc comment above CameraClip in
+// types/database.ts for the full data model and the scoping note about why this is an ordered
+// list of clips with numeric start/duration fields, rather than a draggable horizontal timeline
+// widget. Four tracks (Camera / Characters / Dialogue / Audio-FX), plus the bound location used
+// as the live preview's background (CutscenePreview, rendered below the track lists).
+function CutscenePanel({ entry }: { entry: Entry }) {
+  const updateEntry = useProjectStore((s) => s.updateEntry);
+  const allEntries = useProjectStore((s) => s.project.entries);
+  const dialogues = useProjectStore((s) => s.project.dialogues);
+
+  const locations = allEntries.filter((e) => e.category === "location");
+  const charactersList = allEntries.filter((e) => e.category === "character");
+
+  const cameraTrack = entry.cutsceneCameraTrack ?? [];
+  const setCameraTrack = (next: CameraClip[]) => updateEntry(entry.id, { cutsceneCameraTrack: next });
+  const patchCamera = (i: number, p: Partial<CameraClip>) => setCameraTrack(cameraTrack.map((c, idx) => (idx === i ? { ...c, ...p } : c)));
+  const removeCamera = (i: number) => setCameraTrack(cameraTrack.filter((_, idx) => idx !== i));
+  const addCamera = () => setCameraTrack([...cameraTrack, { id: nextId("cam"), startMs: 0, durationMs: 1000, kind: "move", x: 0, y: 0 }]);
+
+  const charTrack = entry.cutsceneCharacterTrack ?? [];
+  const setCharTrack = (next: CharacterClip[]) => updateEntry(entry.id, { cutsceneCharacterTrack: next });
+  const patchChar = (i: number, p: Partial<CharacterClip>) => setCharTrack(charTrack.map((c, idx) => (idx === i ? { ...c, ...p } : c)));
+  const removeChar = (i: number) => setCharTrack(charTrack.filter((_, idx) => idx !== i));
+  const addChar = () => setCharTrack([...charTrack, { id: nextId("cclip"), startMs: 0, durationMs: 1000, kind: "move", x: 0, y: 0 }]);
+
+  const dlgTrack = entry.cutsceneDialogueTrack ?? [];
+  const setDlgTrack = (next: CutsceneDialogueClip[]) => updateEntry(entry.id, { cutsceneDialogueTrack: next });
+  const patchDlg = (i: number, p: Partial<CutsceneDialogueClip>) => setDlgTrack(dlgTrack.map((c, idx) => (idx === i ? { ...c, ...p } : c)));
+  const removeDlg = (i: number) => setDlgTrack(dlgTrack.filter((_, idx) => idx !== i));
+  const addDlg = () => setDlgTrack([...dlgTrack, { id: nextId("dclip"), atMs: 0, durationMs: 3000 }]);
+
+  const fxTrack = entry.cutsceneAudioFxTrack ?? [];
+  const setFxTrack = (next: AudioFxClip[]) => updateEntry(entry.id, { cutsceneAudioFxTrack: next });
+  const patchFx = (i: number, p: Partial<AudioFxClip>) => setFxTrack(fxTrack.map((c, idx) => (idx === i ? { ...c, ...p } : c)));
+  const removeFx = (i: number) => setFxTrack(fxTrack.filter((_, idx) => idx !== i));
+  const addFx = () => setFxTrack([...fxTrack, { id: nextId("fx"), atMs: 0, kind: "sound" }]);
+
+  return (
+    <>
+      <Section title="Катсцена — таймлайн">
+        <Field label="Локация">
+          <SearchSelect
+            value={entry.cutsceneMapId}
+            onChange={(id) => updateEntry(entry.id, { cutsceneMapId: id })}
+            options={locations.map((l) => ({ id: l.id, label: l.name }))}
+            placeholder="Выбрать локацию…"
+          />
+        </Field>
+        {!entry.cutsceneMapId && (
+          <div className="text-xs text-[var(--op-30)]">Локация нужна для фона в живом превью ниже — сам таймлайн можно собирать и без неё.</div>
+        )}
+
+        <div>
+          <div className="text-sm text-[var(--op-50)] mb-2">Камера</div>
+          <div className="space-y-1.5">
+            {cameraTrack.length === 0 && <div className="text-xs text-[var(--op-30)]">Нет клипов камеры.</div>}
+            {cameraTrack.map((c, i) => (
+              <div key={c.id} className="rounded-md border border-[var(--op-7)] p-2 space-y-1.5">
+                <div className="flex items-center gap-1.5">
+                  <ThemedSelect
+                    className="input flex-1"
+                    value={c.kind}
+                    onChange={(v) => patchCamera(i, { kind: v as CameraClip["kind"] })}
+                    options={[
+                      { value: "move", label: "Движение" },
+                      { value: "zoom", label: "Зум" },
+                      { value: "shake", label: "Тряска" },
+                    ]}
+                  />
+                  <button onClick={() => removeCamera(i)} className="opacity-40 hover:opacity-100 shrink-0">
+                    <X size={14} />
+                  </button>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <NumField label="Начало мс" value={c.startMs} onChange={(v) => patchCamera(i, { startMs: v })} />
+                  <NumField label="Длит. мс" value={c.durationMs} onChange={(v) => patchCamera(i, { durationMs: v })} />
+                  {c.kind === "move" && (
+                    <>
+                      <NumField label="X" value={c.x ?? 0} onChange={(v) => patchCamera(i, { x: v })} />
+                      <NumField label="Y" value={c.y ?? 0} onChange={(v) => patchCamera(i, { y: v })} />
+                    </>
+                  )}
+                  {c.kind === "zoom" && <NumField label="Зум" value={c.zoom ?? 1} step={0.1} onChange={(v) => patchCamera(i, { zoom: v })} />}
+                  {c.kind === "shake" && <NumField label="Сила" value={c.intensity ?? 0.3} step={0.05} onChange={(v) => patchCamera(i, { intensity: v })} />}
+                </div>
+              </div>
+            ))}
+            <button onClick={addCamera} className="flex items-center gap-1.5 text-xs text-[var(--op-50)] hover:text-[var(--op-80)]">
+              <Plus size={12} /> Добавить клип камеры
+            </button>
+          </div>
+        </div>
+
+        <div>
+          <div className="text-sm text-[var(--op-50)] mb-2">Персонажи</div>
+          <div className="space-y-1.5">
+            {charTrack.length === 0 && <div className="text-xs text-[var(--op-30)]">Нет клипов персонажей.</div>}
+            {charTrack.map((c, i) => (
+              <div key={c.id} className="rounded-md border border-[var(--op-7)] p-2 space-y-1.5">
+                <div className="flex items-center gap-1.5">
+                  <div className="flex-1">
+                    <SearchSelect
+                      value={c.characterId}
+                      onChange={(id) => patchChar(i, { characterId: id })}
+                      options={charactersList.map((ch) => ({ id: ch.id, label: ch.name }))}
+                      placeholder="Персонаж…"
+                    />
+                  </div>
+                  <ThemedSelect
+                    className="input w-32 shrink-0"
+                    value={c.kind}
+                    onChange={(v) => patchChar(i, { kind: v as CharacterClip["kind"] })}
+                    options={[
+                      { value: "move", label: "Движение" },
+                      { value: "animate", label: "Анимация" },
+                    ]}
+                  />
+                  <button onClick={() => removeChar(i)} className="opacity-40 hover:opacity-100 shrink-0">
+                    <X size={14} />
+                  </button>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <NumField label="Начало мс" value={c.startMs} onChange={(v) => patchChar(i, { startMs: v })} />
+                  <NumField label="Длит. мс" value={c.durationMs} onChange={(v) => patchChar(i, { durationMs: v })} />
+                  {c.kind === "move" && (
+                    <>
+                      <NumField label="X" value={c.x ?? 0} onChange={(v) => patchChar(i, { x: v })} />
+                      <NumField label="Y" value={c.y ?? 0} onChange={(v) => patchChar(i, { y: v })} />
+                    </>
+                  )}
+                  <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1">
+                    Анимация
+                    <ThemedSelect
+                      className="input w-24"
+                      value={c.anim ?? (c.kind === "move" ? "walk" : "idle")}
+                      onChange={(v) => patchChar(i, { anim: v as CharacterAnimState })}
+                      options={CHAR_ANIM_OPTIONS.map((a) => ({ value: a, label: ANIM_STATE_LABEL[a] }))}
+                    />
+                  </label>
+                </div>
+              </div>
+            ))}
+            <button onClick={addChar} className="flex items-center gap-1.5 text-xs text-[var(--op-50)] hover:text-[var(--op-80)]">
+              <Plus size={12} /> Добавить клип персонажа
+            </button>
+          </div>
+        </div>
+
+        <div>
+          <div className="text-sm text-[var(--op-50)] mb-2">Диалоги</div>
+          <div className="space-y-1.5">
+            {dlgTrack.length === 0 && <div className="text-xs text-[var(--op-30)]">Нет диалогов на таймлайне.</div>}
+            {dlgTrack.map((c, i) => (
+              <div key={c.id} className="rounded-md border border-[var(--op-7)] p-2 space-y-1.5">
+                <div className="flex items-center gap-1.5">
+                  <div className="flex-1">
+                    <SearchSelect
+                      value={c.dialogueId}
+                      onChange={(id) => patchDlg(i, { dialogueId: id })}
+                      options={dialogues.map((d) => ({ id: d.id, label: d.name }))}
+                      placeholder="Диалог…"
+                    />
+                  </div>
+                  <button onClick={() => removeDlg(i)} className="opacity-40 hover:opacity-100 shrink-0">
+                    <X size={14} />
+                  </button>
+                </div>
+                <div className="flex items-center gap-2">
+                  <NumField label="Начало мс" value={c.atMs} onChange={(v) => patchDlg(i, { atMs: v })} />
+                  <NumField label="Показ мс" value={c.durationMs} onChange={(v) => patchDlg(i, { durationMs: v })} />
+                </div>
+              </div>
+            ))}
+            <button onClick={addDlg} className="flex items-center gap-1.5 text-xs text-[var(--op-50)] hover:text-[var(--op-80)]">
+              <Plus size={12} /> Добавить диалог
+            </button>
+          </div>
+        </div>
+
+        <div>
+          <div className="text-sm text-[var(--op-50)] mb-2">Аудио / FX</div>
+          <div className="space-y-1.5">
+            {fxTrack.length === 0 && <div className="text-xs text-[var(--op-30)]">Нет аудио/FX клипов.</div>}
+            {fxTrack.map((c, i) => (
+              <div key={c.id} className="rounded-md border border-[var(--op-7)] p-2 space-y-1.5">
+                <div className="flex items-center gap-1.5">
+                  <ThemedSelect
+                    className="input flex-1"
+                    value={c.kind}
+                    onChange={(v) => patchFx(i, { kind: v as AudioFxKind })}
+                    options={(Object.keys(AUDIOFX_KIND_LABEL) as AudioFxKind[]).map((k) => ({ value: k, label: AUDIOFX_KIND_LABEL[k] }))}
+                  />
+                  <button onClick={() => removeFx(i)} className="opacity-40 hover:opacity-100 shrink-0">
+                    <X size={14} />
+                  </button>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <NumField label="Момент мс" value={c.atMs} onChange={(v) => patchFx(i, { atMs: v })} />
+                  {(c.kind === "sound" || c.kind === "music") && (
+                    <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1">
+                      Ассет (GML)
+                      <input
+                        className="input text-xs w-32"
+                        value={c.assetName ?? ""}
+                        placeholder="snd_..."
+                        onChange={(e) => patchFx(i, { assetName: e.target.value })}
+                      />
+                    </label>
+                  )}
+                  {(c.kind === "fade" || c.kind === "flash") && (
+                    <NumField label="Длит. мс" value={c.durationMs ?? 500} onChange={(v) => patchFx(i, { durationMs: v })} />
+                  )}
+                  {c.kind === "fade" && (
+                    <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1">
+                      Направление
+                      <ThemedSelect
+                        className="input w-28"
+                        value={c.direction ?? "out"}
+                        onChange={(v) => patchFx(i, { direction: v as "in" | "out" })}
+                        options={[
+                          { value: "out", label: "В темноту" },
+                          { value: "in", label: "Из темноты" },
+                        ]}
+                      />
+                    </label>
+                  )}
+                  {c.kind === "flash" && (
+                    <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1">
+                      Цвет
+                      <input
+                        type="color"
+                        className="w-8 h-6 rounded border border-[var(--op-10)] bg-transparent"
+                        value={c.color ?? "#ffffff"}
+                        onChange={(e) => patchFx(i, { color: e.target.value })}
+                      />
+                    </label>
+                  )}
+                </div>
+              </div>
+            ))}
+            <button onClick={addFx} className="flex items-center gap-1.5 text-xs text-[var(--op-50)] hover:text-[var(--op-80)]">
+              <Plus size={12} /> Добавить аудио/FX
+            </button>
+          </div>
+        </div>
+      </Section>
+
+      <CutscenePreview entry={entry} />
+    </>
   );
 }
 

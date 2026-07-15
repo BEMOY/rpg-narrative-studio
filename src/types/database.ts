@@ -220,6 +220,16 @@ export interface Entry {
   // preview just falls back to the static image for that character.
   spriteAnimations?: Partial<Record<CharacterAnimState, SpriteStrip>>;
 
+  // isCutscene(category) -- see the doc comment above CameraClip for the full model. A Cutscene
+  // is bound to one location (same "one location" simplification as Scene) purely so the live
+  // preview has a map to render behind the action; standalone and reusable, referenced by id
+  // from Scene steps, never owned by one Scene.
+  cutsceneMapId?: string;
+  cutsceneCameraTrack?: CameraClip[];
+  cutsceneCharacterTrack?: CharacterClip[];
+  cutsceneDialogueTrack?: CutsceneDialogueClip[];
+  cutsceneAudioFxTrack?: AudioFxClip[];
+
   // equip/item economy + export fields — see docs/14_Export_System.md Field Mapping: Items
   value?: number;
   stack?: number;
@@ -577,6 +587,66 @@ export interface SpriteStrip {
   frameHeight: number;
   frameCount: number;
   fps: number;
+}
+
+// --- Cutscene (Dynarain Phase 2) ---
+// A Cutscene is a standalone, reusable Entry (category "cutscene"), referenced by id from one or
+// more Scene steps (see SceneStep) -- never owned by a single Scene. It's a multi-track timeline:
+// Camera (move/zoom/shake), Character (move/animate, one flat list of clips each tagged with a
+// characterId rather than a nested per-character map -- simpler to edit as one list, grouped by
+// character only for display), Dialogue (drop an existing dialogue graph on the timeline), and
+// Audio/FX (sound/music cue markers, screen fade/flash). All positions (camera x/y, character
+// x/y) are in the SAME map cell-unit coordinate space as MapZone/MapObjectInstance, so a writer
+// can eyeball a clip's target against the bound location's zones/objects. Time is always
+// milliseconds from the start of the cutscene.
+//
+// Scoping note: the editor below (CutscenePanel, EntryEditor.tsx) presents these as ordered
+// lists with numeric start/duration fields rather than a draggable/resizable horizontal timeline
+// UI -- the same "lower engineering risk than a novel drag/canvas interaction, same underlying
+// data" call made for the Scene flow editor. The DATA model here already fully supports a
+// proper visual timeline being layered on top later without a migration.
+
+export interface CameraClip {
+  id: string;
+  startMs: number;
+  durationMs: number;
+  kind: "move" | "zoom" | "shake";
+  x?: number; // "move" -- target camera center, map cell units
+  y?: number; // "move"
+  zoom?: number; // "zoom" -- 1 = normal (camera shows a native 320x180 window); 2 = shows a 160x90 window (closer)
+  intensity?: number; // "shake" -- jitter amplitude, map cell units
+}
+
+export interface CharacterClip {
+  id: string;
+  startMs: number;
+  durationMs: number;
+  characterId?: string; // Entry id, category "character"
+  kind: "move" | "animate";
+  x?: number; // "move" target, map cell units
+  y?: number;
+  anim?: CharacterAnimState; // which sprite state plays during this clip (defaults to "walk" for move, "idle" for animate)
+}
+
+export interface CutsceneDialogueClip {
+  id: string;
+  atMs: number;
+  durationMs: number; // how long the dialogue's first line stays up in the live preview overlay
+  dialogueId?: string;
+}
+
+export type AudioFxKind = "sound" | "music" | "fade" | "flash";
+
+export interface AudioFxClip {
+  id: string;
+  atMs: number;
+  kind: AudioFxKind;
+  assetName?: string; // "sound"/"music" -- GML sound asset name reference (data-only, matches the
+                       // rest of this tool's "no code-gen" export philosophy; no real audio file
+                       // is uploaded or played back in the preview, this is just a marker)
+  durationMs?: number; // "fade"/"flash" -- how long the screen overlay takes
+  color?: string; // "flash" -- overlay color, e.g. "#ffffff"
+  direction?: "in" | "out"; // "fade" -- fade to black ("out") or from black ("in")
 }
 
 export interface DialogueChoice {

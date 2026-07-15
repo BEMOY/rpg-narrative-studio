@@ -251,6 +251,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       ...(category === "equipment" ? { slot: "weapon" as const, rarityId: "common", value: 0, stack: 1, quest: false } : {}),
       ...(category === "item" ? { rarityId: "common", value: 0, stack: 1, quest: false } : {}),
       ...(category === "scene" ? { sceneFlow: [], sceneTransitions: [] } : {}),
+      ...(category === "cutscene"
+        ? { cutsceneCameraTrack: [], cutsceneCharacterTrack: [], cutsceneDialogueTrack: [], cutsceneAudioFxTrack: [] }
+        : {}),
     };
     set((s) => ({ project: { ...s.project, entries: [...s.project.entries, entry] } }));
     get().openEntry(id);
