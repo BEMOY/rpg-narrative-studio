@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from "react";
-import { X } from "lucide-react";
+import { X, Eye, EyeOff, Lock, Unlock } from "lucide-react";
 import type { AudioFxClip, CameraClip, CharacterClip, CutsceneDialogueClip, Entry } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
 import { cutsceneTotalDurationMs } from "../../lib/cutscenePreview";
@@ -41,18 +41,43 @@ const TRACK_COLOR = {
 // track reaches) -- there is no separately-stored "cutscene duration", it's computed, so it's
 // always in sync with what's actually on the tracks, per the "автоматическое определение
 // времени катсцены" requirement.
+// Track visibility/lock is ephemeral editing-session UI state (not persisted to project data)
+// -- "hidden" means skipped when CutscenePreview composites the stage (see its hiddenTracks
+// prop), "locked" means this component itself refuses to start a drag or add a new clip on it.
+// Matches the eye/lock icons real NLEs put in their track header column.
+export function cameraTrackKey() {
+  return "camera";
+}
+export function characterTrackKey(characterId: string) {
+  return `character:${characterId}`;
+}
+export function dialogueTrackKey() {
+  return "dialogue";
+}
+export function audioFxTrackKey() {
+  return "audiofx";
+}
+
 export function CutsceneTimeline({
   entry,
   t,
   onScrub,
   selected,
   onSelect,
+  hiddenTracks,
+  lockedTracks,
+  onToggleHidden,
+  onToggleLocked,
 }: {
   entry: Entry;
   t: number;
   onScrub: (ms: number) => void;
   selected: ClipRef | null;
   onSelect: (ref: ClipRef | null) => void;
+  hiddenTracks: Set<string>;
+  lockedTracks: Set<string>;
+  onToggleHidden: (key: string) => void;
+  onToggleLocked: (key: string) => void;
 }) {
   const updateEntry = useProjectStore((s) => s.updateEntry);
   const allEntries = useProjectStore((s) => s.project.entries);
@@ -157,6 +182,7 @@ export function CutsceneTimeline({
     label: string,
     color: string,
     resizable: boolean,
+    locked: boolean,
     onChange: (p: { start?: number; dur?: number }) => void
   ) => {
     const isSel = selected?.trackKind === ref.trackKind && selected.id === ref.id;
@@ -165,16 +191,16 @@ export function CutsceneTimeline({
         key={key}
         onMouseDown={(e) => {
           onSelect(ref);
-          startClipDrag(e, "move", startMs, durationMs, onChange);
+          if (!locked) startClipDrag(e, "move", startMs, durationMs, onChange);
         }}
-        className={`absolute top-1 bottom-1 rounded-md px-1.5 flex items-center text-[10px] text-white overflow-hidden select-none cursor-grab active:cursor-grabbing ${
-          isSel ? "ring-2 ring-white" : ""
-        }`}
+        className={`absolute top-1 bottom-1 rounded-md px-1.5 flex items-center text-[10px] text-white overflow-hidden select-none ${
+          locked ? "cursor-not-allowed" : "cursor-grab active:cursor-grabbing"
+        } ${isSel ? "ring-2 ring-white" : ""}`}
         style={{ left: startMs * pxPerMs, width: Math.max(8, durationMs * pxPerMs), background: color }}
         title={label}
       >
         <span className="truncate pointer-events-none">{label}</span>
-        {resizable && (
+        {resizable && !locked && (
           <div
             onMouseDown={(e) => {
               onSelect(ref);
@@ -186,6 +212,40 @@ export function CutsceneTimeline({
       </div>
     );
   };
+
+  const headerToggleButtons = (key: string) => {
+    const hidden = hiddenTracks.has(key);
+    const locked = lockedTracks.has(key);
+    return (
+      <>
+        <button
+          onClick={() => onToggleHidden(key)}
+          title={hidden ? "Показать в превью" : "Скрыть из превью"}
+          className={`shrink-0 ${hidden ? "opacity-30" : "opacity-60 hover:opacity-100"}`}
+        >
+          {hidden ? <EyeOff size={11} /> : <Eye size={11} />}
+        </button>
+        <button
+          onClick={() => onToggleLocked(key)}
+          title={locked ? "Разблокировать дорожку" : "Заблокировать дорожку от изменений"}
+          className={`shrink-0 ${locked ? "text-accent opacity-80" : "opacity-40 hover:opacity-100"}`}
+        >
+          {locked ? <Lock size={10} /> : <Unlock size={10} />}
+        </button>
+      </>
+    );
+  };
+
+  const renderTrackHeader = (key: string, label: string) => (
+    <div
+      key={key}
+      style={{ height: LANE_H }}
+      className="flex items-center gap-1.5 px-2 text-[10px] text-[var(--op-50)] border-t border-[var(--op-7)]"
+    >
+      {headerToggleButtons(key)}
+      <span className="truncate">{label}</span>
+    </div>
+  );
 
   return (
     <div className="glass rounded-lg p-4 space-y-2">
@@ -217,30 +277,25 @@ export function CutsceneTimeline({
       <div className="flex border border-[var(--op-10)] rounded-md overflow-hidden">
         <div className="shrink-0 bg-[var(--op-4)] border-r border-[var(--op-10)]" style={{ width: LABEL_W }}>
           <div style={{ height: RULER_H }} />
-          <div style={{ height: LANE_H }} className="flex items-center px-2 text-[10px] text-[var(--op-50)] border-t border-[var(--op-7)]">
-            Камера
-          </div>
+          {renderTrackHeader(cameraTrackKey(), "Камера")}
           {cast.map((charId) => {
             const ch = allEntries.find((e) => e.id === charId);
             return (
               <div
                 key={charId}
                 style={{ height: LANE_H }}
-                className="flex items-center justify-between px-2 text-[10px] text-[var(--op-50)] border-t border-[var(--op-7)]"
+                className="flex items-center gap-1 px-2 text-[10px] text-[var(--op-50)] border-t border-[var(--op-7)]"
               >
-                <span className="truncate">{ch?.name ?? "?"}</span>
+                {headerToggleButtons(characterTrackKey(charId))}
+                <span className="truncate flex-1">{ch?.name ?? "?"}</span>
                 <button onClick={() => removeCastMember(charId)} className="opacity-40 hover:opacity-100 shrink-0">
                   <X size={10} />
                 </button>
               </div>
             );
           })}
-          <div style={{ height: LANE_H }} className="flex items-center px-2 text-[10px] text-[var(--op-50)] border-t border-[var(--op-7)]">
-            Диалоги
-          </div>
-          <div style={{ height: LANE_H }} className="flex items-center px-2 text-[10px] text-[var(--op-50)] border-t border-[var(--op-7)]">
-            Аудио/FX
-          </div>
+          {renderTrackHeader(dialogueTrackKey(), "Диалоги")}
+          {renderTrackHeader(audioFxTrackKey(), "Аудио/FX")}
         </div>
 
         <div ref={laneAreaRef} className="flex-1 overflow-x-auto relative">
@@ -259,8 +314,9 @@ export function CutsceneTimeline({
 
             <div
               style={{ height: LANE_H }}
-              className="relative border-t border-[var(--op-7)]"
+              className={`relative border-t border-[var(--op-7)] ${hiddenTracks.has(cameraTrackKey()) ? "opacity-40" : ""}`}
               onDoubleClick={(e) => {
+                if (lockedTracks.has(cameraTrackKey())) return;
                 const ms = Math.max(0, Math.round(msFromClientX(e.clientX)));
                 setCameraTrack([...cameraTrack, { id: nextId("cam"), startMs: ms, durationMs: 1000, kind: "move", x: 0, y: 0 }]);
               }}
@@ -274,6 +330,7 @@ export function CutsceneTimeline({
                   c.kind === "move" ? "Движение" : c.kind === "zoom" ? "Зум" : "Тряска",
                   TRACK_COLOR.camera,
                   true,
+                  lockedTracks.has(cameraTrackKey()),
                   (p) =>
                     setCameraTrack(
                       cameraTrack.map((cc) =>
@@ -293,8 +350,9 @@ export function CutsceneTimeline({
                 <div
                   key={charId}
                   style={{ height: LANE_H }}
-                  className="relative border-t border-[var(--op-7)]"
+                  className={`relative border-t border-[var(--op-7)] ${hiddenTracks.has(characterTrackKey(charId)) ? "opacity-40" : ""}`}
                   onDoubleClick={(e) => {
+                    if (lockedTracks.has(characterTrackKey(charId))) return;
                     const ms = Math.max(0, Math.round(msFromClientX(e.clientX)));
                     setCharTrack([...charTrack, { id: nextId("cclip"), startMs: ms, durationMs: 1000, kind: "move", characterId: charId, x: 0, y: 0 }]);
                   }}
@@ -308,6 +366,7 @@ export function CutsceneTimeline({
                       `${ch?.name ?? "?"} — ${c.kind === "move" ? "движение" : "анимация"}`,
                       TRACK_COLOR.character,
                       true,
+                      lockedTracks.has(characterTrackKey(charId)),
                       (p) =>
                         setCharTrack(
                           charTrack.map((cc) =>
@@ -324,8 +383,9 @@ export function CutsceneTimeline({
 
             <div
               style={{ height: LANE_H }}
-              className="relative border-t border-[var(--op-7)]"
+              className={`relative border-t border-[var(--op-7)] ${hiddenTracks.has(dialogueTrackKey()) ? "opacity-40" : ""}`}
               onDoubleClick={(e) => {
+                if (lockedTracks.has(dialogueTrackKey())) return;
                 const ms = Math.max(0, Math.round(msFromClientX(e.clientX)));
                 setDlgTrack([...dlgTrack, { id: nextId("dclip"), atMs: ms, durationMs: 3000 }]);
               }}
@@ -340,6 +400,7 @@ export function CutsceneTimeline({
                   d?.name ?? "Диалог",
                   TRACK_COLOR.dialogue,
                   true,
+                  lockedTracks.has(dialogueTrackKey()),
                   (p) =>
                     setDlgTrack(
                       dlgTrack.map((cc) =>
@@ -354,8 +415,9 @@ export function CutsceneTimeline({
 
             <div
               style={{ height: LANE_H }}
-              className="relative border-t border-[var(--op-7)]"
+              className={`relative border-t border-[var(--op-7)] ${hiddenTracks.has(audioFxTrackKey()) ? "opacity-40" : ""}`}
               onDoubleClick={(e) => {
+                if (lockedTracks.has(audioFxTrackKey())) return;
                 const ms = Math.max(0, Math.round(msFromClientX(e.clientX)));
                 setFxTrack([...fxTrack, { id: nextId("fx"), atMs: ms, kind: "sound" }]);
               }}
@@ -370,6 +432,7 @@ export function CutsceneTimeline({
                   c.kind === "sound" ? "Звук" : c.kind === "music" ? "Музыка" : c.kind === "fade" ? "Затемнение" : "Вспышка",
                   TRACK_COLOR.audiofx,
                   resizable,
+                  lockedTracks.has(audioFxTrackKey()),
                   (p) =>
                     setFxTrack(
                       fxTrack.map((cc) =>

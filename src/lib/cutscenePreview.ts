@@ -1,4 +1,4 @@
-import type { AudioFxClip, CameraClip, CharacterAnimState, CharacterClip, CutsceneDialogueClip, Entry } from "../types/database";
+import type { AudioFxClip, CameraClip, CharacterAnimState, CharacterClip, ClipEasing, CutsceneDialogueClip, Entry } from "../types/database";
 
 // Pure, framework-free math for the Cutscene live preview (Dynarain Phase 2) -- kept separate
 // from the React rendering component (CutscenePreview.tsx) so the actual interpolation logic is
@@ -9,8 +9,39 @@ import type { AudioFxClip, CameraClip, CharacterAnimState, CharacterClip, Cutsce
 // value becomes the new resting value for everything after it; while a clip is still playing,
 // the value is linearly interpolated from whatever the resting value was going into it, to this
 // clip's own target. `clips` MUST already be sorted by startMs ascending.
+// Standard easing curve set (matches the options a keyframe's "Тип интерполяции" dropdown
+// offers in the editor) applied to the raw 0..1 progress fraction before handing it to lerp.
+// "bounce" is a simple standard out-bounce curve, not a physically simulated spring.
+function applyEasing(f: number, easing: ClipEasing | undefined): number {
+  const x = Math.max(0, Math.min(1, f));
+  switch (easing) {
+    case "easeIn":
+      return x * x;
+    case "easeOut":
+      return 1 - (1 - x) * (1 - x);
+    case "bounce": {
+      const n1 = 7.5625;
+      const d1 = 2.75;
+      let bt = x;
+      if (bt < 1 / d1) return n1 * bt * bt;
+      if (bt < 2 / d1) {
+        bt -= 1.5 / d1;
+        return n1 * bt * bt + 0.75;
+      }
+      if (bt < 2.5 / d1) {
+        bt -= 2.25 / d1;
+        return n1 * bt * bt + 0.9375;
+      }
+      bt -= 2.625 / d1;
+      return n1 * bt * bt + 0.984375;
+    }
+    default:
+      return x;
+  }
+}
+
 export function resolveTween<T>(
-  clips: { startMs: number; durationMs: number; value: T }[],
+  clips: { startMs: number; durationMs: number; value: T; easing?: ClipEasing }[],
   t: number,
   initial: T,
   lerp: (a: T, b: T, f: number) => T
@@ -22,8 +53,8 @@ export function resolveTween<T>(
     if (t >= end) {
       current = c.value;
     } else {
-      const f = c.durationMs <= 0 ? 1 : (t - c.startMs) / c.durationMs;
-      current = lerp(current, c.value, f);
+      const rawF = c.durationMs <= 0 ? 1 : (t - c.startMs) / c.durationMs;
+      current = lerp(current, c.value, applyEasing(rawF, c.easing));
       break;
     }
   }
@@ -49,10 +80,10 @@ export function resolveCamera(clips: CameraClip[], t: number, defaultCenter: { x
   const sorted = [...clips].sort((a, b) => a.startMs - b.startMs);
   const moveClips = sorted
     .filter((c): c is CameraClip & { x: number; y: number } => c.kind === "move" && c.x !== undefined && c.y !== undefined)
-    .map((c) => ({ startMs: c.startMs, durationMs: c.durationMs, value: { x: c.x, y: c.y } }));
+    .map((c) => ({ startMs: c.startMs, durationMs: c.durationMs, value: { x: c.x, y: c.y }, easing: c.easing }));
   const zoomClips = sorted
     .filter((c): c is CameraClip & { zoom: number } => c.kind === "zoom" && c.zoom !== undefined)
-    .map((c) => ({ startMs: c.startMs, durationMs: c.durationMs, value: c.zoom }));
+    .map((c) => ({ startMs: c.startMs, durationMs: c.durationMs, value: c.zoom, easing: c.easing }));
 
   const pos = resolveTween(moveClips, t, defaultCenter, lerpPoint);
   const zoom = resolveTween(zoomClips, t, 1, lerpNum);
@@ -92,7 +123,7 @@ export function resolveCharacters(clips: CharacterClip[], t: number, defaultPos:
     const sorted = [...charClips].sort((a, b) => a.startMs - b.startMs);
     const moveClips = sorted
       .filter((c): c is CharacterClip & { x: number; y: number } => c.kind === "move" && c.x !== undefined && c.y !== undefined)
-      .map((c) => ({ startMs: c.startMs, durationMs: c.durationMs, value: { x: c.x, y: c.y } }));
+      .map((c) => ({ startMs: c.startMs, durationMs: c.durationMs, value: { x: c.x, y: c.y }, easing: c.easing }));
     const pos = resolveTween(moveClips, t, defaultPos, lerpPoint);
 
     const active = sorted.find((c) => t >= c.startMs && t <= c.startMs + c.durationMs);

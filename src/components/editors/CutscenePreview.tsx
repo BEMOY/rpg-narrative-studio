@@ -3,6 +3,7 @@ import { useProjectStore } from "../../store/useProjectStore";
 import { MapThumbnail } from "../mapeditor/MapThumbnail";
 import { SpriteAnimator } from "../common/SpriteAnimator";
 import { activeDialogueClip, resolveCamera, resolveCharacters, resolveOverlay } from "../../lib/cutscenePreview";
+import { audioFxTrackKey, cameraTrackKey, characterTrackKey, dialogueTrackKey } from "./CutsceneTimeline";
 
 // The game's actual base resolution (see the project brief: 320x180, top-down pixel art) --
 // used as the camera's "native" viewport so zoom/pan in this preview means the same thing it
@@ -27,7 +28,15 @@ const STAGE_DISPLAY_W = 480;
 // Known v1 limitation: the dialogue box shows the raw text of the dialogue's first line
 // (including any [c=...] color markup literally, unparsed) rather than running the full
 // dialogue markup renderer used elsewhere in the app.
-export function CutscenePreview({ entry, t }: { entry: Entry; t: number }) {
+export function CutscenePreview({
+  entry,
+  t,
+  hiddenTracks = new Set(),
+}: {
+  entry: Entry;
+  t: number;
+  hiddenTracks?: Set<string>;
+}) {
   const allEntries = useProjectStore((s) => s.project.entries);
   const dialogues = useProjectStore((s) => s.project.dialogues);
   const boundMap = allEntries.find((e) => e.id === entry.cutsceneMapId);
@@ -44,12 +53,19 @@ export function CutscenePreview({ entry, t }: { entry: Entry; t: number }) {
   const map = boundMap.map;
   const mapCenterCell = { x: map.width / 2, y: map.height / 2 };
 
-  const camera = resolveCamera(entry.cutsceneCameraTrack ?? [], t, mapCenterCell);
-  const resolvedChars = resolveCharacters(entry.cutsceneCharacterTrack ?? [], t, mapCenterCell);
-  const activeDlgClip = activeDialogueClip(entry.cutsceneDialogueTrack ?? [], t);
+  const cameraClips = hiddenTracks.has(cameraTrackKey()) ? [] : entry.cutsceneCameraTrack ?? [];
+  const characterClips = (entry.cutsceneCharacterTrack ?? []).filter(
+    (c) => !c.characterId || !hiddenTracks.has(characterTrackKey(c.characterId))
+  );
+  const dialogueClips = hiddenTracks.has(dialogueTrackKey()) ? [] : entry.cutsceneDialogueTrack ?? [];
+  const fxClips = hiddenTracks.has(audioFxTrackKey()) ? [] : entry.cutsceneAudioFxTrack ?? [];
+
+  const camera = resolveCamera(cameraClips, t, mapCenterCell);
+  const resolvedChars = resolveCharacters(characterClips, t, mapCenterCell);
+  const activeDlgClip = activeDialogueClip(dialogueClips, t);
   const activeDialogue = activeDlgClip ? dialogues.find((d) => d.id === activeDlgClip.dialogueId) : undefined;
   const firstLine = activeDialogue?.nodes.find((n) => n.id === activeDialogue.startNodeId)?.lines[0];
-  const overlay = resolveOverlay(entry.cutsceneAudioFxTrack ?? [], t);
+  const overlay = resolveOverlay(fxClips, t);
 
   // Camera window into the world, in native (320x180-based) px -- zoom=2 shows a 160x90 window
   // (things look 2x bigger/closer), matching how a real in-game camera zoom would behave.

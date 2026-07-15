@@ -225,6 +225,7 @@ export interface Entry {
   // preview has a map to render behind the action; standalone and reusable, referenced by id
   // from Scene steps, never owned by one Scene.
   cutsceneMapId?: string;
+  cutsceneFps?: number; // frame-step granularity for the editor's transport controls; defaults to 60
   // Which characters have their own track/lane in the timeline editor -- kept separate from
   // cutsceneCharacterTrack (the actual clips) so an added-but-still-empty character track
   // doesn't just disappear (a lane filtered purely from clip data would vanish the moment its
@@ -611,6 +612,12 @@ export interface SpriteStrip {
 // data" call made for the Scene flow editor. The DATA model here already fully supports a
 // proper visual timeline being layered on top later without a migration.
 
+// How a "move"/"zoom" clip's tween gets from its resting value to its target -- matches the
+// standard set any keyframe-based animation tool offers. Applied in resolveTween (see
+// lib/cutscenePreview.ts); "shake"/"animate" clips ignore this (nothing to ease, they're either
+// an instantaneous state or a jitter effect).
+export type ClipEasing = "linear" | "easeIn" | "easeOut" | "bounce";
+
 export interface CameraClip {
   id: string;
   startMs: number;
@@ -620,6 +627,7 @@ export interface CameraClip {
   y?: number; // "move"
   zoom?: number; // "zoom" -- 1 = normal (camera shows a native 320x180 window); 2 = shows a 160x90 window (closer)
   intensity?: number; // "shake" -- jitter amplitude, map cell units
+  easing?: ClipEasing; // "move"/"zoom" only, defaults to "linear"
 }
 
 export interface CharacterClip {
@@ -631,6 +639,7 @@ export interface CharacterClip {
   x?: number; // "move" target, map cell units
   y?: number;
   anim?: CharacterAnimState; // which sprite state plays during this clip (defaults to "walk" for move, "idle" for animate)
+  easing?: ClipEasing; // "move" only, defaults to "linear"
 }
 
 export interface CutsceneDialogueClip {

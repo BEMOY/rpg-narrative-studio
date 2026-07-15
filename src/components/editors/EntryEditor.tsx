@@ -1,14 +1,12 @@
-import { Trash2, Plus, X, Upload, ImageOff, ChevronDown, ArrowUp, ArrowDown, Play, Pause } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { AudioFxClip, AudioFxKind, CameraClip, CharacterAnimState, CharacterClip, CutsceneDialogueClip, DialogueSide, DialogueSpeakerData, Entry, EquipSlot, Objective, QuestDependency, QuestDependencyKind, QuestRewards, Relationship, SceneOutcome, SceneStep, SceneStepKind, SceneTransition, SpriteStrip } from "../../types/database";
+import { Trash2, Plus, X, Upload, ImageOff, ChevronDown, ArrowUp, ArrowDown, Clapperboard } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
+import type { CharacterAnimState, DialogueSide, DialogueSpeakerData, Entry, EquipSlot, Objective, QuestDependency, QuestDependencyKind, QuestRewards, Relationship, SceneOutcome, SceneStep, SceneStepKind, SceneTransition, SpriteStrip } from "../../types/database";
 import { canHaveStats, hasRelationship, isCutscene, isEquip, isQuest, isScene } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
 import { resizeImageFile, getImageDimensions, readImageFileLossless } from "../../lib/image";
 import { usePasteImage } from "../../lib/usePasteImage";
 import { SpriteAnimator } from "../common/SpriteAnimator";
-import { CutscenePreview } from "./CutscenePreview";
-import { CutsceneTimeline } from "./CutsceneTimeline";
-import type { ClipRef } from "./CutsceneTimeline";
+import { CutsceneEditorModal } from "./CutsceneEditorModal";
 import { cutsceneTotalDurationMs } from "../../lib/cutscenePreview";
 import { SearchSelect } from "../dialogue/SearchSelect";
 import { nextId } from "../../lib/mapDefaults";
@@ -1163,334 +1161,39 @@ function ScenePanel({ entry }: { entry: Entry }) {
 }
 
 
-// Small inline label+number-input pair used throughout CutscenePanel's clip rows -- Field
-// (below) is a full-width label/input row meant for the general Section forms, too wide for
-// packing several numeric params onto one clip row.
-function NumField({ label, value, onChange, step }: { label: string; value: number; onChange: (v: number) => void; step?: number }) {
-  return (
-    <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1">
-      {label}
-      <input
-        type="number"
-        step={step}
-        className="input text-xs w-20"
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
-      />
-    </label>
-  );
-}
-
-const AUDIOFX_KIND_LABEL: Record<AudioFxKind, string> = {
-  sound: "Звук",
-  music: "Музыка",
-  fade: "Затемнение",
-  flash: "Вспышка",
-};
-
-const CHAR_ANIM_OPTIONS: CharacterAnimState[] = ["idle", "walk", "run"];
-
 // The Cutscene entity (Dynarain Phase 2) -- see the doc comment above CameraClip in
-// types/database.ts for the full data model. This panel owns the shared playback state (t,
-// playing, loop, which clip is selected) and hands it down to three collaborating pieces, the
-// same way a real NLE's timeline/monitor/inspector are three views onto one shared state:
-//   - CutsceneTimeline: the actual multi-track drag/resize timeline widget.
-//   - ClipInspector: precise numeric/kind-specific fields for whichever clip is selected.
-//   - CutscenePreview: the live animated stage, driven purely by the current `t`.
+// types/database.ts for the full data model. Editing itself now happens in its own full-screen
+// window (CutsceneEditorModal), matching how the Map editor works -- this card is just a quick
+// summary + launcher, not a place to actually drag clips around, per the "I need a real editor
+// WINDOW, not just card settings" feedback this replaced the earlier inline version for.
 function CutscenePanel({ entry }: { entry: Entry }) {
-  const updateEntry = useProjectStore((s) => s.updateEntry);
   const allEntries = useProjectStore((s) => s.project.entries);
+  const [editorOpen, setEditorOpen] = useState(false);
 
-  const locations = allEntries.filter((e) => e.category === "location");
-
+  const boundMap = allEntries.find((e) => e.id === entry.cutsceneMapId);
   const totalMs = cutsceneTotalDurationMs(entry);
-  const [t, setT] = useState(0);
-  const [playing, setPlaying] = useState(false);
-  const [loop, setLoop] = useState(true);
-  const [selected, setSelected] = useState<ClipRef | null>(null);
-  const rafRef = useRef<number | undefined>(undefined);
-  const lastRef = useRef(0);
-
-  useEffect(() => {
-    if (!playing) return;
-    lastRef.current = 0;
-    const step = (ts: number) => {
-      if (lastRef.current === 0) lastRef.current = ts;
-      const dt = ts - lastRef.current;
-      lastRef.current = ts;
-      setT((prev) => {
-        let next = prev + dt;
-        if (next >= totalMs) {
-          next = loop ? (totalMs <= 0 ? 0 : next % totalMs) : totalMs;
-        }
-        return next;
-      });
-      rafRef.current = requestAnimationFrame(step);
-    };
-    rafRef.current = requestAnimationFrame(step);
-    return () => {
-      if (rafRef.current !== undefined) cancelAnimationFrame(rafRef.current);
-    };
-  }, [playing, totalMs, loop]);
-
-  useEffect(() => {
-    if (playing && t >= totalMs && !loop) setPlaying(false);
-  }, [playing, t, totalMs, loop]);
+  const clipCount =
+    (entry.cutsceneCameraTrack?.length ?? 0) +
+    (entry.cutsceneCharacterTrack?.length ?? 0) +
+    (entry.cutsceneDialogueTrack?.length ?? 0) +
+    (entry.cutsceneAudioFxTrack?.length ?? 0);
 
   return (
-    <>
-      <Section title="Катсцена">
-        <Field label="Локация">
-          <SearchSelect
-            value={entry.cutsceneMapId}
-            onChange={(id) => updateEntry(entry.id, { cutsceneMapId: id })}
-            options={locations.map((l) => ({ id: l.id, label: l.name }))}
-            placeholder="Выбрать локацию…"
-          />
-        </Field>
-        {!entry.cutsceneMapId && (
-          <div className="text-xs text-[var(--op-30)]">Локация нужна для фона в живом превью ниже — сам таймлайн можно собирать и без неё.</div>
-        )}
-
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setPlaying((p) => !p)}
-            className="w-7 h-7 grid place-items-center rounded-md glass hover:bg-[var(--op-10)] shrink-0"
-          >
-            {playing ? <Pause size={13} /> : <Play size={13} />}
-          </button>
-          <input
-            type="range"
-            min={0}
-            max={totalMs}
-            value={Math.min(t, totalMs)}
-            onChange={(e) => {
-              setPlaying(false);
-              setT(Number(e.target.value));
-            }}
-            className="flex-1"
-          />
-          <span className="text-[10px] mono text-[var(--op-40)] w-24 text-right shrink-0">
-            {Math.round(t)} / {totalMs} мс
-          </span>
-          <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1 shrink-0">
-            <input type="checkbox" checked={loop} onChange={(e) => setLoop(e.target.checked)} /> Цикл
-          </label>
-        </div>
-      </Section>
-
-      <CutsceneTimeline entry={entry} t={t} onScrub={(ms) => { setPlaying(false); setT(ms); }} selected={selected} onSelect={setSelected} />
-      <ClipInspector entry={entry} selected={selected} onClose={() => setSelected(null)} />
-      <CutscenePreview entry={entry} t={t} />
-    </>
-  );
-}
-
-// Precise numeric/kind-specific property editor for whichever clip is currently selected on the
-// CutsceneTimeline above -- the rough position/duration are set by dragging there, this panel is
-// for exact values and kind-specific params (camera x/y/zoom/intensity, which character a clip
-// belongs to implicitly via its lane, dialogue reference, audio/fx asset name & color etc).
-function ClipInspector({ entry, selected, onClose }: { entry: Entry; selected: ClipRef | null; onClose: () => void }) {
-  const updateEntry = useProjectStore((s) => s.updateEntry);
-  const dialogues = useProjectStore((s) => s.project.dialogues);
-  const allEntries = useProjectStore((s) => s.project.entries);
-
-  if (!selected) {
-    return (
-      <div className="glass rounded-lg p-4 text-xs text-[var(--op-30)]">Выберите клип на таймлайне, чтобы отредактировать его параметры точно.</div>
-    );
-  }
-
-  if (selected.trackKind === "camera") {
-    const track = entry.cutsceneCameraTrack ?? [];
-    const clip = track.find((c) => c.id === selected.id);
-    if (!clip) return null;
-    const patch = (p: Partial<CameraClip>) => updateEntry(entry.id, { cutsceneCameraTrack: track.map((c) => (c.id === clip.id ? { ...c, ...p } : c)) });
-    const remove = () => {
-      updateEntry(entry.id, { cutsceneCameraTrack: track.filter((c) => c.id !== clip.id) });
-      onClose();
-    };
-    return (
-      <div className="glass rounded-lg p-4 space-y-2">
-        <div className="flex items-center justify-between">
-          <div className="text-xs uppercase tracking-wider text-[var(--op-35)]">Камера — клип</div>
-          <button onClick={remove} className="text-[var(--op-40)] hover:text-[var(--op-80)]">
-            <Trash2 size={13} />
-          </button>
-        </div>
-        <ThemedSelect
-          className="input"
-          value={clip.kind}
-          onChange={(v) => patch({ kind: v as CameraClip["kind"] })}
-          options={[
-            { value: "move", label: "Движение" },
-            { value: "zoom", label: "Зум" },
-            { value: "shake", label: "Тряска" },
-          ]}
-        />
-        <div className="flex items-center gap-2 flex-wrap">
-          <NumField label="Начало мс" value={clip.startMs} onChange={(v) => patch({ startMs: v })} />
-          <NumField label="Длит. мс" value={clip.durationMs} onChange={(v) => patch({ durationMs: v })} />
-          {clip.kind === "move" && (
-            <>
-              <NumField label="X" value={clip.x ?? 0} onChange={(v) => patch({ x: v })} />
-              <NumField label="Y" value={clip.y ?? 0} onChange={(v) => patch({ y: v })} />
-            </>
-          )}
-          {clip.kind === "zoom" && <NumField label="Зум" value={clip.zoom ?? 1} step={0.1} onChange={(v) => patch({ zoom: v })} />}
-          {clip.kind === "shake" && <NumField label="Сила" value={clip.intensity ?? 0.3} step={0.05} onChange={(v) => patch({ intensity: v })} />}
+    <Section title="Катсцена">
+      <div className="text-xs text-[var(--op-45)] space-y-1">
+        <div>Локация: {boundMap?.name ?? <span className="text-[var(--op-30)]">не выбрана</span>}</div>
+        <div>
+          Клипов: {clipCount} · Длительность: {(totalMs / 1000).toFixed(1)} с
         </div>
       </div>
-    );
-  }
-
-  if (selected.trackKind === "character") {
-    const track = entry.cutsceneCharacterTrack ?? [];
-    const clip = track.find((c) => c.id === selected.id);
-    if (!clip) return null;
-    const patch = (p: Partial<CharacterClip>) => updateEntry(entry.id, { cutsceneCharacterTrack: track.map((c) => (c.id === clip.id ? { ...c, ...p } : c)) });
-    const remove = () => {
-      updateEntry(entry.id, { cutsceneCharacterTrack: track.filter((c) => c.id !== clip.id) });
-      onClose();
-    };
-    const character = allEntries.find((e) => e.id === clip.characterId);
-    return (
-      <div className="glass rounded-lg p-4 space-y-2">
-        <div className="flex items-center justify-between">
-          <div className="text-xs uppercase tracking-wider text-[var(--op-35)]">Персонаж — клип{character ? ` (${character.name})` : ""}</div>
-          <button onClick={remove} className="text-[var(--op-40)] hover:text-[var(--op-80)]">
-            <Trash2 size={13} />
-          </button>
-        </div>
-        <ThemedSelect
-          className="input"
-          value={clip.kind}
-          onChange={(v) => patch({ kind: v as CharacterClip["kind"] })}
-          options={[
-            { value: "move", label: "Движение" },
-            { value: "animate", label: "Анимация" },
-          ]}
-        />
-        <div className="flex items-center gap-2 flex-wrap">
-          <NumField label="Начало мс" value={clip.startMs} onChange={(v) => patch({ startMs: v })} />
-          <NumField label="Длит. мс" value={clip.durationMs} onChange={(v) => patch({ durationMs: v })} />
-          {clip.kind === "move" && (
-            <>
-              <NumField label="X" value={clip.x ?? 0} onChange={(v) => patch({ x: v })} />
-              <NumField label="Y" value={clip.y ?? 0} onChange={(v) => patch({ y: v })} />
-            </>
-          )}
-          <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1">
-            Анимация
-            <ThemedSelect
-              className="input w-24"
-              value={clip.anim ?? (clip.kind === "move" ? "walk" : "idle")}
-              onChange={(v) => patch({ anim: v as CharacterAnimState })}
-              options={CHAR_ANIM_OPTIONS.map((a) => ({ value: a, label: ANIM_STATE_LABEL[a] }))}
-            />
-          </label>
-        </div>
-      </div>
-    );
-  }
-
-  if (selected.trackKind === "dialogue") {
-    const track = entry.cutsceneDialogueTrack ?? [];
-    const clip = track.find((c) => c.id === selected.id);
-    if (!clip) return null;
-    const patch = (p: Partial<CutsceneDialogueClip>) =>
-      updateEntry(entry.id, { cutsceneDialogueTrack: track.map((c) => (c.id === clip.id ? { ...c, ...p } : c)) });
-    const remove = () => {
-      updateEntry(entry.id, { cutsceneDialogueTrack: track.filter((c) => c.id !== clip.id) });
-      onClose();
-    };
-    return (
-      <div className="glass rounded-lg p-4 space-y-2">
-        <div className="flex items-center justify-between">
-          <div className="text-xs uppercase tracking-wider text-[var(--op-35)]">Диалог — клип</div>
-          <button onClick={remove} className="text-[var(--op-40)] hover:text-[var(--op-80)]">
-            <Trash2 size={13} />
-          </button>
-        </div>
-        <SearchSelect
-          value={clip.dialogueId}
-          onChange={(id) => patch({ dialogueId: id })}
-          options={dialogues.map((d) => ({ id: d.id, label: d.name }))}
-          placeholder="Диалог…"
-        />
-        <div className="flex items-center gap-2">
-          <NumField label="Начало мс" value={clip.atMs} onChange={(v) => patch({ atMs: v })} />
-          <NumField label="Показ мс" value={clip.durationMs} onChange={(v) => patch({ durationMs: v })} />
-        </div>
-      </div>
-    );
-  }
-
-  const track = entry.cutsceneAudioFxTrack ?? [];
-  const clip = track.find((c) => c.id === selected.id);
-  if (!clip) return null;
-  const patch = (p: Partial<AudioFxClip>) => updateEntry(entry.id, { cutsceneAudioFxTrack: track.map((c) => (c.id === clip.id ? { ...c, ...p } : c)) });
-  const remove = () => {
-    updateEntry(entry.id, { cutsceneAudioFxTrack: track.filter((c) => c.id !== clip.id) });
-    onClose();
-  };
-  return (
-    <div className="glass rounded-lg p-4 space-y-2">
-      <div className="flex items-center justify-between">
-        <div className="text-xs uppercase tracking-wider text-[var(--op-35)]">Аудио/FX — клип</div>
-        <button onClick={remove} className="text-[var(--op-40)] hover:text-[var(--op-80)]">
-          <Trash2 size={13} />
-        </button>
-      </div>
-      <ThemedSelect
-        className="input"
-        value={clip.kind}
-        onChange={(v) => patch({ kind: v as AudioFxKind })}
-        options={(Object.keys(AUDIOFX_KIND_LABEL) as AudioFxKind[]).map((k) => ({ value: k, label: AUDIOFX_KIND_LABEL[k] }))}
-      />
-      <div className="flex items-center gap-2 flex-wrap">
-        <NumField label="Момент мс" value={clip.atMs} onChange={(v) => patch({ atMs: v })} />
-        {(clip.kind === "sound" || clip.kind === "music") && (
-          <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1">
-            Ассет (GML)
-            <input
-              className="input text-xs w-32"
-              value={clip.assetName ?? ""}
-              placeholder="snd_..."
-              onChange={(e) => patch({ assetName: e.target.value })}
-            />
-          </label>
-        )}
-        {(clip.kind === "fade" || clip.kind === "flash") && (
-          <NumField label="Длит. мс" value={clip.durationMs ?? 500} onChange={(v) => patch({ durationMs: v })} />
-        )}
-        {clip.kind === "fade" && (
-          <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1">
-            Направление
-            <ThemedSelect
-              className="input w-28"
-              value={clip.direction ?? "out"}
-              onChange={(v) => patch({ direction: v as "in" | "out" })}
-              options={[
-                { value: "out", label: "В темноту" },
-                { value: "in", label: "Из темноты" },
-              ]}
-            />
-          </label>
-        )}
-        {clip.kind === "flash" && (
-          <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1">
-            Цвет
-            <input
-              type="color"
-              className="w-8 h-6 rounded border border-[var(--op-10)] bg-transparent"
-              value={clip.color ?? "#ffffff"}
-              onChange={(e) => patch({ color: e.target.value })}
-            />
-          </label>
-        )}
-      </div>
-    </div>
+      <button
+        onClick={() => setEditorOpen(true)}
+        className="flex items-center justify-center gap-2 w-full py-2.5 rounded-md bg-accent text-[var(--popover-bg)] font-medium text-sm hover:opacity-90"
+      >
+        <Clapperboard size={14} /> Открыть редактор катсцены
+      </button>
+      {editorOpen && <CutsceneEditorModal entry={entry} onClose={() => setEditorOpen(false)} />}
+    </Section>
   );
 }
 
