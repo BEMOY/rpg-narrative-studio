@@ -1,10 +1,8 @@
-import { useEffect, useRef, useState } from "react";
-import { Play, Pause } from "lucide-react";
 import type { Entry } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
 import { MapThumbnail } from "../mapeditor/MapThumbnail";
 import { SpriteAnimator } from "../common/SpriteAnimator";
-import { activeDialogueClip, cutsceneTotalDurationMs, resolveCamera, resolveCharacters, resolveOverlay } from "../../lib/cutscenePreview";
+import { activeDialogueClip, resolveCamera, resolveCharacters, resolveOverlay } from "../../lib/cutscenePreview";
 
 // The game's actual base resolution (see the project brief: 320x180, top-down pixel art) --
 // used as the camera's "native" viewport so zoom/pan in this preview means the same thing it
@@ -14,56 +12,25 @@ const NATIVE_W = 320;
 const NATIVE_H = 180;
 const STAGE_DISPLAY_W = 480;
 
-// Live preview canvas for a Cutscene's timeline (Dynarain Phase 2) -- renders the bound
-// location's existing MapThumbnail SVG as the world background, overlays animated character
-// sprites (falling back to a static portrait, then a plain initial-letter dot, if a character
-// has no sprite strip uploaded for CharacterSpritesSection yet), applies a CSS transform for
-// camera pan/zoom/shake, and layers a dialogue text box + fade/flash overlay on top in
-// screen-space (outside the transformed "world" layer, same as real game UI would stay put
-// while the camera moves under it).
+// Live preview STAGE for a Cutscene's timeline (Dynarain Phase 2) -- a "dumb" component driven
+// entirely by the `t` (playhead, ms) prop, so it can stay in perfect sync with the
+// CutsceneTimeline editor's own playhead/scrubbing (both are views onto the same shared
+// play/pause/scrub state one level up, in CutscenePanel, EntryEditor.tsx -- same idea as a real
+// NLE's timeline and preview monitor being the same instrument). Renders the bound location's
+// existing MapThumbnail SVG as the world background, overlays animated character sprites
+// (falling back to a static portrait, then a plain initial-letter dot, if a character has no
+// sprite strip uploaded yet in CharacterSpritesSection), applies a CSS transform for camera
+// pan/zoom/shake, and layers a dialogue text box + fade/flash overlay on top in screen-space
+// (outside the transformed "world" layer, same as real game UI staying put while the camera
+// moves under it).
 //
 // Known v1 limitation: the dialogue box shows the raw text of the dialogue's first line
 // (including any [c=...] color markup literally, unparsed) rather than running the full
-// dialogue markup renderer used elsewhere in the app -- pulling that renderer in here for a
-// small preview label was judged not worth the extra surface area this round.
-export function CutscenePreview({ entry }: { entry: Entry }) {
+// dialogue markup renderer used elsewhere in the app.
+export function CutscenePreview({ entry, t }: { entry: Entry; t: number }) {
   const allEntries = useProjectStore((s) => s.project.entries);
   const dialogues = useProjectStore((s) => s.project.dialogues);
   const boundMap = allEntries.find((e) => e.id === entry.cutsceneMapId);
-
-  const totalMs = cutsceneTotalDurationMs(entry);
-  const [t, setT] = useState(0);
-  const [playing, setPlaying] = useState(false);
-  const [loop, setLoop] = useState(true);
-  const rafRef = useRef<number | undefined>(undefined);
-  const lastRef = useRef(0);
-
-  useEffect(() => {
-    if (!playing) return;
-    lastRef.current = 0;
-    const step = (ts: number) => {
-      if (lastRef.current === 0) lastRef.current = ts;
-      const dt = ts - lastRef.current;
-      lastRef.current = ts;
-      setT((prev) => {
-        let next = prev + dt;
-        if (next >= totalMs) {
-          if (loop) next = totalMs <= 0 ? 0 : next % totalMs;
-          else next = totalMs;
-        }
-        return next;
-      });
-      rafRef.current = requestAnimationFrame(step);
-    };
-    rafRef.current = requestAnimationFrame(step);
-    return () => {
-      if (rafRef.current !== undefined) cancelAnimationFrame(rafRef.current);
-    };
-  }, [playing, totalMs, loop]);
-
-  useEffect(() => {
-    if (playing && t >= totalMs && !loop) setPlaying(false);
-  }, [playing, t, totalMs, loop]);
 
   if (!boundMap?.map) {
     return (
@@ -150,32 +117,6 @@ export function CutscenePreview({ entry }: { entry: Entry }) {
             <div>{firstLine.text}</div>
           </div>
         )}
-      </div>
-
-      <div className="flex items-center gap-2">
-        <button
-          onClick={() => setPlaying((p) => !p)}
-          className="w-7 h-7 grid place-items-center rounded-md glass hover:bg-[var(--op-10)] shrink-0"
-        >
-          {playing ? <Pause size={13} /> : <Play size={13} />}
-        </button>
-        <input
-          type="range"
-          min={0}
-          max={totalMs}
-          value={Math.min(t, totalMs)}
-          onChange={(e) => {
-            setPlaying(false);
-            setT(Number(e.target.value));
-          }}
-          className="flex-1"
-        />
-        <span className="text-[10px] mono text-[var(--op-40)] w-24 text-right shrink-0">
-          {Math.round(t)} / {totalMs} мс
-        </span>
-        <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1 shrink-0">
-          <input type="checkbox" checked={loop} onChange={(e) => setLoop(e.target.checked)} /> Цикл
-        </label>
       </div>
     </div>
   );

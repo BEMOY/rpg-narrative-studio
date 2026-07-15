@@ -225,6 +225,11 @@ export interface Entry {
   // preview has a map to render behind the action; standalone and reusable, referenced by id
   // from Scene steps, never owned by one Scene.
   cutsceneMapId?: string;
+  // Which characters have their own track/lane in the timeline editor -- kept separate from
+  // cutsceneCharacterTrack (the actual clips) so an added-but-still-empty character track
+  // doesn't just disappear (a lane filtered purely from clip data would vanish the moment its
+  // last clip was removed). Order here is also the lane's on-screen display order.
+  cutsceneCastCharacterIds?: string[];
   cutsceneCameraTrack?: CameraClip[];
   cutsceneCharacterTrack?: CharacterClip[];
   cutsceneDialogueTrack?: CutsceneDialogueClip[];

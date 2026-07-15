@@ -1,5 +1,5 @@
-import { Trash2, Plus, X, Upload, ImageOff, ChevronDown, ArrowUp, ArrowDown } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { Trash2, Plus, X, Upload, ImageOff, ChevronDown, ArrowUp, ArrowDown, Play, Pause } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { AudioFxClip, AudioFxKind, CameraClip, CharacterAnimState, CharacterClip, CutsceneDialogueClip, DialogueSide, DialogueSpeakerData, Entry, EquipSlot, Objective, QuestDependency, QuestDependencyKind, QuestRewards, Relationship, SceneOutcome, SceneStep, SceneStepKind, SceneTransition, SpriteStrip } from "../../types/database";
 import { canHaveStats, hasRelationship, isCutscene, isEquip, isQuest, isScene } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
@@ -7,6 +7,9 @@ import { resizeImageFile, getImageDimensions, readImageFileLossless } from "../.
 import { usePasteImage } from "../../lib/usePasteImage";
 import { SpriteAnimator } from "../common/SpriteAnimator";
 import { CutscenePreview } from "./CutscenePreview";
+import { CutsceneTimeline } from "./CutsceneTimeline";
+import type { ClipRef } from "./CutsceneTimeline";
+import { cutsceneTotalDurationMs } from "../../lib/cutscenePreview";
 import { SearchSelect } from "../dialogue/SearchSelect";
 import { nextId } from "../../lib/mapDefaults";
 import { normalizeOutcomesForKind } from "../../lib/sceneDefaults";
@@ -1188,45 +1191,55 @@ const AUDIOFX_KIND_LABEL: Record<AudioFxKind, string> = {
 const CHAR_ANIM_OPTIONS: CharacterAnimState[] = ["idle", "walk", "run"];
 
 // The Cutscene entity (Dynarain Phase 2) -- see the doc comment above CameraClip in
-// types/database.ts for the full data model and the scoping note about why this is an ordered
-// list of clips with numeric start/duration fields, rather than a draggable horizontal timeline
-// widget. Four tracks (Camera / Characters / Dialogue / Audio-FX), plus the bound location used
-// as the live preview's background (CutscenePreview, rendered below the track lists).
+// types/database.ts for the full data model. This panel owns the shared playback state (t,
+// playing, loop, which clip is selected) and hands it down to three collaborating pieces, the
+// same way a real NLE's timeline/monitor/inspector are three views onto one shared state:
+//   - CutsceneTimeline: the actual multi-track drag/resize timeline widget.
+//   - ClipInspector: precise numeric/kind-specific fields for whichever clip is selected.
+//   - CutscenePreview: the live animated stage, driven purely by the current `t`.
 function CutscenePanel({ entry }: { entry: Entry }) {
   const updateEntry = useProjectStore((s) => s.updateEntry);
   const allEntries = useProjectStore((s) => s.project.entries);
-  const dialogues = useProjectStore((s) => s.project.dialogues);
 
   const locations = allEntries.filter((e) => e.category === "location");
-  const charactersList = allEntries.filter((e) => e.category === "character");
 
-  const cameraTrack = entry.cutsceneCameraTrack ?? [];
-  const setCameraTrack = (next: CameraClip[]) => updateEntry(entry.id, { cutsceneCameraTrack: next });
-  const patchCamera = (i: number, p: Partial<CameraClip>) => setCameraTrack(cameraTrack.map((c, idx) => (idx === i ? { ...c, ...p } : c)));
-  const removeCamera = (i: number) => setCameraTrack(cameraTrack.filter((_, idx) => idx !== i));
-  const addCamera = () => setCameraTrack([...cameraTrack, { id: nextId("cam"), startMs: 0, durationMs: 1000, kind: "move", x: 0, y: 0 }]);
+  const totalMs = cutsceneTotalDurationMs(entry);
+  const [t, setT] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [loop, setLoop] = useState(true);
+  const [selected, setSelected] = useState<ClipRef | null>(null);
+  const rafRef = useRef<number | undefined>(undefined);
+  const lastRef = useRef(0);
 
-  const charTrack = entry.cutsceneCharacterTrack ?? [];
-  const setCharTrack = (next: CharacterClip[]) => updateEntry(entry.id, { cutsceneCharacterTrack: next });
-  const patchChar = (i: number, p: Partial<CharacterClip>) => setCharTrack(charTrack.map((c, idx) => (idx === i ? { ...c, ...p } : c)));
-  const removeChar = (i: number) => setCharTrack(charTrack.filter((_, idx) => idx !== i));
-  const addChar = () => setCharTrack([...charTrack, { id: nextId("cclip"), startMs: 0, durationMs: 1000, kind: "move", x: 0, y: 0 }]);
+  useEffect(() => {
+    if (!playing) return;
+    lastRef.current = 0;
+    const step = (ts: number) => {
+      if (lastRef.current === 0) lastRef.current = ts;
+      const dt = ts - lastRef.current;
+      lastRef.current = ts;
+      setT((prev) => {
+        let next = prev + dt;
+        if (next >= totalMs) {
+          next = loop ? (totalMs <= 0 ? 0 : next % totalMs) : totalMs;
+        }
+        return next;
+      });
+      rafRef.current = requestAnimationFrame(step);
+    };
+    rafRef.current = requestAnimationFrame(step);
+    return () => {
+      if (rafRef.current !== undefined) cancelAnimationFrame(rafRef.current);
+    };
+  }, [playing, totalMs, loop]);
 
-  const dlgTrack = entry.cutsceneDialogueTrack ?? [];
-  const setDlgTrack = (next: CutsceneDialogueClip[]) => updateEntry(entry.id, { cutsceneDialogueTrack: next });
-  const patchDlg = (i: number, p: Partial<CutsceneDialogueClip>) => setDlgTrack(dlgTrack.map((c, idx) => (idx === i ? { ...c, ...p } : c)));
-  const removeDlg = (i: number) => setDlgTrack(dlgTrack.filter((_, idx) => idx !== i));
-  const addDlg = () => setDlgTrack([...dlgTrack, { id: nextId("dclip"), atMs: 0, durationMs: 3000 }]);
-
-  const fxTrack = entry.cutsceneAudioFxTrack ?? [];
-  const setFxTrack = (next: AudioFxClip[]) => updateEntry(entry.id, { cutsceneAudioFxTrack: next });
-  const patchFx = (i: number, p: Partial<AudioFxClip>) => setFxTrack(fxTrack.map((c, idx) => (idx === i ? { ...c, ...p } : c)));
-  const removeFx = (i: number) => setFxTrack(fxTrack.filter((_, idx) => idx !== i));
-  const addFx = () => setFxTrack([...fxTrack, { id: nextId("fx"), atMs: 0, kind: "sound" }]);
+  useEffect(() => {
+    if (playing && t >= totalMs && !loop) setPlaying(false);
+  }, [playing, t, totalMs, loop]);
 
   return (
     <>
-      <Section title="Катсцена — таймлайн">
+      <Section title="Катсцена">
         <Field label="Локация">
           <SearchSelect
             value={entry.cutsceneMapId}
@@ -1239,203 +1252,245 @@ function CutscenePanel({ entry }: { entry: Entry }) {
           <div className="text-xs text-[var(--op-30)]">Локация нужна для фона в живом превью ниже — сам таймлайн можно собирать и без неё.</div>
         )}
 
-        <div>
-          <div className="text-sm text-[var(--op-50)] mb-2">Камера</div>
-          <div className="space-y-1.5">
-            {cameraTrack.length === 0 && <div className="text-xs text-[var(--op-30)]">Нет клипов камеры.</div>}
-            {cameraTrack.map((c, i) => (
-              <div key={c.id} className="rounded-md border border-[var(--op-7)] p-2 space-y-1.5">
-                <div className="flex items-center gap-1.5">
-                  <ThemedSelect
-                    className="input flex-1"
-                    value={c.kind}
-                    onChange={(v) => patchCamera(i, { kind: v as CameraClip["kind"] })}
-                    options={[
-                      { value: "move", label: "Движение" },
-                      { value: "zoom", label: "Зум" },
-                      { value: "shake", label: "Тряска" },
-                    ]}
-                  />
-                  <button onClick={() => removeCamera(i)} className="opacity-40 hover:opacity-100 shrink-0">
-                    <X size={14} />
-                  </button>
-                </div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <NumField label="Начало мс" value={c.startMs} onChange={(v) => patchCamera(i, { startMs: v })} />
-                  <NumField label="Длит. мс" value={c.durationMs} onChange={(v) => patchCamera(i, { durationMs: v })} />
-                  {c.kind === "move" && (
-                    <>
-                      <NumField label="X" value={c.x ?? 0} onChange={(v) => patchCamera(i, { x: v })} />
-                      <NumField label="Y" value={c.y ?? 0} onChange={(v) => patchCamera(i, { y: v })} />
-                    </>
-                  )}
-                  {c.kind === "zoom" && <NumField label="Зум" value={c.zoom ?? 1} step={0.1} onChange={(v) => patchCamera(i, { zoom: v })} />}
-                  {c.kind === "shake" && <NumField label="Сила" value={c.intensity ?? 0.3} step={0.05} onChange={(v) => patchCamera(i, { intensity: v })} />}
-                </div>
-              </div>
-            ))}
-            <button onClick={addCamera} className="flex items-center gap-1.5 text-xs text-[var(--op-50)] hover:text-[var(--op-80)]">
-              <Plus size={12} /> Добавить клип камеры
-            </button>
-          </div>
-        </div>
-
-        <div>
-          <div className="text-sm text-[var(--op-50)] mb-2">Персонажи</div>
-          <div className="space-y-1.5">
-            {charTrack.length === 0 && <div className="text-xs text-[var(--op-30)]">Нет клипов персонажей.</div>}
-            {charTrack.map((c, i) => (
-              <div key={c.id} className="rounded-md border border-[var(--op-7)] p-2 space-y-1.5">
-                <div className="flex items-center gap-1.5">
-                  <div className="flex-1">
-                    <SearchSelect
-                      value={c.characterId}
-                      onChange={(id) => patchChar(i, { characterId: id })}
-                      options={charactersList.map((ch) => ({ id: ch.id, label: ch.name }))}
-                      placeholder="Персонаж…"
-                    />
-                  </div>
-                  <ThemedSelect
-                    className="input w-32 shrink-0"
-                    value={c.kind}
-                    onChange={(v) => patchChar(i, { kind: v as CharacterClip["kind"] })}
-                    options={[
-                      { value: "move", label: "Движение" },
-                      { value: "animate", label: "Анимация" },
-                    ]}
-                  />
-                  <button onClick={() => removeChar(i)} className="opacity-40 hover:opacity-100 shrink-0">
-                    <X size={14} />
-                  </button>
-                </div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <NumField label="Начало мс" value={c.startMs} onChange={(v) => patchChar(i, { startMs: v })} />
-                  <NumField label="Длит. мс" value={c.durationMs} onChange={(v) => patchChar(i, { durationMs: v })} />
-                  {c.kind === "move" && (
-                    <>
-                      <NumField label="X" value={c.x ?? 0} onChange={(v) => patchChar(i, { x: v })} />
-                      <NumField label="Y" value={c.y ?? 0} onChange={(v) => patchChar(i, { y: v })} />
-                    </>
-                  )}
-                  <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1">
-                    Анимация
-                    <ThemedSelect
-                      className="input w-24"
-                      value={c.anim ?? (c.kind === "move" ? "walk" : "idle")}
-                      onChange={(v) => patchChar(i, { anim: v as CharacterAnimState })}
-                      options={CHAR_ANIM_OPTIONS.map((a) => ({ value: a, label: ANIM_STATE_LABEL[a] }))}
-                    />
-                  </label>
-                </div>
-              </div>
-            ))}
-            <button onClick={addChar} className="flex items-center gap-1.5 text-xs text-[var(--op-50)] hover:text-[var(--op-80)]">
-              <Plus size={12} /> Добавить клип персонажа
-            </button>
-          </div>
-        </div>
-
-        <div>
-          <div className="text-sm text-[var(--op-50)] mb-2">Диалоги</div>
-          <div className="space-y-1.5">
-            {dlgTrack.length === 0 && <div className="text-xs text-[var(--op-30)]">Нет диалогов на таймлайне.</div>}
-            {dlgTrack.map((c, i) => (
-              <div key={c.id} className="rounded-md border border-[var(--op-7)] p-2 space-y-1.5">
-                <div className="flex items-center gap-1.5">
-                  <div className="flex-1">
-                    <SearchSelect
-                      value={c.dialogueId}
-                      onChange={(id) => patchDlg(i, { dialogueId: id })}
-                      options={dialogues.map((d) => ({ id: d.id, label: d.name }))}
-                      placeholder="Диалог…"
-                    />
-                  </div>
-                  <button onClick={() => removeDlg(i)} className="opacity-40 hover:opacity-100 shrink-0">
-                    <X size={14} />
-                  </button>
-                </div>
-                <div className="flex items-center gap-2">
-                  <NumField label="Начало мс" value={c.atMs} onChange={(v) => patchDlg(i, { atMs: v })} />
-                  <NumField label="Показ мс" value={c.durationMs} onChange={(v) => patchDlg(i, { durationMs: v })} />
-                </div>
-              </div>
-            ))}
-            <button onClick={addDlg} className="flex items-center gap-1.5 text-xs text-[var(--op-50)] hover:text-[var(--op-80)]">
-              <Plus size={12} /> Добавить диалог
-            </button>
-          </div>
-        </div>
-
-        <div>
-          <div className="text-sm text-[var(--op-50)] mb-2">Аудио / FX</div>
-          <div className="space-y-1.5">
-            {fxTrack.length === 0 && <div className="text-xs text-[var(--op-30)]">Нет аудио/FX клипов.</div>}
-            {fxTrack.map((c, i) => (
-              <div key={c.id} className="rounded-md border border-[var(--op-7)] p-2 space-y-1.5">
-                <div className="flex items-center gap-1.5">
-                  <ThemedSelect
-                    className="input flex-1"
-                    value={c.kind}
-                    onChange={(v) => patchFx(i, { kind: v as AudioFxKind })}
-                    options={(Object.keys(AUDIOFX_KIND_LABEL) as AudioFxKind[]).map((k) => ({ value: k, label: AUDIOFX_KIND_LABEL[k] }))}
-                  />
-                  <button onClick={() => removeFx(i)} className="opacity-40 hover:opacity-100 shrink-0">
-                    <X size={14} />
-                  </button>
-                </div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <NumField label="Момент мс" value={c.atMs} onChange={(v) => patchFx(i, { atMs: v })} />
-                  {(c.kind === "sound" || c.kind === "music") && (
-                    <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1">
-                      Ассет (GML)
-                      <input
-                        className="input text-xs w-32"
-                        value={c.assetName ?? ""}
-                        placeholder="snd_..."
-                        onChange={(e) => patchFx(i, { assetName: e.target.value })}
-                      />
-                    </label>
-                  )}
-                  {(c.kind === "fade" || c.kind === "flash") && (
-                    <NumField label="Длит. мс" value={c.durationMs ?? 500} onChange={(v) => patchFx(i, { durationMs: v })} />
-                  )}
-                  {c.kind === "fade" && (
-                    <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1">
-                      Направление
-                      <ThemedSelect
-                        className="input w-28"
-                        value={c.direction ?? "out"}
-                        onChange={(v) => patchFx(i, { direction: v as "in" | "out" })}
-                        options={[
-                          { value: "out", label: "В темноту" },
-                          { value: "in", label: "Из темноты" },
-                        ]}
-                      />
-                    </label>
-                  )}
-                  {c.kind === "flash" && (
-                    <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1">
-                      Цвет
-                      <input
-                        type="color"
-                        className="w-8 h-6 rounded border border-[var(--op-10)] bg-transparent"
-                        value={c.color ?? "#ffffff"}
-                        onChange={(e) => patchFx(i, { color: e.target.value })}
-                      />
-                    </label>
-                  )}
-                </div>
-              </div>
-            ))}
-            <button onClick={addFx} className="flex items-center gap-1.5 text-xs text-[var(--op-50)] hover:text-[var(--op-80)]">
-              <Plus size={12} /> Добавить аудио/FX
-            </button>
-          </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setPlaying((p) => !p)}
+            className="w-7 h-7 grid place-items-center rounded-md glass hover:bg-[var(--op-10)] shrink-0"
+          >
+            {playing ? <Pause size={13} /> : <Play size={13} />}
+          </button>
+          <input
+            type="range"
+            min={0}
+            max={totalMs}
+            value={Math.min(t, totalMs)}
+            onChange={(e) => {
+              setPlaying(false);
+              setT(Number(e.target.value));
+            }}
+            className="flex-1"
+          />
+          <span className="text-[10px] mono text-[var(--op-40)] w-24 text-right shrink-0">
+            {Math.round(t)} / {totalMs} мс
+          </span>
+          <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1 shrink-0">
+            <input type="checkbox" checked={loop} onChange={(e) => setLoop(e.target.checked)} /> Цикл
+          </label>
         </div>
       </Section>
 
-      <CutscenePreview entry={entry} />
+      <CutsceneTimeline entry={entry} t={t} onScrub={(ms) => { setPlaying(false); setT(ms); }} selected={selected} onSelect={setSelected} />
+      <ClipInspector entry={entry} selected={selected} onClose={() => setSelected(null)} />
+      <CutscenePreview entry={entry} t={t} />
     </>
+  );
+}
+
+// Precise numeric/kind-specific property editor for whichever clip is currently selected on the
+// CutsceneTimeline above -- the rough position/duration are set by dragging there, this panel is
+// for exact values and kind-specific params (camera x/y/zoom/intensity, which character a clip
+// belongs to implicitly via its lane, dialogue reference, audio/fx asset name & color etc).
+function ClipInspector({ entry, selected, onClose }: { entry: Entry; selected: ClipRef | null; onClose: () => void }) {
+  const updateEntry = useProjectStore((s) => s.updateEntry);
+  const dialogues = useProjectStore((s) => s.project.dialogues);
+  const allEntries = useProjectStore((s) => s.project.entries);
+
+  if (!selected) {
+    return (
+      <div className="glass rounded-lg p-4 text-xs text-[var(--op-30)]">Выберите клип на таймлайне, чтобы отредактировать его параметры точно.</div>
+    );
+  }
+
+  if (selected.trackKind === "camera") {
+    const track = entry.cutsceneCameraTrack ?? [];
+    const clip = track.find((c) => c.id === selected.id);
+    if (!clip) return null;
+    const patch = (p: Partial<CameraClip>) => updateEntry(entry.id, { cutsceneCameraTrack: track.map((c) => (c.id === clip.id ? { ...c, ...p } : c)) });
+    const remove = () => {
+      updateEntry(entry.id, { cutsceneCameraTrack: track.filter((c) => c.id !== clip.id) });
+      onClose();
+    };
+    return (
+      <div className="glass rounded-lg p-4 space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="text-xs uppercase tracking-wider text-[var(--op-35)]">Камера — клип</div>
+          <button onClick={remove} className="text-[var(--op-40)] hover:text-[var(--op-80)]">
+            <Trash2 size={13} />
+          </button>
+        </div>
+        <ThemedSelect
+          className="input"
+          value={clip.kind}
+          onChange={(v) => patch({ kind: v as CameraClip["kind"] })}
+          options={[
+            { value: "move", label: "Движение" },
+            { value: "zoom", label: "Зум" },
+            { value: "shake", label: "Тряска" },
+          ]}
+        />
+        <div className="flex items-center gap-2 flex-wrap">
+          <NumField label="Начало мс" value={clip.startMs} onChange={(v) => patch({ startMs: v })} />
+          <NumField label="Длит. мс" value={clip.durationMs} onChange={(v) => patch({ durationMs: v })} />
+          {clip.kind === "move" && (
+            <>
+              <NumField label="X" value={clip.x ?? 0} onChange={(v) => patch({ x: v })} />
+              <NumField label="Y" value={clip.y ?? 0} onChange={(v) => patch({ y: v })} />
+            </>
+          )}
+          {clip.kind === "zoom" && <NumField label="Зум" value={clip.zoom ?? 1} step={0.1} onChange={(v) => patch({ zoom: v })} />}
+          {clip.kind === "shake" && <NumField label="Сила" value={clip.intensity ?? 0.3} step={0.05} onChange={(v) => patch({ intensity: v })} />}
+        </div>
+      </div>
+    );
+  }
+
+  if (selected.trackKind === "character") {
+    const track = entry.cutsceneCharacterTrack ?? [];
+    const clip = track.find((c) => c.id === selected.id);
+    if (!clip) return null;
+    const patch = (p: Partial<CharacterClip>) => updateEntry(entry.id, { cutsceneCharacterTrack: track.map((c) => (c.id === clip.id ? { ...c, ...p } : c)) });
+    const remove = () => {
+      updateEntry(entry.id, { cutsceneCharacterTrack: track.filter((c) => c.id !== clip.id) });
+      onClose();
+    };
+    const character = allEntries.find((e) => e.id === clip.characterId);
+    return (
+      <div className="glass rounded-lg p-4 space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="text-xs uppercase tracking-wider text-[var(--op-35)]">Персонаж — клип{character ? ` (${character.name})` : ""}</div>
+          <button onClick={remove} className="text-[var(--op-40)] hover:text-[var(--op-80)]">
+            <Trash2 size={13} />
+          </button>
+        </div>
+        <ThemedSelect
+          className="input"
+          value={clip.kind}
+          onChange={(v) => patch({ kind: v as CharacterClip["kind"] })}
+          options={[
+            { value: "move", label: "Движение" },
+            { value: "animate", label: "Анимация" },
+          ]}
+        />
+        <div className="flex items-center gap-2 flex-wrap">
+          <NumField label="Начало мс" value={clip.startMs} onChange={(v) => patch({ startMs: v })} />
+          <NumField label="Длит. мс" value={clip.durationMs} onChange={(v) => patch({ durationMs: v })} />
+          {clip.kind === "move" && (
+            <>
+              <NumField label="X" value={clip.x ?? 0} onChange={(v) => patch({ x: v })} />
+              <NumField label="Y" value={clip.y ?? 0} onChange={(v) => patch({ y: v })} />
+            </>
+          )}
+          <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1">
+            Анимация
+            <ThemedSelect
+              className="input w-24"
+              value={clip.anim ?? (clip.kind === "move" ? "walk" : "idle")}
+              onChange={(v) => patch({ anim: v as CharacterAnimState })}
+              options={CHAR_ANIM_OPTIONS.map((a) => ({ value: a, label: ANIM_STATE_LABEL[a] }))}
+            />
+          </label>
+        </div>
+      </div>
+    );
+  }
+
+  if (selected.trackKind === "dialogue") {
+    const track = entry.cutsceneDialogueTrack ?? [];
+    const clip = track.find((c) => c.id === selected.id);
+    if (!clip) return null;
+    const patch = (p: Partial<CutsceneDialogueClip>) =>
+      updateEntry(entry.id, { cutsceneDialogueTrack: track.map((c) => (c.id === clip.id ? { ...c, ...p } : c)) });
+    const remove = () => {
+      updateEntry(entry.id, { cutsceneDialogueTrack: track.filter((c) => c.id !== clip.id) });
+      onClose();
+    };
+    return (
+      <div className="glass rounded-lg p-4 space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="text-xs uppercase tracking-wider text-[var(--op-35)]">Диалог — клип</div>
+          <button onClick={remove} className="text-[var(--op-40)] hover:text-[var(--op-80)]">
+            <Trash2 size={13} />
+          </button>
+        </div>
+        <SearchSelect
+          value={clip.dialogueId}
+          onChange={(id) => patch({ dialogueId: id })}
+          options={dialogues.map((d) => ({ id: d.id, label: d.name }))}
+          placeholder="Диалог…"
+        />
+        <div className="flex items-center gap-2">
+          <NumField label="Начало мс" value={clip.atMs} onChange={(v) => patch({ atMs: v })} />
+          <NumField label="Показ мс" value={clip.durationMs} onChange={(v) => patch({ durationMs: v })} />
+        </div>
+      </div>
+    );
+  }
+
+  const track = entry.cutsceneAudioFxTrack ?? [];
+  const clip = track.find((c) => c.id === selected.id);
+  if (!clip) return null;
+  const patch = (p: Partial<AudioFxClip>) => updateEntry(entry.id, { cutsceneAudioFxTrack: track.map((c) => (c.id === clip.id ? { ...c, ...p } : c)) });
+  const remove = () => {
+    updateEntry(entry.id, { cutsceneAudioFxTrack: track.filter((c) => c.id !== clip.id) });
+    onClose();
+  };
+  return (
+    <div className="glass rounded-lg p-4 space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="text-xs uppercase tracking-wider text-[var(--op-35)]">Аудио/FX — клип</div>
+        <button onClick={remove} className="text-[var(--op-40)] hover:text-[var(--op-80)]">
+          <Trash2 size={13} />
+        </button>
+      </div>
+      <ThemedSelect
+        className="input"
+        value={clip.kind}
+        onChange={(v) => patch({ kind: v as AudioFxKind })}
+        options={(Object.keys(AUDIOFX_KIND_LABEL) as AudioFxKind[]).map((k) => ({ value: k, label: AUDIOFX_KIND_LABEL[k] }))}
+      />
+      <div className="flex items-center gap-2 flex-wrap">
+        <NumField label="Момент мс" value={clip.atMs} onChange={(v) => patch({ atMs: v })} />
+        {(clip.kind === "sound" || clip.kind === "music") && (
+          <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1">
+            Ассет (GML)
+            <input
+              className="input text-xs w-32"
+              value={clip.assetName ?? ""}
+              placeholder="snd_..."
+              onChange={(e) => patch({ assetName: e.target.value })}
+            />
+          </label>
+        )}
+        {(clip.kind === "fade" || clip.kind === "flash") && (
+          <NumField label="Длит. мс" value={clip.durationMs ?? 500} onChange={(v) => patch({ durationMs: v })} />
+        )}
+        {clip.kind === "fade" && (
+          <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1">
+            Направление
+            <ThemedSelect
+              className="input w-28"
+              value={clip.direction ?? "out"}
+              onChange={(v) => patch({ direction: v as "in" | "out" })}
+              options={[
+                { value: "out", label: "В темноту" },
+                { value: "in", label: "Из темноты" },
+              ]}
+            />
+          </label>
+        )}
+        {clip.kind === "flash" && (
+          <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1">
+            Цвет
+            <input
+              type="color"
+              className="w-8 h-6 rounded border border-[var(--op-10)] bg-transparent"
+              value={clip.color ?? "#ffffff"}
+              onChange={(e) => patch({ color: e.target.value })}
+            />
+          </label>
+        )}
+      </div>
+    </div>
   );
 }
 
