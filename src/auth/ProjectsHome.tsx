@@ -49,6 +49,26 @@ const DEFAULT_RESIST_PRESETS: StatPreset[] = [
   { id: "res_poison", name: "Яд", icon: "biohazard", max: 100 },
 ];
 
+// Separate default library for character entries — same StatPreset shape as the equipment
+// defaults above, but its own distinct pool (see StatPreset's doc comment in
+// types/database.ts) so a fresh project doesn't mix "Атака снаряжения" style presets into a
+// character's stat list.
+const DEFAULT_CHARACTER_STAT_PRESETS: StatPreset[] = [
+  { id: "cstat_strength", name: "Сила", icon: "sword", max: 100 },
+  { id: "cstat_agility", name: "Ловкость", icon: "footprints", max: 100 },
+  { id: "cstat_intelligence", name: "Интеллект", icon: "sparkles", max: 100 },
+  { id: "cstat_charisma", name: "Харизма", icon: "heart", max: 100 },
+  { id: "cstat_endurance", name: "Выносливость", icon: "shield", max: 100 },
+  { id: "cstat_luck", name: "Удача", icon: "clover", max: 100 },
+];
+
+const DEFAULT_CHARACTER_RESIST_PRESETS: StatPreset[] = [
+  { id: "cres_fire", name: "Огонь", icon: "flame", max: 100 },
+  { id: "cres_ice", name: "Лёд", icon: "snowflake", max: 100 },
+  { id: "cres_lightning", name: "Молния", icon: "zap", max: 100 },
+  { id: "cres_poison", name: "Яд", icon: "biohazard", max: 100 },
+];
+
 export function ProjectsHome({ onOpen }: { onOpen: (row: ProjectRow) => void }) {
   const [projects, setProjects] = useState<ProjectRow[] | null>(null);
   const [invites, setInvites] = useState<InviteRow[]>([]);
@@ -116,6 +136,8 @@ export function ProjectsHome({ onOpen }: { onOpen: (row: ProjectRow) => void }) 
         colorStyles: [],
         statPresets: DEFAULT_STAT_PRESETS,
         resistPresets: DEFAULT_RESIST_PRESETS,
+        characterStatPresets: DEFAULT_CHARACTER_STAT_PRESETS,
+        characterResistPresets: DEFAULT_CHARACTER_RESIST_PRESETS,
       });
       onOpen(row);
     } catch (e: any) {

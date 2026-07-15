@@ -160,6 +160,17 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
   const stageRef = useRef<HTMLDivElement>(null);
   const freehandCanvasRef = useRef<HTMLCanvasElement>(null);
   const drawingStrokeRef = useRef(false);
+  // True once the interactive freehand <canvas> actually has the layer's real bitmap painted
+  // onto it (see the sync effect below) — false while a load is still pending. The canvas
+  // element only exists while this layer is the active draw target (see isActiveDrawTarget in
+  // the render below); every time it mounts fresh — switching tools onto a freehand layer,
+  // switching which layer is active, undo/redo — it starts out BLANK and the real content is
+  // painted in asynchronously (Image.onload). Without this gate, a fast click-and-drag right
+  // after such a switch could start erasing/painting on that still-blank canvas; the stroke's
+  // own commit then overwrites the layer's bitmap with (almost) nothing, silently discarding
+  // the real drawing — this, not the redraw-vs-undo race fixed earlier, is what made erasing
+  // even a small part look like it wiped the whole picture.
+  const freehandReadyRef = useRef(false);
 
   const paintingRef = useRef(false);
   const paintModeRef = useRef<"paint" | "erase">("paint");
@@ -613,14 +624,23 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
     const bitmap = layer.bitmap;
     if (!bitmap) {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
+      freehandReadyRef.current = true; // nothing to load — an empty canvas IS the correct state
       return;
     }
+    freehandReadyRef.current = false;
     const img = new Image();
     img.onload = () => {
       if (freehandCanvasRef.current !== canvas) return; // canvas element swapped out since
       if (effectiveFreehandLayer()?.bitmap !== bitmap) return; // a newer bitmap already landed
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(img, 0, 0);
+      freehandReadyRef.current = true;
+    };
+    // A corrupt/unreadable bitmap should never permanently lock the canvas out of drawing —
+    // fail open (allow drawing again, just without the old content restored) rather than
+    // leaving the tool looking dead forever.
+    img.onerror = () => {
+      freehandReadyRef.current = true;
     };
     img.src = bitmap;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -652,6 +672,12 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
     const layer = effectiveFreehandLayer();
     const canvas = freehandCanvasRef.current;
     if (!layer || !canvas || layer.locked) return;
+    // The canvas just mounted (or just reloaded after a commit/undo) and hasn't finished
+    // painting the real bitmap onto itself yet — refuse to draw/erase on top of a blank canvas
+    // that doesn't reflect the actual drawing, since committing THAT would overwrite the real
+    // artwork with whatever was drawn on top of nothing. This click is simply ignored; the very
+    // next click (a moment later, once loading finishes) works normally.
+    if (!freehandReadyRef.current) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     snapshot();

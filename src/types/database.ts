@@ -229,6 +229,13 @@ export interface RarityObject {
 // card. Two separate libraries exist (Project.statPresets / resistPresets) since "Параметры"
 // (flat bonuses like attack/defense) and "Сопротивления" (elemental resist %) are visually and
 // conceptually distinct groups, even though they share this exact same shape.
+//
+// Characters get their OWN separate pair of libraries (Project.characterStatPresets /
+// characterResistPresets) rather than sharing the equipment ones — a character's "Параметры"
+// (e.g. charisma, endurance) and an equipment's "Параметры" (e.g. attack, defense bonus) are
+// conceptually different pools even though the UI/data shape (this same StatPreset type) is
+// identical, so mixing them into one shared list would let the wrong kind of preset show up
+// when assigning stats to the other kind of entry.
 export interface StatPreset {
   id: string;
   name: string;
@@ -260,6 +267,10 @@ export interface Project {
   colorStyles: DialogueColorStyle[];
   statPresets: StatPreset[];
   resistPresets: StatPreset[];
+  // Character-specific preset pools — see the StatPreset doc comment above for why these are
+  // kept separate from the equipment ones instead of sharing statPresets/resistPresets.
+  characterStatPresets: StatPreset[];
+  characterResistPresets: StatPreset[];
   // User-dragged node positions in the Quests roadmap graph, keyed by the graph's own node id
   // (e.g. "q:<questId>", "d:<dialogueId>") — only written once a node is actually dragged (see
   // pinnedRef in QuestsView.tsx), so the force layout still runs freely for anything nobody has

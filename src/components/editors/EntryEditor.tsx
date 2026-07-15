@@ -168,7 +168,26 @@ function EquipStatGroup({
   title: string;
 }) {
   const updateEntry = useProjectStore((s) => s.updateEntry);
-  const presets = useProjectStore((s) => (kind === "stat" ? s.project.statPresets : s.project.resistPresets));
+  // Characters and equipment intentionally use SEPARATE preset libraries even though this
+  // component renders identical UI for both — see StatPreset's doc comment in
+  // types/database.ts. Which library (and which store key `addStatPreset`/`removeStatPreset`
+  // write into) is picked purely from the entry's own category, so callers never have to thread
+  // an extra "pool" prop through — passing kind="stat"/"resist" is enough either way.
+  const isCharacter = entry.category === "character";
+  const presetKind = isCharacter
+    ? kind === "stat"
+      ? "characterStat"
+      : "characterResist"
+    : kind;
+  const presets = useProjectStore((s) =>
+    presetKind === "stat"
+      ? s.project.statPresets
+      : presetKind === "resist"
+      ? s.project.resistPresets
+      : presetKind === "characterStat"
+      ? s.project.characterStatPresets
+      : s.project.characterResistPresets
+  );
   const [pickerOpen, setPickerOpen] = useState(false);
 
   const values = (kind === "stat" ? entry.statValues : entry.resistValues) ?? {};
@@ -232,7 +251,7 @@ function EquipStatGroup({
         </button>
       </div>
       {pickerOpen && (
-        <EquipmentPresetsModal kind={kind} assignedIds={assignedIds} onPick={pick} onClose={() => setPickerOpen(false)} />
+        <EquipmentPresetsModal kind={presetKind} assignedIds={assignedIds} onPick={pick} onClose={() => setPickerOpen(false)} />
       )}
     </div>
   );

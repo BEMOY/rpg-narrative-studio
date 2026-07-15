@@ -39,12 +39,26 @@ export function EquipmentPresetsModal({
   onClose,
   onPick,
 }: {
-  kind: "stat" | "resist";
+  // "stat"/"resist" read from the shared equipment pools; "characterStat"/"characterResist"
+  // read from the separate character-only pools (see StatPreset's doc comment in
+  // types/database.ts). Same modal UI either way — only which library it reads/writes changes.
+  kind: "stat" | "resist" | "characterStat" | "characterResist";
   assignedIds: string[];
   onClose: () => void;
   onPick: (preset: StatPreset) => void;
 }) {
-  const presets = useProjectStore((s) => (kind === "stat" ? s.project.statPresets : s.project.resistPresets));
+  const presets = useProjectStore((s) => {
+    switch (kind) {
+      case "stat":
+        return s.project.statPresets;
+      case "resist":
+        return s.project.resistPresets;
+      case "characterStat":
+        return s.project.characterStatPresets;
+      case "characterResist":
+        return s.project.characterResistPresets;
+    }
+  });
   const addStatPreset = useProjectStore((s) => s.addStatPreset);
   const removeStatPreset = useProjectStore((s) => s.removeStatPreset);
 
@@ -74,7 +88,7 @@ export function EquipmentPresetsModal({
     removeStatPreset(kind, p.id);
   };
 
-  const title = kind === "stat" ? "Параметры" : "Сопротивления";
+  const title = kind === "stat" || kind === "characterStat" ? "Параметры" : "Сопротивления";
 
   // Rendered through a portal straight to <body> — this component is opened from deep inside
   // a .glass-styled Section, and `.glass` sets `backdrop-filter`, which (per spec) makes that

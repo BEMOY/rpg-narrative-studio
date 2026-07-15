@@ -95,8 +95,14 @@ interface ProjectState {
   setColorStyle: (style: DialogueColorStyle) => void;
   removeColorStyle: (name: string) => void;
   importDialogue: (dialogue: Dialogue, folderId: string | null) => void;
-  addStatPreset: (kind: "stat" | "resist", preset: Omit<StatPreset, "id">) => void;
-  removeStatPreset: (kind: "stat" | "resist", id: string) => void;
+  // "stat"/"resist" target the equipment pools (Project.statPresets/resistPresets); the
+  // "character*" variants target the separate character-only pools (see StatPreset's doc
+  // comment in types/database.ts for why these are kept apart).
+  addStatPreset: (
+    kind: "stat" | "resist" | "characterStat" | "characterResist",
+    preset: Omit<StatPreset, "id">
+  ) => void;
+  removeStatPreset: (kind: "stat" | "resist" | "characterStat" | "characterResist", id: string) => void;
   setQuestGraphPosition: (nodeId: string, x: number, y: number) => void;
   clearQuestGraphPositions: () => void;
   setQuestGraphGridEnabled: (enabled: boolean) => void;
@@ -141,6 +147,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       colorStyles: data.colorStyles ?? [],
       statPresets: data.statPresets ?? [],
       resistPresets: data.resistPresets ?? [],
+      characterStatPresets: data.characterStatPresets ?? [],
+      characterResistPresets: data.characterResistPresets ?? [],
       entries: data.entries.map((e) => ({ ...e, tags: e.tags ?? [], references: e.references ?? [] })),
     };
     set({
@@ -748,14 +756,29 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   // simply never rendered again since the card only shows values for presets it can still find
   // in the library, so no extra cleanup pass is needed.
   addStatPreset: (kind, preset) => {
-    const key = kind === "stat" ? "statPresets" : "resistPresets";
-    const withId: StatPreset = { ...preset, id: nextId(kind === "stat" ? "stat" : "res") };
+    const key =
+      kind === "stat"
+        ? "statPresets"
+        : kind === "resist"
+        ? "resistPresets"
+        : kind === "characterStat"
+        ? "characterStatPresets"
+        : "characterResistPresets";
+    const idPrefix = kind === "stat" || kind === "characterStat" ? "stat" : "res";
+    const withId: StatPreset = { ...preset, id: nextId(idPrefix) };
     set((s) => ({ project: { ...s.project, [key]: [...s.project[key], withId] } }));
     triggerAutosavePulse(set);
   },
 
   removeStatPreset: (kind, id) => {
-    const key = kind === "stat" ? "statPresets" : "resistPresets";
+    const key =
+      kind === "stat"
+        ? "statPresets"
+        : kind === "resist"
+        ? "resistPresets"
+        : kind === "characterStat"
+        ? "characterStatPresets"
+        : "characterResistPresets";
     set((s) => ({ project: { ...s.project, [key]: s.project[key].filter((p) => p.id !== id) } }));
     triggerAutosavePulse(set);
   },

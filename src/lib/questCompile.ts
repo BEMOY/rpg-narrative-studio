@@ -102,19 +102,22 @@ export function compileQuestsScript(entries: Entry[]): string {
 }
 
 
-// Every quest that (directly or transitively) GATES the given quest's availability — i.e. every
-// quest reachable by walking questDependencies backwards, regardless of "unlocks"/"blocks" kind
-// (both feed the same unlockedBy/blockedBy gate maps in QuestsView's computeQuestStatuses, so
-// both count as "upstream" of this quest). Used by the dependency editor (EntryEditor's
-// QuestPanel) to grey out targets that would create a contradiction/cycle if THIS quest tried
-// to declare a dependency pointing back at one of its own gates — e.g. a child quest trying to
-// block or unlock the very parent that unlocks it.
+// Every quest that (directly or transitively) UNLOCKS the given quest — i.e. every quest
+// reachable by walking "unlocks"-kind questDependencies backwards. Only "unlocks" establishes
+// a real parent/child relationship (completing the parent is what makes the child available in
+// the first place, so the child depending back on that same parent would be a genuine cycle);
+// "blocks" is deliberately NOT followed here — two quests are allowed to block each other
+// mutually (A blocks B and B blocks A is a valid, non-contradictory setup, e.g. two mutually
+// exclusive story branches), so a "blocks" link should never grey anything out as a fake
+// parent/child conflict. Used by the dependency editor (EntryEditor's QuestPanel) to grey out
+// targets that would create a real unlock cycle if THIS quest tried to declare a dependency
+// pointing back at one of its own unlock-ancestors.
 export function questAncestorIds(questId: string, allEntries: Entry[]): Set<string> {
   const parentsOf = new Map<string, string[]>();
   for (const e of allEntries) {
     if (!isQuest(e.category)) continue;
     for (const dep of e.questDependencies ?? []) {
-      if (!dep.questId) continue;
+      if (!dep.questId || dep.kind !== "unlocks") continue;
       if (!parentsOf.has(dep.questId)) parentsOf.set(dep.questId, []);
       parentsOf.get(dep.questId)!.push(e.id);
     }

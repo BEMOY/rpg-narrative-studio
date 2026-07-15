@@ -37,6 +37,24 @@ const resistPresets: StatPreset[] = [
   { id: "res_poison", name: "Яд", icon: "biohazard", max: 100 },
 ];
 
+// Character entries use a separate library from equipment (see StatPreset's doc comment in
+// types/database.ts) — same starter-content idea, just its own pool.
+const characterStatPresets: StatPreset[] = [
+  { id: "cstat_strength", name: "Сила", icon: "sword", max: 100 },
+  { id: "cstat_agility", name: "Ловкость", icon: "footprints", max: 100 },
+  { id: "cstat_intelligence", name: "Интеллект", icon: "sparkles", max: 100 },
+  { id: "cstat_charisma", name: "Харизма", icon: "heart", max: 100 },
+  { id: "cstat_endurance", name: "Выносливость", icon: "shield", max: 100 },
+  { id: "cstat_luck", name: "Удача", icon: "clover", max: 100 },
+];
+
+const characterResistPresets: StatPreset[] = [
+  { id: "cres_fire", name: "Огонь", icon: "flame", max: 100 },
+  { id: "cres_ice", name: "Лёд", icon: "snowflake", max: 100 },
+  { id: "cres_lightning", name: "Молния", icon: "zap", max: 100 },
+  { id: "cres_poison", name: "Яд", icon: "biohazard", max: 100 },
+];
+
 function base(partial: Partial<Entry> & Pick<Entry, "uuid" | "id" | "category" | "name">): Entry {
   return {
     version: 1,
@@ -246,4 +264,6 @@ export const sampleProject: Project = {
   colorStyles: [],
   statPresets,
   resistPresets,
+  characterStatPresets,
+  characterResistPresets,
 };
