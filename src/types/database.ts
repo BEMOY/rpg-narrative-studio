@@ -213,6 +213,13 @@ export interface Entry {
   sceneFlow?: SceneStep[]; // ordered; a scene always has exactly one location, see sceneMapId
   sceneTransitions?: SceneTransition[]; // "on finishing this scene, hand off to Scene X"
 
+  // category === "character" only -- per-state overworld animation strip, used by the Cutscene
+  // Timeline's live preview (Dynarain Phase 2) to actually animate a character's movement
+  // instead of just sliding the static `image` portrait around. Optional and additive: a
+  // character with none of these uploaded keeps working everywhere else exactly as before, the
+  // preview just falls back to the static image for that character.
+  spriteAnimations?: Partial<Record<CharacterAnimState, SpriteStrip>>;
+
   // equip/item economy + export fields — see docs/14_Export_System.md Field Mapping: Items
   value?: number;
   stack?: number;
@@ -553,6 +560,23 @@ export interface SceneTransition {
   id: string;
   targetSceneId?: string;
   label?: string;
+}
+
+// A single overworld animation state for a Character (see Entry.spriteAnimations). The uploaded
+// image is expected to be ONE HORIZONTAL ROW of equally-sized frames, left to right -- frame i
+// is read from source rect (i * frameWidth, 0, frameWidth, frameHeight). This is a deliberate v1
+// simplification (matches how these strips are typically exported from GMS2 one state at a
+// time) rather than supporting arbitrary multi-row sprite sheets/atlases.
+export type CharacterAnimState = "idle" | "walk" | "run";
+
+export interface SpriteStrip {
+  image: string; // data URL, uploaded losslessly (see readImageFileLossless in lib/image.ts) --
+                  // frame math depends on exact source pixel dimensions, so this must NOT go
+                  // through the app's usual lossy/resizing image pipeline.
+  frameWidth: number;
+  frameHeight: number;
+  frameCount: number;
+  fps: number;
 }
 
 export interface DialogueChoice {

@@ -1,10 +1,11 @@
 import { Trash2, Plus, X, Upload, ImageOff, ChevronDown, ArrowUp, ArrowDown } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
-import type { DialogueSide, DialogueSpeakerData, Entry, EquipSlot, Objective, QuestDependency, QuestDependencyKind, QuestRewards, Relationship, SceneOutcome, SceneStep, SceneStepKind, SceneTransition } from "../../types/database";
+import type { CharacterAnimState, DialogueSide, DialogueSpeakerData, Entry, EquipSlot, Objective, QuestDependency, QuestDependencyKind, QuestRewards, Relationship, SceneOutcome, SceneStep, SceneStepKind, SceneTransition, SpriteStrip } from "../../types/database";
 import { canHaveStats, hasRelationship, isEquip, isQuest, isScene } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
-import { resizeImageFile } from "../../lib/image";
+import { resizeImageFile, getImageDimensions, readImageFileLossless } from "../../lib/image";
 import { usePasteImage } from "../../lib/usePasteImage";
+import { SpriteAnimator } from "../common/SpriteAnimator";
 import { SearchSelect } from "../dialogue/SearchSelect";
 import { nextId } from "../../lib/mapDefaults";
 import { normalizeOutcomesForKind } from "../../lib/sceneDefaults";
@@ -46,6 +47,7 @@ export function EntryEditor({ entry, onDone }: { entry: Entry; onDone: () => voi
 
       <ChapterSection entry={entry} />
       <VisualSection entry={entry} />
+      {entry.category === "character" && <CharacterSpritesSection entry={entry} />}
       <TagsSection entry={entry} />
 
       {isEquip(entry.category) && (
@@ -411,6 +413,156 @@ function VisualSection({ entry }: { entry: Entry }) {
     </Section>
   );
 }
+
+const ANIM_STATE_LABEL: Record<CharacterAnimState, string> = {
+  idle: "Idle (стоит)",
+  walk: "Walk (шаг)",
+  run: "Run (бег)",
+};
+
+// Per-character overworld animation strips (Entry.spriteAnimations), used by the Cutscene
+// Timeline's live preview (Dynarain Phase 2) to actually animate movement instead of sliding
+// the static portrait image around -- see the doc comment on SpriteStrip in types/database.ts
+// for the "one horizontal row of frames" format this expects. Entirely optional: a character
+// with nothing uploaded here still works everywhere else exactly as before.
+function CharacterSpritesSection({ entry }: { entry: Entry }) {
+  const updateEntry = useProjectStore((s) => s.updateEntry);
+  const fileRefs = useRef<Partial<Record<CharacterAnimState, HTMLInputElement | null>>>({});
+  const [busy, setBusy] = useState<CharacterAnimState | null>(null);
+
+  const anims = entry.spriteAnimations ?? {};
+
+  const onFile = async (state: CharacterAnimState, file: File | undefined) => {
+    if (!file) return;
+    setBusy(state);
+    try {
+      const dataUrl = await readImageFileLossless(file);
+      const { width, height } = await getImageDimensions(dataUrl);
+      const existing = anims[state];
+      // Sensible first-upload guess: assume a square frame equal to the image's own height, and
+      // derive frame count from that — the writer then dials in the real numbers once they see
+      // whether the looping preview thumbnail actually looks right.
+      const guessedFrameSize = Math.max(1, height);
+      const strip: SpriteStrip = existing
+        ? { ...existing, image: dataUrl }
+        : {
+            image: dataUrl,
+            frameWidth: guessedFrameSize,
+            frameHeight: guessedFrameSize,
+            frameCount: Math.max(1, Math.round(width / guessedFrameSize)),
+            fps: 8,
+          };
+      updateEntry(entry.id, { spriteAnimations: { ...anims, [state]: strip } });
+    } catch {
+      themedAlert("Не удалось загрузить спрайт — попробуйте другой файл.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const patchStrip = (state: CharacterAnimState, p: Partial<SpriteStrip>) => {
+    const existing = anims[state];
+    if (!existing) return;
+    updateEntry(entry.id, { spriteAnimations: { ...anims, [state]: { ...existing, ...p } } });
+  };
+
+  const removeStrip = (state: CharacterAnimState) => {
+    const next = { ...anims };
+    delete next[state];
+    updateEntry(entry.id, { spriteAnimations: next });
+  };
+
+  return (
+    <Section title="Спрайты анимации (для превью катсцен)" defaultOpen={false}>
+      <div className="text-xs text-[var(--op-40)] -mt-1 mb-1">
+        Для каждого состояния — один ряд кадров одинакового размера, слева направо.
+      </div>
+      <div className="space-y-3">
+        {(["idle", "walk", "run"] as CharacterAnimState[]).map((state) => {
+          const strip = anims[state];
+          return (
+            <div key={state} className="rounded-md border border-[var(--op-7)] p-3 flex items-start gap-3">
+              <div className="w-16 h-16 rounded-md overflow-hidden bg-[var(--op-5)] border border-[var(--op-10)] shrink-0 grid place-items-center">
+                {strip ? <SpriteAnimator strip={strip} size={64} /> : <ImageOff size={16} className="text-[var(--op-20)]" />}
+              </div>
+              <div className="flex-1 space-y-1.5">
+                <div className="text-xs text-[var(--op-60)]">{ANIM_STATE_LABEL[state]}</div>
+                <input
+                  ref={(el) => {
+                    fileRefs.current[state] = el;
+                  }}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => onFile(state, e.target.files?.[0])}
+                />
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => fileRefs.current[state]?.click()}
+                    disabled={busy === state}
+                    className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md glass hover:bg-[var(--op-10)] disabled:opacity-50"
+                  >
+                    <Upload size={11} /> {busy === state ? "Загрузка…" : strip ? "Заменить" : "Загрузить"}
+                  </button>
+                  {strip && (
+                    <button onClick={() => removeStrip(state)} className="text-xs text-[var(--op-40)] hover:text-[var(--op-70)]">
+                      Убрать
+                    </button>
+                  )}
+                </div>
+                {strip && (
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1">
+                      Кадр Ш
+                      <input
+                        type="number"
+                        className="input text-xs w-16"
+                        value={strip.frameWidth}
+                        min={1}
+                        onChange={(e) => patchStrip(state, { frameWidth: Math.max(1, Number(e.target.value)) })}
+                      />
+                    </label>
+                    <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1">
+                      В
+                      <input
+                        type="number"
+                        className="input text-xs w-16"
+                        value={strip.frameHeight}
+                        min={1}
+                        onChange={(e) => patchStrip(state, { frameHeight: Math.max(1, Number(e.target.value)) })}
+                      />
+                    </label>
+                    <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1">
+                      Кадров
+                      <input
+                        type="number"
+                        className="input text-xs w-16"
+                        value={strip.frameCount}
+                        min={1}
+                        onChange={(e) => patchStrip(state, { frameCount: Math.max(1, Number(e.target.value)) })}
+                      />
+                    </label>
+                    <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1">
+                      FPS
+                      <input
+                        type="number"
+                        className="input text-xs w-16"
+                        value={strip.fps}
+                        min={1}
+                        onChange={(e) => patchStrip(state, { fps: Math.max(1, Number(e.target.value)) })}
+                      />
+                    </label>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </Section>
+  );
+}
+
 
 function TagsSection({ entry }: { entry: Entry }) {
   const updateEntry = useProjectStore((s) => s.updateEntry);

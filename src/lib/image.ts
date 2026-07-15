@@ -45,3 +45,16 @@ export function getImageDimensions(dataUrl: string): Promise<{ width: number; he
     img.src = dataUrl;
   });
 }
+
+// Reads a file's exact bytes back as a data URL, with NO canvas re-encode and NO resizing --
+// unlike resizeImageFile above (which recompresses to JPEG and caps dimensions at 480px, fine
+// for portraits/backgrounds but destructive for a character sprite strip, whose frame-slicing
+// math depends on the uploaded image's exact pixel width/height matching frameWidth * frameCount).
+export function readImageFileLossless(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("read_failed"));
+    reader.onload = () => resolve(reader.result as string);
+    reader.readAsDataURL(file);
+  });
+}
