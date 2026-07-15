@@ -20,6 +20,7 @@ import {
   LockOpen,
   Ban,
   CircleCheck,
+  CircleX,
   ToggleLeft,
   CircleAlert,
   Grid2X2,
@@ -222,16 +223,35 @@ function computeQuestStatuses(quests: Entry[], simCompleted: Set<string>): Map<s
   for (const q of quests) {
     if (objectivesAllDone(q) || simCompleted.has(q.id)) candidateComplete.add(q.id);
   }
+  // A quest whose blocker ends up completed can never count as completed here, even if its own
+  // objectives are literally all done (or its simCompleted toggle is on) — completing a
+  // "blocks" source AFTER this quest was already finished must retroactively un-complete it
+  // rather than leaving it looking done forever. Unlike the old growing-only fixpoint (which
+  // only ever ADDED quests to `completed` and could never revoke one once in), this relaxes
+  // every quest's membership every pass — a quest can drop back OUT of `completed` the moment
+  // something that blocks it joins. Iterating quests in the same fixed array order each pass
+  // and applying updates immediately (not batched) also gives a deterministic result for two
+  // quests that mutually block each other: whichever one resolves first in a given pass "wins"
+  // and blocks the other, mirroring how the equivalent runtime event order would resolve it.
   const completed = new Set<string>();
-  let growing = true;
-  while (growing) {
-    growing = false;
+  let changed = true;
+  let iterations = 0;
+  while (changed && iterations < quests.length + 2) {
+    changed = false;
+    iterations++;
     for (const q of quests) {
-      if (completed.has(q.id) || !candidateComplete.has(q.id)) continue;
       const gates = unlockedBy.get(q.id) ?? [];
-      if (gates.length === 0 || gates.every((id) => completed.has(id))) {
+      const blockers = blockedBy.get(q.id) ?? [];
+      const shouldBeCompleted =
+        candidateComplete.has(q.id) &&
+        (gates.length === 0 || gates.every((id) => completed.has(id))) &&
+        !blockers.some((id) => completed.has(id));
+      if (shouldBeCompleted && !completed.has(q.id)) {
         completed.add(q.id);
-        growing = true;
+        changed = true;
+      } else if (!shouldBeCompleted && completed.has(q.id)) {
+        completed.delete(q.id);
+        changed = true;
       }
     }
   }
@@ -710,13 +730,20 @@ function QuestNodeCard({
               const display = objectiveDisplayMode(o, flagDefs);
               const current = Math.max(0, Math.min(display.max, o.current ?? (o.done ? display.max : 0)));
               const done = current >= display.max;
+              // A "blocked" quest can still be holding real objective data marking it done
+              // (that's exactly the case being fixed — a quest completed earlier, then blocked
+              // by another quest completing afterwards) — cascade-revert eventually zeroes that
+              // data back out, but until it does, showing a plain green check here would still
+              // read as "this is done", which is no longer true. Render it as a red cross
+              // instead so a blocked-but-still-flagged-done objective is visually unambiguous.
+              const blockedDone = status === "blocked" && done;
               const objLinks = entry ? objectiveDialogueLinks.get(`${entry.id}:${i}`) : undefined;
               return (
                 <div key={i} className="flex items-center gap-1">
                   {display.kind === "slider" ? (
                     <div
                       className={`flex-1 min-w-0 flex items-center gap-1.5 text-[10px] ${toggleDisabled ? "opacity-60" : ""}`}
-                      style={{ color: done ? "#7cc98a" : "var(--op-45)" }}
+                      style={{ color: blockedDone ? "#e0716f" : done ? "#7cc98a" : "var(--op-45)" }}
                     >
                       <span className="truncate shrink-0 max-w-[64px]">{o.text || `Цель ${i + 1}`}</span>
                       <input
@@ -756,9 +783,15 @@ function QuestNodeCard({
                           : "Отметить подцель выполненной"
                       }
                       className={`flex-1 min-w-0 flex items-center gap-1 text-[10px] text-left ${toggleDisabled ? "cursor-not-allowed opacity-60" : "hover:opacity-80"}`}
-                      style={{ color: done ? "#7cc98a" : "var(--op-45)" }}
+                      style={{ color: blockedDone ? "#e0716f" : done ? "#7cc98a" : "var(--op-45)" }}
                     >
-                      {done ? <CircleCheck size={10} className="shrink-0" /> : <span className="w-2.5 h-2.5 rounded-full border border-current shrink-0" />}
+                      {blockedDone ? (
+                        <CircleX size={10} className="shrink-0" />
+                      ) : done ? (
+                        <CircleCheck size={10} className="shrink-0" />
+                      ) : (
+                        <span className="w-2.5 h-2.5 rounded-full border border-current shrink-0" />
+                      )}
                       <span className="truncate flex-1">{o.text || `Цель ${i + 1}`}</span>
                       <span className="mono opacity-70 shrink-0">
                         {current}/{display.max}

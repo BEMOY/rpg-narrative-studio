@@ -27,6 +27,8 @@ import {
   Settings2,
   Download,
   GripVertical,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import type {
   Category,
@@ -45,7 +47,7 @@ import type {
 } from "../../types/database";
 import { CAT_COLOR, CAT_LABEL, CAT_ORDER } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
-import { resizeImageFile } from "../../lib/image";
+import { resizeImageFile, getImageDimensions } from "../../lib/image";
 import { usePasteImage } from "../../lib/usePasteImage";
 import { ResizablePanel } from "../common/ResizablePanel";
 import { PortalMenu } from "../common/PortalMenu";
@@ -108,6 +110,29 @@ const LAYER_KIND_LABEL: Record<MapLayer["kind"], string> = {
   image: "Картинки",
 };
 
+// Each layer kind has its own dedicated tool(s) — a tile layer only paints/fills/erases tiles,
+// a freehand layer only draws/erases pixels, a zone layer only draws zone rectangles, and
+// object/image layers are manipulated by dragging their contents directly rather than through
+// any of these tools. "pan" is always available regardless of the active layer since it's just
+// camera navigation, not an edit. Whichever tool is currently selected gets force-corrected to
+// the active layer's own default the moment the active layer changes to a kind that tool
+// doesn't apply to (see the effect below) — this is what "each layer has its own purpose, and
+// only its own tool works on it" means in practice.
+const LAYER_ALLOWED_TOOLS: Record<MapLayer["kind"], Tool[]> = {
+  tile: ["paint", "erase", "fill", "select", "pan"],
+  freehand: ["draw", "erase", "pan"],
+  zone: ["zone", "pan"],
+  object: ["pan"],
+  image: ["pan"],
+};
+const LAYER_DEFAULT_TOOL: Record<MapLayer["kind"], Tool> = {
+  tile: "paint",
+  freehand: "draw",
+  zone: "zone",
+  object: "pan",
+  image: "pan",
+};
+
 export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () => void }) {
   const entries = useProjectStore((s) => s.project.entries);
   const updateEntry = useProjectStore((s) => s.updateEntry);
@@ -146,6 +171,11 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
   const [heightDraft, setHeightDraft] = useState(String(map.height));
   const [gridSizeDraft, setGridSizeDraft] = useState(String(map.gridSize));
   const [addColorDraft, setAddColorDraft] = useState({ color: "#888888" });
+  // Shared across every tool that shows a color palette (paint/fill picker, pen/freehand
+  // picker) — collapsing it from ANY of them collapses it everywhere, and it stays collapsed
+  // across tool switches, since this is one piece of state lifted above all the PaletteGrid
+  // call sites rather than local state inside PaletteGrid itself.
+  const [paletteCollapsed, setPaletteCollapsed] = useState(false);
   const [paletteImportOpen, setPaletteImportOpen] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const exportBtnRef = useRef<HTMLButtonElement>(null);
@@ -158,20 +188,9 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
   const imageResizeRef = useRef<{ id: string; startClientX: number; startClientY: number; startW: number; startH: number } | null>(null);
 
   const stageRef = useRef<HTMLDivElement>(null);
-  const freehandCanvasRef = useRef<HTMLCanvasElement>(null);
-  const drawingStrokeRef = useRef(false);
-  // True once the interactive freehand <canvas> actually has the layer's real bitmap painted
-  // onto it (see the sync effect below) — false while a load is still pending. The canvas
-  // element only exists while this layer is the active draw target (see isActiveDrawTarget in
-  // the render below); every time it mounts fresh — switching tools onto a freehand layer,
-  // switching which layer is active, undo/redo — it starts out BLANK and the real content is
-  // painted in asynchronously (Image.onload). Without this gate, a fast click-and-drag right
-  // after such a switch could start erasing/painting on that still-blank canvas; the stroke's
-  // own commit then overwrites the layer's bitmap with (almost) nothing, silently discarding
-  // the real drawing — this, not the redraw-vs-undo race fixed earlier, is what made erasing
-  // even a small part look like it wiped the whole picture.
-  const freehandReadyRef = useRef(false);
-
+  // Freehand drawing (paint/erase on the pixel layer) is fully rewritten from the old
+  // shared-single-canvas approach — see the FreehandLayerCanvas component below for the new
+  // architecture and why the old one kept letting a partial erase wipe the whole layer.
   const paintingRef = useRef(false);
   const paintModeRef = useRef<"paint" | "erase">("paint");
   const panDragRef = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
@@ -290,16 +309,26 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
     if (active && isZone(active)) return active;
     return map.layers.find(isZone);
   };
-  const effectiveFreehandLayer = (): MapFreehandLayer | undefined => {
-    const active = findLayer(activeLayerId);
-    if (active && isFreehand(active)) return active;
-    return map.layers.find(isFreehand);
-  };
   const effectiveImageLayer = (): MapImageLayer | undefined => {
     const active = findLayer(activeLayerId);
     if (active && isImageLayer(active)) return active;
     return map.layers.find(isImageLayer);
   };
+
+  // Force the selected tool back to a valid one for whichever layer is now active, any time
+  // the active layer changes to a different kind — e.g. switching from a freehand layer (tool
+  // "draw") to a tile layer leaves "draw" selected but meaningless there, so it snaps to that
+  // tile layer's own default ("paint") instead of silently doing nothing / operating on the
+  // wrong layer via some other fallback lookup.
+  useEffect(() => {
+    const layer = findLayer(activeLayerId);
+    if (!layer) return;
+    const allowed = LAYER_ALLOWED_TOOLS[layer.kind];
+    if (!allowed.includes(tool)) {
+      setTool(LAYER_DEFAULT_TOOL[layer.kind]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeLayerId, map.layers.find((l) => l.id === activeLayerId)?.kind]);
 
   const addLayer = (kind: MapLayer["kind"]) => {
     setMap((prev) => {
@@ -451,6 +480,25 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
   };
 
   // ---- image layer ----
+  // Size a freshly-imported picture's placement box to match its OWN aspect ratio, capped so
+  // its larger side is at most half the map's width in cells (same cap the old always-square
+  // box used) — previously this was hardcoded to a square (w === h) regardless of the source
+  // image's shape, so anything not already square got letterboxed by object-fit:contain inside
+  // that square box, and the box's own border/shadow then showed as a visible frame around the
+  // resulting empty padding. Matching the box to the real aspect ratio means there's no empty
+  // space left for a frame to appear around in the first place.
+  const imageInstanceSize = async (dataUrl: string): Promise<{ w: number; h: number }> => {
+    const cap = Math.min(6, map.width / 2);
+    try {
+      const { width, height } = await getImageDimensions(dataUrl);
+      if (width <= 0 || height <= 0) return { w: cap, h: cap };
+      const scale = cap / Math.max(width, height);
+      return { w: width * scale, h: height * scale };
+    } catch {
+      return { w: cap, h: cap };
+    }
+  };
+
   const uploadImage = async (file: File | undefined) => {
     if (!file) return;
     const layer = effectiveImageLayer();
@@ -458,8 +506,7 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
     setImageUploadBusy(true);
     try {
       const dataUrl = await resizeImageFile(file);
-      const w = Math.min(6, map.width / 2);
-      const h = w;
+      const { w, h } = await imageInstanceSize(dataUrl);
       const inst: MapImageInstance = {
         id: nextId("img"),
         src: dataUrl,
@@ -492,8 +539,7 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
     try {
       const dataUrl = await resizeImageFile(file);
       const existing = effectiveImageLayer();
-      const w = Math.min(6, map.width / 2);
-      const h = w;
+      const { w, h } = await imageInstanceSize(dataUrl);
       const inst: MapImageInstance = {
         id: nextId("img"),
         src: dataUrl,
@@ -595,126 +641,19 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
   };
 
   // ---- freehand drawing ----
-  // Redraw the visible <canvas> from the layer's stored bitmap whenever that bitmap value
-  // itself changes — not just when switching layers/tools — so Ctrl+Z/the Undo button is
-  // actually visible immediately instead of only after reopening the map.
-  //
-  // Two failure modes had to be ruled out here, both of which showed up as "erasing part of
-  // the drawing wipes the WHOLE thing":
-  //  1. This effect re-runs on every commit (see commitFreehandStroke's setMap call below),
-  //     which re-renders the component. If that re-render happened to land WHILE a stroke was
-  //     still in progress (mid-drag), the old version cleared the live canvas out from under
-  //     the user's in-progress, not-yet-committed pixels. Now it bails out entirely while
-  //     `drawingStrokeRef.current` is true — this effect only ever syncs from committed state.
-  //  2. Loading the replacement bitmap is asynchronous (`Image.onload`), but the old version
-  //     called `ctx.clearRect` immediately and only drew the new image once decoding finished —
-  //     leaving a real window where the canvas was fully blank. If a new stroke started (or
-  //     another commit landed) inside that window, the canvas could be left blank permanently:
-  //     the stale `onload` would fire later and paint over whatever had been drawn since. Now
-  //     the old pixels are left alone until the replacement is fully decoded and ready, and a
-  //     stale/late `onload` checks it's still the right canvas + still the right bitmap before
-  //     touching anything.
-  useEffect(() => {
-    const layer = effectiveFreehandLayer();
-    const canvas = freehandCanvasRef.current;
-    if (!canvas || !layer) return;
-    if (drawingStrokeRef.current) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    const bitmap = layer.bitmap;
-    if (!bitmap) {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      freehandReadyRef.current = true; // nothing to load — an empty canvas IS the correct state
-      return;
-    }
-    freehandReadyRef.current = false;
-    const img = new Image();
-    img.onload = () => {
-      if (freehandCanvasRef.current !== canvas) return; // canvas element swapped out since
-      if (effectiveFreehandLayer()?.bitmap !== bitmap) return; // a newer bitmap already landed
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(img, 0, 0);
-      freehandReadyRef.current = true;
-    };
-    // A corrupt/unreadable bitmap should never permanently lock the canvas out of drawing —
-    // fail open (allow drawing again, just without the old content restored) rather than
-    // leaving the tool looking dead forever.
-    img.onerror = () => {
-      freehandReadyRef.current = true;
-    };
-    img.src = bitmap;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeLayerId, tool, effectiveFreehandLayer()?.bitmap]);
-
-  const commitFreehandStroke = () => {
-    const canvas = freehandCanvasRef.current;
-    const layer = effectiveFreehandLayer();
-    if (!canvas || !layer) return;
-    const dataUrl = canvas.toDataURL("image/png");
+  // The actual pixel-editing logic (stroke lifecycle, canvas sync from the stored bitmap,
+  // undo/redo/mount handling) lives entirely inside FreehandLayerCanvas below now — each
+  // freehand layer gets its own permanently-mounted <canvas> instead of one shared canvas
+  // element that used to get swapped between layers/tools (see that component's comment for
+  // why the old shared-canvas design was the real source of the "erasing wipes everything"
+  // bug). This is just the commit callback FreehandLayerCanvas calls once a stroke ends.
+  const commitFreehandBitmap = (layerId: string, dataUrl: string) => {
     setMap((prev) => {
       const next = cloneMap(prev);
-      const l = next.layers.find((x) => x.id === layer.id);
+      const l = next.layers.find((x) => x.id === layerId);
       if (l && isFreehand(l)) l.bitmap = dataUrl;
       return next;
     }, false);
-  };
-
-  // Stroke end used to rely solely on the canvas element's own onMouseUp — which never fires
-  // if the cursor leaves the canvas bounds before the button is released (very easy to do while
-  // erasing/painting near the map's edge, or just moving fast). When that happened,
-  // drawingStrokeRef stayed stuck at `true` forever: the stroke was never committed (so the
-  // erase/paint looked like it silently did nothing after release), AND the bitmap-sync effect
-  // above now permanently skips itself while a stroke is "in progress" — so undo/redo and layer
-  // switches would ALSO stop visually updating from that point on. Window-level listeners
-  // (matching the drag patterns used elsewhere in this app) guarantee the stroke always ends
-  // and commits, no matter where the mouse is when the button comes up.
-  const onFreehandPointerDown = (e: React.MouseEvent) => {
-    const layer = effectiveFreehandLayer();
-    const canvas = freehandCanvasRef.current;
-    if (!layer || !canvas || layer.locked) return;
-    // The canvas just mounted (or just reloaded after a commit/undo) and hasn't finished
-    // painting the real bitmap onto itself yet — refuse to draw/erase on top of a blank canvas
-    // that doesn't reflect the actual drawing, since committing THAT would overwrite the real
-    // artwork with whatever was drawn on top of nothing. This click is simply ignored; the very
-    // next click (a moment later, once loading finishes) works normally.
-    if (!freehandReadyRef.current) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    snapshot();
-    drawingStrokeRef.current = true;
-    const pt = getRawPoint(e);
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    ctx.lineWidth = brushSize;
-    if (tool === "erase") {
-      ctx.globalCompositeOperation = "destination-out";
-      ctx.strokeStyle = "rgba(0,0,0,1)";
-    } else {
-      ctx.globalCompositeOperation = "source-over";
-      ctx.strokeStyle = brushColor;
-    }
-    ctx.beginPath();
-    ctx.moveTo(pt.x, pt.y);
-    ctx.lineTo(pt.x + 0.01, pt.y + 0.01);
-    ctx.stroke();
-    const onMove = (ev: MouseEvent) => {
-      if (!drawingStrokeRef.current) return;
-      const c = freehandCanvasRef.current;
-      const context = c?.getContext("2d");
-      if (!context) return;
-      const p = getRawPoint(ev);
-      context.lineTo(p.x, p.y);
-      context.stroke();
-    };
-    const onUp = () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      if (!drawingStrokeRef.current) return;
-      drawingStrokeRef.current = false;
-      commitFreehandStroke();
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
   };
 
   // ---- stage pointer handling ----
@@ -1053,6 +992,7 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
 
   const activeLayer = findLayer(activeLayerId);
   const activeIsFreehand = activeLayer && isFreehand(activeLayer);
+  const allowedTools: Tool[] = activeLayer ? LAYER_ALLOWED_TOOLS[activeLayer.kind] : (["pan"] as Tool[]);
   const canvasCursor = tool === "pan" ? "grab" : tool === "select" ? "default" : "crosshair";
 
   return (
@@ -1192,13 +1132,16 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
             <div className="p-3 border-b border-[var(--op-10)] shrink-0">
               <div className="text-xs uppercase tracking-wider text-[var(--op-35)] mb-2">Инструмент</div>
               <div data-tour="mapeditor-tools" className="grid grid-cols-4 gap-1.5">
-                <ToolBtn icon={Paintbrush} active={tool === "paint"} onClick={() => setTool("paint")} title="Кисть" />
-                <ToolBtn icon={Eraser} active={tool === "erase"} onClick={() => setTool("erase")} title="Ластик" />
-                <ToolBtn icon={PaintBucket} active={tool === "fill"} onClick={() => setTool("fill")} title="Заливка" />
-                <ToolBtn icon={Square} active={tool === "zone"} onClick={() => setTool("zone")} title="Зона" />
-                <ToolBtn icon={MousePointer2} active={tool === "select"} onClick={() => setTool("select")} title="Выделение" />
-                <ToolBtn icon={Pencil} active={tool === "draw"} onClick={() => setTool("draw")} title="Перо (пиксели)" />
+                <ToolBtn icon={Paintbrush} active={tool === "paint"} disabled={!allowedTools.includes("paint")} onClick={() => setTool("paint")} title="Кисть" />
+                <ToolBtn icon={Eraser} active={tool === "erase"} disabled={!allowedTools.includes("erase")} onClick={() => setTool("erase")} title="Ластик" />
+                <ToolBtn icon={PaintBucket} active={tool === "fill"} disabled={!allowedTools.includes("fill")} onClick={() => setTool("fill")} title="Заливка" />
+                <ToolBtn icon={Square} active={tool === "zone"} disabled={!allowedTools.includes("zone")} onClick={() => setTool("zone")} title="Зона" />
+                <ToolBtn icon={MousePointer2} active={tool === "select"} disabled={!allowedTools.includes("select")} onClick={() => setTool("select")} title="Выделение" />
+                <ToolBtn icon={Pencil} active={tool === "draw"} disabled={!allowedTools.includes("draw")} onClick={() => setTool("draw")} title="Перо (пиксели)" />
                 <ToolBtn icon={Hand} active={tool === "pan"} onClick={() => setTool("pan")} title="Панорама" />
+              </div>
+              <div className="mt-1.5 text-[10px] text-[var(--op-30)]">
+                {activeLayer ? `Слой «${LAYER_KIND_LABEL[activeLayer.kind]}» — доступны только его инструменты` : "Выберите слой"}
               </div>
 
               {(tool === "paint" || tool === "fill") && !activeIsFreehand && (
@@ -1214,6 +1157,8 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
                   setAddColorDraft={setAddColorDraft}
                   onAdd={addPaletteColor}
                   onOpenImport={() => setPaletteImportOpen(true)}
+                  collapsed={paletteCollapsed}
+                  onToggleCollapsed={() => setPaletteCollapsed((v) => !v)}
                 />
               )}
 
@@ -1240,6 +1185,8 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
                       setAddColorDraft={setAddColorDraft}
                       onAdd={addPaletteColor}
                       onOpenImport={() => setPaletteImportOpen(true)}
+                      collapsed={paletteCollapsed}
+                      onToggleCollapsed={() => setPaletteCollapsed((v) => !v)}
                     />
                   )}
                   {!activeIsFreehand && (
@@ -1500,7 +1447,11 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
               }}
             >
               {map.layers.map((layer) => {
-                if (!layer.visible) return null;
+                // Freehand layers stay mounted even while hidden (see FreehandLayerCanvas) so
+                // toggling visibility never tears down and reloads their canvas — every other
+                // layer kind is cheap to fully unmount/remount, so they keep the simple early
+                // return.
+                if (!layer.visible && !isFreehand(layer)) return null;
 
                 if (isTile(layer)) {
                   return (
@@ -1626,27 +1577,23 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
                 }
 
                 if (isFreehand(layer)) {
-                  const isActiveDrawTarget = layer.id === effectiveFreehandLayer()?.id && (tool === "draw" || tool === "erase");
-                  if (isActiveDrawTarget) {
-                    return (
-                      <canvas
-                        key={layer.id}
-                        ref={freehandCanvasRef}
-                        width={map.width * map.gridSize}
-                        height={map.height * map.gridSize}
-                        onMouseDown={onFreehandPointerDown}
-                        style={{ position: "absolute", inset: 0, opacity: layer.opacity, cursor: layer.locked ? "default" : "crosshair" }}
-                      />
-                    );
-                  }
-                  return layer.bitmap ? (
-                    <img
+                  const isActive = layer.id === activeLayerId && (tool === "draw" || tool === "erase");
+                  return (
+                    <FreehandLayerCanvas
                       key={layer.id}
-                      src={layer.bitmap}
-                      style={{ position: "absolute", inset: 0, width: "100%", height: "100%", opacity: layer.opacity, pointerEvents: "none" }}
-                      alt=""
+                      layer={layer}
+                      mapWidth={map.width}
+                      mapHeight={map.height}
+                      gridSize={map.gridSize}
+                      isActive={isActive}
+                      tool={tool}
+                      brushSize={brushSize}
+                      brushColor={brushColor}
+                      toLocalPoint={getRawPoint}
+                      onStrokeStart={snapshot}
+                      onCommit={(dataUrl) => commitFreehandBitmap(layer.id, dataUrl)}
                     />
-                  ) : null;
+                  );
                 }
 
                 if (isImageLayer(layer)) {
@@ -1670,13 +1617,17 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
                             top: img.y * map.gridSize,
                             width: img.w * map.gridSize,
                             height: img.h * map.gridSize,
-                            border: selection?.kind === "image" && selection.id === img.id ? "2px solid white" : "1px solid rgba(0,0,0,0.25)",
+                            // No border/shadow on an unselected picture — its placement box is
+                            // sized to the image's own aspect ratio (see imageInstanceSize), so
+                            // there's no leftover empty padding for a "frame" to outline anymore.
+                            // The white outline only appears while actually selected, as a
+                            // normal selection affordance, not a permanent decoration.
+                            border: selection?.kind === "image" && selection.id === img.id ? "2px solid white" : "none",
                             cursor: layer.locked ? "default" : "grab",
-                            boxShadow: "0 1px 6px rgba(0,0,0,0.35)",
                             pointerEvents: layer.locked ? "none" : "auto",
                           }}
                         >
-                          <img src={img.src} alt="" draggable={false} style={{ width: "100%", height: "100%", objectFit: "contain", pointerEvents: "none" }} />
+                          <img src={img.src} alt="" draggable={false} style={{ width: "100%", height: "100%", objectFit: "fill", pointerEvents: "none" }} />
                           {!layer.locked && (
                             <div
                               onMouseDown={(e) => {
@@ -1840,23 +1791,196 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
   );
 }
 
+// Freehand (pixel brush/eraser) layer, rewritten from scratch. The old design used ONE shared
+// <canvas> element re-purposed across every freehand layer — swapped for a plain <img> whenever
+// a layer wasn't the active draw target, and reloaded via an async Image().onload every time it
+// became active again (switching tools, switching layers, undo/redo). That constant
+// mount/unmount + async-reload cycle was fragile in two compounding ways: (1) a stray stroke
+// could start drawing on a freshly-mounted, still-blank canvas before its reload finished,
+// baking an almost-empty result back into the layer on commit; (2) the stroke's own
+// mousemove/mouseup were bound via window listeners created fresh per mousedown — if a mouseup
+// was ever missed (cursor leaving the window, the canvas unmounting mid-drag because the tool
+// or active layer changed under it), those listeners were orphaned but NEVER removed, kept
+// firing on every future mouse movement anywhere in the app, redirected themselves to whatever
+// canvas the shared ref pointed to next, and could fire a bogus commit at a random later time —
+// this is what actually caused "erasing part of the drawing wipes the whole thing" (a stray
+// orphaned eraser stroke silently painting over an unrelated later session) and the reported
+// freezes (listeners piling up over a session, each doing real canvas work on every
+// mousemove).
+//
+// This version gives every freehand layer its OWN <canvas> that is mounted exactly once for as
+// long as the layer exists (even while hidden — see the isFreehand exemption from the
+// visibility early-return in the render loop above), so there is no swap/remount cycle to race
+// against at all. A stroke's window listeners are captured as local closure variables (not a
+// shared ref), always torn down through one single `cleanup` function stored per-canvas, and
+// that same cleanup doubles as a safety net: pointerdown, the effect's unmount cleanup, and a
+// window "blur" listener all funnel through it, so a stroke can never outlive its canvas or
+// leak a listener. The canvas is only ever reloaded from the stored bitmap when that bitmap is
+// a value this canvas didn't just produce itself (undo/redo, initial mount) — ordinary drawing
+// never touches the async reload path, so there's no gap for a new stroke to land in.
+function FreehandLayerCanvas({
+  layer,
+  mapWidth,
+  mapHeight,
+  gridSize,
+  isActive,
+  tool,
+  brushSize,
+  brushColor,
+  toLocalPoint,
+  onStrokeStart,
+  onCommit,
+}: {
+  layer: MapFreehandLayer;
+  mapWidth: number;
+  mapHeight: number;
+  gridSize: number;
+  isActive: boolean;
+  tool: Tool;
+  brushSize: number;
+  brushColor: string;
+  toLocalPoint: (e: { clientX: number; clientY: number }) => { x: number; y: number };
+  onStrokeStart: () => void;
+  onCommit: (dataUrl: string) => void;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  // The exact bitmap string this canvas's pixels currently reflect. Set synchronously the
+  // moment a stroke commits (before the parent's setMap call even lands), so when that commit's
+  // own re-render hands this component back its own freshly-written value as the `layer.bitmap`
+  // prop, the sync effect below recognizes it as already-applied and skips reloading it —
+  // that's what keeps normal drawing from ever touching the async decode path below.
+  const syncedBitmapRef = useRef<string | null | undefined>(undefined);
+  // Ends whatever stroke is currently in progress on this canvas, if any — removes its window
+  // listeners and commits its pixels. Stored so pointerdown, blur, and unmount can all reuse
+  // the exact same teardown instead of duplicating it (and to make sure at most one stroke is
+  // ever "live" on this canvas at a time).
+  const endStrokeRef = useRef<(() => void) | null>(null);
+  const loadTokenRef = useRef(0);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    if (layer.bitmap === syncedBitmapRef.current) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const token = ++loadTokenRef.current;
+    const bitmap = layer.bitmap;
+    if (!bitmap) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      syncedBitmapRef.current = bitmap;
+      return;
+    }
+    const img = new Image();
+    img.onload = () => {
+      if (loadTokenRef.current !== token) return; // a newer sync superseded this one
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0);
+      syncedBitmapRef.current = bitmap;
+    };
+    // A corrupt/unreadable bitmap should never permanently lock the canvas out of drawing —
+    // fail open (accept it as "synced" so we stop retrying) rather than leaving the layer
+    // stuck reloading forever.
+    img.onerror = () => {
+      if (loadTokenRef.current !== token) return;
+      syncedBitmapRef.current = bitmap;
+    };
+    img.src = bitmap;
+  }, [layer.bitmap]);
+
+  // Always end any in-flight stroke if this canvas is ever actually removed from the DOM
+  // (layer deleted, map closed) — belt-and-suspenders alongside the mouseup/blur listeners.
+  useEffect(() => {
+    return () => endStrokeRef.current?.();
+  }, []);
+
+  const onPointerDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!isActive || layer.locked || e.button !== 0) return;
+    e.stopPropagation(); // never let the stage's own paint/tile mousedown handler also fire
+    // If some earlier stroke's teardown somehow never ran, close it out (committing its
+    // pixels) before starting a new one, instead of leaving two strokes' listeners alive
+    // at once.
+    endStrokeRef.current?.();
+    const canvas = e.currentTarget; // captured directly from the event — never re-read via a ref
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    onStrokeStart();
+    const pt = toLocalPoint(e);
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.lineWidth = brushSize;
+    if (tool === "erase") {
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.strokeStyle = "rgba(0,0,0,1)";
+    } else {
+      ctx.globalCompositeOperation = "source-over";
+      ctx.strokeStyle = brushColor;
+    }
+    ctx.beginPath();
+    ctx.moveTo(pt.x, pt.y);
+    ctx.lineTo(pt.x + 0.01, pt.y + 0.01);
+    ctx.stroke();
+
+    const onMove = (ev: MouseEvent) => {
+      const p = toLocalPoint(ev);
+      ctx.lineTo(p.x, p.y);
+      ctx.stroke();
+    };
+    const onEnd = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onEnd);
+      window.removeEventListener("blur", onEnd);
+      endStrokeRef.current = null;
+      const dataUrl = canvas.toDataURL("image/png");
+      syncedBitmapRef.current = dataUrl;
+      onCommit(dataUrl);
+    };
+    endStrokeRef.current = onEnd;
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onEnd);
+    window.addEventListener("blur", onEnd);
+  };
+
+  return (
+    <canvas
+      ref={canvasRef}
+      width={mapWidth * gridSize}
+      height={mapHeight * gridSize}
+      onMouseDown={onPointerDown}
+      style={{
+        position: "absolute",
+        inset: 0,
+        opacity: layer.visible ? layer.opacity : 0,
+        pointerEvents: isActive && layer.visible ? "auto" : "none",
+        cursor: isActive ? (layer.locked ? "default" : "crosshair") : "default",
+      }}
+    />
+  );
+}
+
 function ToolBtn({
   icon: Icon,
   active,
   onClick,
   title,
+  disabled,
 }: {
   icon: React.ComponentType<any>;
   active: boolean;
   onClick: () => void;
   title: string;
+  disabled?: boolean;
 }) {
   return (
     <button
-      onClick={onClick}
-      title={title}
+      onClick={disabled ? undefined : onClick}
+      disabled={disabled}
+      title={disabled ? `${title} — недоступно для этого слоя` : title}
       className={`aspect-square rounded-md grid place-items-center transition-colors ${
-        active ? "bg-accent/80 text-white" : "bg-[var(--op-6)] text-[var(--op-50)] hover:bg-[var(--op-10)]"
+        disabled
+          ? "bg-[var(--op-4)] text-[var(--op-20)] cursor-not-allowed"
+          : active
+          ? "bg-accent/80 text-white"
+          : "bg-[var(--op-6)] text-[var(--op-50)] hover:bg-[var(--op-10)]"
       }`}
     >
       <Icon size={15} />
@@ -1876,6 +2000,8 @@ function PaletteGrid({
   setAddColorDraft,
   onAdd,
   onOpenImport,
+  collapsed,
+  onToggleCollapsed,
 }: {
   palette: MapPaletteColor[];
   activeColor: string;
@@ -1885,45 +2011,67 @@ function PaletteGrid({
   setAddColorDraft: (updater: (d: { color: string }) => { color: string }) => void;
   onAdd: () => void;
   onOpenImport: () => void;
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
 }) {
   return (
     <div className="mt-3">
-      <div className="grid grid-cols-4 gap-1.5">
-        {palette.map((t) => (
-          <button
-            key={t.color}
-            title={t.label}
-            onClick={() => onPick(t.color, t.label)}
-            className="relative group w-full aspect-square rounded-md border-2"
-            style={{ background: t.color, borderColor: activeColor === t.color ? "var(--op-90)" : "transparent" }}
-          >
+      <button
+        onClick={onToggleCollapsed}
+        className="w-full flex items-center justify-between text-[10px] uppercase tracking-wider text-[var(--op-35)] hover:text-[var(--op-60)] mb-1.5"
+        title={collapsed ? "Показать палитру" : "Свернуть палитру"}
+      >
+        <span className="flex items-center gap-1.5">
+          Палитра
+          {collapsed && (
             <span
-              onClick={(e) => {
-                e.stopPropagation();
-                onRemove(t.color);
-              }}
-              className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-black/70 text-white text-[8px] hidden group-hover:grid place-items-center"
-            >
-              ×
-            </span>
-          </button>
-        ))}
-      </div>
-      <div className="flex items-center gap-1.5 mt-2">
-        <input
-          type="color"
-          value={addColorDraft.color}
-          onChange={(e) => setAddColorDraft((d) => ({ ...d, color: e.target.value }))}
-          title="Выбрать цвет"
-          className="w-7 h-7 rounded-md border border-[var(--op-15)] bg-transparent cursor-pointer shrink-0"
-        />
-        <button onClick={onAdd} title="Добавить цвет в палитру" className="flex-1 h-7 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]">
-          <Plus size={12} />
-        </button>
-        <button onClick={onOpenImport} title="Импортировать палитру (Lospec и др.)" className="w-7 h-7 shrink-0 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]">
-          <Download size={12} />
-        </button>
-      </div>
+              className="w-3 h-3 rounded-sm border border-[var(--op-20)] shrink-0"
+              style={{ background: activeColor }}
+            />
+          )}
+        </span>
+        {collapsed ? <ChevronDown size={12} /> : <ChevronUp size={12} />}
+      </button>
+      {!collapsed && (
+        <>
+          <div className="grid grid-cols-4 gap-1.5">
+            {palette.map((t) => (
+              <button
+                key={t.color}
+                title={t.label}
+                onClick={() => onPick(t.color, t.label)}
+                className="relative group w-full aspect-square rounded-md border-2"
+                style={{ background: t.color, borderColor: activeColor === t.color ? "var(--op-90)" : "transparent" }}
+              >
+                <span
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onRemove(t.color);
+                  }}
+                  className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-black/70 text-white text-[8px] hidden group-hover:grid place-items-center"
+                >
+                  ×
+                </span>
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-1.5 mt-2">
+            <input
+              type="color"
+              value={addColorDraft.color}
+              onChange={(e) => setAddColorDraft((d) => ({ ...d, color: e.target.value }))}
+              title="Выбрать цвет"
+              className="w-7 h-7 rounded-md border border-[var(--op-15)] bg-transparent cursor-pointer shrink-0"
+            />
+            <button onClick={onAdd} title="Добавить цвет в палитру" className="flex-1 h-7 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]">
+              <Plus size={12} />
+            </button>
+            <button onClick={onOpenImport} title="Импортировать палитру (Lospec и др.)" className="w-7 h-7 shrink-0 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]">
+              <Download size={12} />
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
