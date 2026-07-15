@@ -585,24 +585,44 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
 
   // ---- freehand drawing ----
   // Redraw the visible <canvas> from the layer's stored bitmap whenever that bitmap value
-  // itself changes — not just when switching layers/tools. Previously this only re-ran on
-  // [activeLayerId, tool], so the on-screen canvas kept showing stale, already-undone pixels
-  // after Ctrl+Z/the Undo button: the undo correctly rewound `map.layers[...].bitmap` in the
-  // store (which is why reopening the map later showed the reverted drawing), but nothing told
-  // THIS canvas element to actually repaint itself from that reverted bitmap while still in
-  // the editor, so undo looked like it silently did nothing.
+  // itself changes — not just when switching layers/tools — so Ctrl+Z/the Undo button is
+  // actually visible immediately instead of only after reopening the map.
+  //
+  // Two failure modes had to be ruled out here, both of which showed up as "erasing part of
+  // the drawing wipes the WHOLE thing":
+  //  1. This effect re-runs on every commit (see commitFreehandStroke's setMap call below),
+  //     which re-renders the component. If that re-render happened to land WHILE a stroke was
+  //     still in progress (mid-drag), the old version cleared the live canvas out from under
+  //     the user's in-progress, not-yet-committed pixels. Now it bails out entirely while
+  //     `drawingStrokeRef.current` is true — this effect only ever syncs from committed state.
+  //  2. Loading the replacement bitmap is asynchronous (`Image.onload`), but the old version
+  //     called `ctx.clearRect` immediately and only drew the new image once decoding finished —
+  //     leaving a real window where the canvas was fully blank. If a new stroke started (or
+  //     another commit landed) inside that window, the canvas could be left blank permanently:
+  //     the stale `onload` would fire later and paint over whatever had been drawn since. Now
+  //     the old pixels are left alone until the replacement is fully decoded and ready, and a
+  //     stale/late `onload` checks it's still the right canvas + still the right bitmap before
+  //     touching anything.
   useEffect(() => {
     const layer = effectiveFreehandLayer();
     const canvas = freehandCanvasRef.current;
     if (!canvas || !layer) return;
+    if (drawingStrokeRef.current) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    if (layer.bitmap) {
-      const img = new Image();
-      img.onload = () => ctx.drawImage(img, 0, 0);
-      img.src = layer.bitmap;
+    const bitmap = layer.bitmap;
+    if (!bitmap) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      return;
     }
+    const img = new Image();
+    img.onload = () => {
+      if (freehandCanvasRef.current !== canvas) return; // canvas element swapped out since
+      if (effectiveFreehandLayer()?.bitmap !== bitmap) return; // a newer bitmap already landed
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0);
+    };
+    img.src = bitmap;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeLayerId, tool, effectiveFreehandLayer()?.bitmap]);
 
@@ -619,6 +639,15 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
     }, false);
   };
 
+  // Stroke end used to rely solely on the canvas element's own onMouseUp — which never fires
+  // if the cursor leaves the canvas bounds before the button is released (very easy to do while
+  // erasing/painting near the map's edge, or just moving fast). When that happened,
+  // drawingStrokeRef stayed stuck at `true` forever: the stroke was never committed (so the
+  // erase/paint looked like it silently did nothing after release), AND the bitmap-sync effect
+  // above now permanently skips itself while a stroke is "in progress" — so undo/redo and layer
+  // switches would ALSO stop visually updating from that point on. Window-level listeners
+  // (matching the drag patterns used elsewhere in this app) guarantee the stroke always ends
+  // and commits, no matter where the mouse is when the button comes up.
   const onFreehandPointerDown = (e: React.MouseEvent) => {
     const layer = effectiveFreehandLayer();
     const canvas = freehandCanvasRef.current;
@@ -642,20 +671,24 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
     ctx.moveTo(pt.x, pt.y);
     ctx.lineTo(pt.x + 0.01, pt.y + 0.01);
     ctx.stroke();
-  };
-  const onFreehandPointerMove = (e: React.MouseEvent) => {
-    if (!drawingStrokeRef.current) return;
-    const canvas = freehandCanvasRef.current;
-    const ctx = canvas?.getContext("2d");
-    if (!ctx) return;
-    const pt = getRawPoint(e);
-    ctx.lineTo(pt.x, pt.y);
-    ctx.stroke();
-  };
-  const onFreehandPointerUp = () => {
-    if (!drawingStrokeRef.current) return;
-    drawingStrokeRef.current = false;
-    commitFreehandStroke();
+    const onMove = (ev: MouseEvent) => {
+      if (!drawingStrokeRef.current) return;
+      const c = freehandCanvasRef.current;
+      const context = c?.getContext("2d");
+      if (!context) return;
+      const p = getRawPoint(ev);
+      context.lineTo(p.x, p.y);
+      context.stroke();
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      if (!drawingStrokeRef.current) return;
+      drawingStrokeRef.current = false;
+      commitFreehandStroke();
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
   };
 
   // ---- stage pointer handling ----
@@ -1576,8 +1609,6 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
                         width={map.width * map.gridSize}
                         height={map.height * map.gridSize}
                         onMouseDown={onFreehandPointerDown}
-                        onMouseMove={onFreehandPointerMove}
-                        onMouseUp={onFreehandPointerUp}
                         style={{ position: "absolute", inset: 0, opacity: layer.opacity, cursor: layer.locked ? "default" : "crosshair" }}
                       />
                     );
