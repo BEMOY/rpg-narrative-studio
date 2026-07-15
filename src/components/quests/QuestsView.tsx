@@ -2489,7 +2489,12 @@ function ScenesFlowView({ onBackToQuests }: { onBackToQuests: () => void }) {
               {g.scenes.map((sc) => {
                 const location = byId.get(sc.sceneMapId ?? "");
                 const flow = sc.sceneFlow ?? [];
-                const transitions = (sc.sceneTransitions ?? []).filter((t) => t.targetSceneId);
+                // Only surface transitions actually wired into the branching flow (via some
+                // step's outcome.endTransitionId) -- sc.sceneTransitions is the set of transitions
+                // that EXIST, but a transition only really "exits" the scene once some outcome
+                // points at it, matching the outcome-attached-transitions model.
+                const usedTransitionIds = new Set(flow.flatMap((s) => s.outcomes.map((o) => o.endTransitionId).filter((id): id is string => !!id)));
+                const transitions = (sc.sceneTransitions ?? []).filter((t) => t.targetSceneId && usedTransitionIds.has(t.id));
                 return (
                   <div
                     key={sc.id}

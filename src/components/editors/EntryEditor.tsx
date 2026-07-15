@@ -1,6 +1,6 @@
 import { Trash2, Plus, X, Upload, ImageOff, ChevronDown, ArrowUp, ArrowDown } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
-import type { DialogueSide, DialogueSpeakerData, Entry, EquipSlot, Objective, QuestDependency, QuestDependencyKind, QuestRewards, Relationship, SceneStep, SceneStepKind, SceneTransition } from "../../types/database";
+import type { DialogueSide, DialogueSpeakerData, Entry, EquipSlot, Objective, QuestDependency, QuestDependencyKind, QuestRewards, Relationship, SceneOutcome, SceneStep, SceneStepKind, SceneTransition } from "../../types/database";
 import { canHaveStats, hasRelationship, isEquip, isQuest, isScene } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
 import { resizeImageFile } from "../../lib/image";
@@ -760,13 +760,40 @@ const SCENE_STEP_KIND_LABEL: Record<SceneStepKind, string> = {
   "trigger-zone": "Зона-триггер",
 };
 
-// The Scene entity (Dynarain Phase 1) — one location plus an ordered flow of
-// cutscene/dialogue/battle/trigger-zone steps, and a list of transitions to other scenes. A
-// peer of Quest, not a child of it — see the doc comment on Entry.sceneFlow in types/database.ts
-// and the Dynarain spec (2026-07-15). Cutscene and Battle don't have their own dedicated
-// editors yet (Phase 2/3), so picking one here just references the bare placeholder entity by
-// name for now; the real timeline/tactical-grid editors will attach to those same entries later
-// without needing to touch this panel or the underlying data.
+// Forces a step's outcomes to match what its kind allows, whenever the step is first created or
+// its kind is switched. Cutscene/trigger-zone always collapse down to exactly one auto-labelled
+// "Далее" outcome (there's nothing to branch on); battle always collapses to exactly the two
+// fixed "Победа"/"Поражение" outcomes (each independently routable); dialogue is left untouched
+// since its outcome list is entirely free-form and writer-managed (see the doc comment on
+// SceneOutcome in types/database.ts).
+function normalizeOutcomesForKind(kind: SceneStepKind, existing: SceneOutcome[]): SceneOutcome[] {
+  if (kind === "battle") {
+    const win = existing.find((o) => o.label === "Победа") ?? { id: nextId("out"), label: "Победа" };
+    const lose = existing.find((o) => o.label === "Поражение") ?? { id: nextId("out"), label: "Поражение" };
+    return [win, lose];
+  }
+  if (kind === "cutscene" || kind === "trigger-zone") {
+    const first = existing[0] ?? { id: nextId("out"), label: "Далее" };
+    return [{ ...first, label: "Далее" }];
+  }
+  return existing;
+}
+
+// The Scene entity (Dynarain Phase 1) — one location plus a BRANCHING flow of
+// cutscene/dialogue/battle/trigger-zone steps, each with one or more labelled outcomes that
+// route either to another step in the same scene or out to a SceneTransition. A peer of Quest,
+// not a child of it — see the doc comments on Entry.sceneFlow / SceneStep / SceneOutcome in
+// types/database.ts and the Dynarain spec (2026-07-15). Cutscene and Battle don't have their own
+// dedicated editors yet (Phase 2/3), so picking one here just references the bare placeholder
+// entity by name for now; the real timeline/tactical-grid editors will attach to those same
+// entries later without needing to touch this panel or the underlying data.
+//
+// Scoping note: this renders the flow as an ordered list (reordered with the up/down arrows,
+// same pattern as Quest objectives) rather than a free-form draggable node canvas like the
+// Dialogue graph editor. That's a deliberate choice — the outcome-routing dropdowns below give
+// the actual branching DATA real, editable structure; a visual node canvas with drawn connector
+// arrows is a much larger, riskier build (see DialogueCanvas.tsx) and can be layered on top of
+// this same data model later without a migration, since nothing here depends on x/y positions.
 function ScenePanel({ entry }: { entry: Entry }) {
   const updateEntry = useProjectStore((s) => s.updateEntry);
   const allEntries = useProjectStore((s) => s.project.entries);
@@ -786,13 +813,26 @@ function ScenePanel({ entry }: { entry: Entry }) {
   const setFlow = (next: SceneStep[]) => updateEntry(entry.id, { sceneFlow: next });
   const patchStep = (i: number, p: Partial<SceneStep>) => setFlow(flow.map((s, idx) => (idx === i ? { ...s, ...p } : s)));
   const removeStep = (i: number) => setFlow(flow.filter((_, idx) => idx !== i));
-  const addStep = () => setFlow([...flow, { id: nextId("step"), kind: "dialogue", note: "" }]);
+  const addStep = () => setFlow([...flow, { id: nextId("step"), kind: "dialogue", note: "", outcomes: [] }]);
   const moveStep = (i: number, dir: -1 | 1) => {
     const j = i + dir;
     if (j < 0 || j >= flow.length) return;
     const next = [...flow];
     [next[i], next[j]] = [next[j], next[i]];
     setFlow(next);
+  };
+
+  const patchOutcome = (stepIdx: number, outcomeIdx: number, p: Partial<SceneOutcome>) => {
+    const step = flow[stepIdx];
+    patchStep(stepIdx, { outcomes: step.outcomes.map((o, oi) => (oi === outcomeIdx ? { ...o, ...p } : o)) });
+  };
+  const addOutcome = (stepIdx: number) => {
+    const step = flow[stepIdx];
+    patchStep(stepIdx, { outcomes: [...step.outcomes, { id: nextId("out"), label: "" }] });
+  };
+  const removeOutcome = (stepIdx: number, outcomeIdx: number) => {
+    const step = flow[stepIdx];
+    patchStep(stepIdx, { outcomes: step.outcomes.filter((_, oi) => oi !== outcomeIdx) });
   };
 
   const transitions = entry.sceneTransitions ?? [];
@@ -808,6 +848,21 @@ function ScenePanel({ entry }: { entry: Entry }) {
     if (kind === "battle") return battles.map((e) => ({ id: e.id, label: e.name }));
     return zones.map((z) => ({ id: z.id, label: z.label || z.tag }));
   };
+
+  const stepLabel = (i: number, s: SceneStep) => `${i + 1}. ${SCENE_STEP_KIND_LABEL[s.kind]}${s.note ? " — " + s.note : ""}`;
+
+  // Combined target picker options for one outcome row: every OTHER step in this scene (encoded
+  // "step:<id>"), plus every transition already defined below (encoded "trans:<id>") — an
+  // outcome routes to exactly one of the two, never both.
+  const targetOptionsFor = (currentStepId: string) => [
+    ...flow
+      .filter((s) => s.id !== currentStepId)
+      .map((s) => ({ id: `step:${s.id}`, label: `→ ${stepLabel(flow.findIndex((f) => f.id === s.id), s)}` })),
+    ...transitions.map((t) => ({
+      id: `trans:${t.id}`,
+      label: `⇥ Переход: ${t.label || otherScenes.find((s) => s.id === t.targetSceneId)?.name || "(без цели)"}`,
+    })),
+  ];
 
   return (
     <Section title="Сцена (Story Flow)">
@@ -826,46 +881,100 @@ function ScenePanel({ entry }: { entry: Entry }) {
       )}
 
       <div>
-        <div className="text-sm text-[var(--op-50)] mb-2">Флоу сцены</div>
+        <div className="text-sm text-[var(--op-50)] mb-2">Флоу сцены (ветвящийся)</div>
         <div className="space-y-1.5">
           {flow.length === 0 && <div className="text-xs text-[var(--op-30)]">Пока нет шагов — добавьте катсцену, диалог, бой или зону-триггер.</div>}
-          {flow.map((step, i) => (
-            <div key={step.id} className="rounded-md border border-[var(--op-7)] p-2 space-y-1.5">
-              <div className="flex items-center gap-1.5">
-                <ThemedSelect
-                  className="input flex-1"
-                  value={step.kind}
-                  onChange={(v) => patchStep(i, { kind: v as SceneStepKind, refId: undefined })}
-                  options={(Object.keys(SCENE_STEP_KIND_LABEL) as SceneStepKind[]).map((k) => ({ value: k, label: SCENE_STEP_KIND_LABEL[k] }))}
+          {flow.map((step, i) => {
+            const targetOptions = targetOptionsFor(step.id);
+            return (
+              <div key={step.id} className="rounded-md border border-[var(--op-7)] p-2 space-y-1.5">
+                <div className="flex items-center gap-1.5">
+                  <ThemedSelect
+                    className="input flex-1"
+                    value={step.kind}
+                    onChange={(v) =>
+                      patchStep(i, {
+                        kind: v as SceneStepKind,
+                        refId: undefined,
+                        outcomes: normalizeOutcomesForKind(v as SceneStepKind, step.outcomes),
+                      })
+                    }
+                    options={(Object.keys(SCENE_STEP_KIND_LABEL) as SceneStepKind[]).map((k) => ({ value: k, label: SCENE_STEP_KIND_LABEL[k] }))}
+                  />
+                  <button onClick={() => moveStep(i, -1)} disabled={i === 0} className="opacity-40 hover:opacity-100 disabled:opacity-15 shrink-0">
+                    <ArrowUp size={13} />
+                  </button>
+                  <button onClick={() => moveStep(i, 1)} disabled={i === flow.length - 1} className="opacity-40 hover:opacity-100 disabled:opacity-15 shrink-0">
+                    <ArrowDown size={13} />
+                  </button>
+                  <button onClick={() => removeStep(i)} className="opacity-40 hover:opacity-100 shrink-0">
+                    <X size={14} />
+                  </button>
+                </div>
+                <SearchSelect
+                  value={step.refId}
+                  onChange={(id) => patchStep(i, { refId: id })}
+                  options={refOptionsFor(step.kind)}
+                  placeholder={
+                    step.kind === "trigger-zone" && !entry.sceneMapId
+                      ? "Сначала выберите локацию"
+                      : `Выбрать: ${SCENE_STEP_KIND_LABEL[step.kind].toLowerCase()}…`
+                  }
                 />
-                <button onClick={() => moveStep(i, -1)} disabled={i === 0} className="opacity-40 hover:opacity-100 disabled:opacity-15 shrink-0">
-                  <ArrowUp size={13} />
-                </button>
-                <button onClick={() => moveStep(i, 1)} disabled={i === flow.length - 1} className="opacity-40 hover:opacity-100 disabled:opacity-15 shrink-0">
-                  <ArrowDown size={13} />
-                </button>
-                <button onClick={() => removeStep(i)} className="opacity-40 hover:opacity-100 shrink-0">
-                  <X size={14} />
-                </button>
+                <input
+                  className="input text-xs"
+                  placeholder="Заметка (необязательно)"
+                  value={step.note ?? ""}
+                  onChange={(e) => patchStep(i, { note: e.target.value })}
+                />
+
+                <div className="pl-2 border-l-2 border-[var(--op-7)] space-y-1">
+                  <div className="text-[10px] uppercase tracking-wide text-[var(--op-30)]">Исходы</div>
+                  {step.outcomes.length === 0 && (
+                    <div className="text-xs text-[var(--op-30)]">
+                      {step.kind === "dialogue" ? "Нет исходов — добавьте хотя бы один, иначе шаг тупиковый." : "…"}
+                    </div>
+                  )}
+                  {step.outcomes.map((outcome, oi) => (
+                    <div key={outcome.id} className="flex items-center gap-1.5">
+                      {step.kind === "dialogue" ? (
+                        <input
+                          className="input text-xs w-28 shrink-0"
+                          placeholder="Метка исхода"
+                          value={outcome.label}
+                          onChange={(e) => patchOutcome(i, oi, { label: e.target.value })}
+                        />
+                      ) : (
+                        <div className="text-xs w-28 shrink-0 text-[var(--op-50)] truncate">{outcome.label}</div>
+                      )}
+                      <div className="flex-1">
+                        <SearchSelect
+                          value={outcome.targetStepId ? `step:${outcome.targetStepId}` : outcome.endTransitionId ? `trans:${outcome.endTransitionId}` : undefined}
+                          onChange={(v) => {
+                            if (!v) return patchOutcome(i, oi, { targetStepId: undefined, endTransitionId: undefined });
+                            if (v.startsWith("step:")) return patchOutcome(i, oi, { targetStepId: v.slice(5), endTransitionId: undefined });
+                            return patchOutcome(i, oi, { endTransitionId: v.slice(6), targetStepId: undefined });
+                          }}
+                          options={targetOptions}
+                          placeholder="Куда ведёт…"
+                        />
+                      </div>
+                      {step.kind === "dialogue" && (
+                        <button onClick={() => removeOutcome(i, oi)} className="opacity-40 hover:opacity-100 shrink-0">
+                          <X size={13} />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  {step.kind === "dialogue" && (
+                    <button onClick={() => addOutcome(i)} className="flex items-center gap-1.5 text-xs text-[var(--op-50)] hover:text-[var(--op-80)]">
+                      <Plus size={11} /> Добавить исход
+                    </button>
+                  )}
+                </div>
               </div>
-              <SearchSelect
-                value={step.refId}
-                onChange={(id) => patchStep(i, { refId: id })}
-                options={refOptionsFor(step.kind)}
-                placeholder={
-                  step.kind === "trigger-zone" && !entry.sceneMapId
-                    ? "Сначала выберите локацию"
-                    : `Выбрать: ${SCENE_STEP_KIND_LABEL[step.kind].toLowerCase()}…`
-                }
-              />
-              <input
-                className="input text-xs"
-                placeholder="Заметка (необязательно)"
-                value={step.note ?? ""}
-                onChange={(e) => patchStep(i, { note: e.target.value })}
-              />
-            </div>
-          ))}
+            );
+          })}
           <button onClick={addStep} className="flex items-center gap-1.5 text-xs text-[var(--op-50)] hover:text-[var(--op-80)]">
             <Plus size={12} /> Добавить шаг
           </button>
@@ -875,7 +984,7 @@ function ScenePanel({ entry }: { entry: Entry }) {
       <div>
         <div className="text-sm text-[var(--op-50)] mb-2">Переходы в другие сцены</div>
         <div className="space-y-1.5">
-          {transitions.length === 0 && <div className="text-xs text-[var(--op-30)]">Нет переходов — сцена заканчивается сама по себе.</div>}
+          {transitions.length === 0 && <div className="text-xs text-[var(--op-30)]">Нет переходов — привяжите один к исходу шага выше, когда сцена должна вести в другое место.</div>}
           {transitions.map((t, i) => (
             <div key={t.id} className="flex items-center gap-1.5">
               <div className="flex-1">
@@ -905,6 +1014,7 @@ function ScenePanel({ entry }: { entry: Entry }) {
     </Section>
   );
 }
+
 
 const SIDE_OPTIONS: DialogueSide[] = ["left", "default", "right", "none"];
 const SUGGESTED_EMOTIONS = ["neutral", "happy", "angry"];

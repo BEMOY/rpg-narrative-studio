@@ -513,16 +513,42 @@ export interface QuestAction {
 // that one map since a Scene only ever has one location.
 export type SceneStepKind = "cutscene" | "dialogue" | "battle" | "trigger-zone";
 
+// A Scene's flow is a branching graph, not a flat sequence — a step can lead to DIFFERENT next
+// steps depending on what happened (which dialogue choice the player picked, whether a battle
+// was won or lost), matching how the actual game would route the player. Every step gets at
+// least one outcome, but how many and whether they're user-editable depends on the kind (see the
+// outcome-management logic in ScenePanel, EntryEditor.tsx):
+//   - "cutscene" / "trigger-zone": always exactly one outcome ("Далее") — neither branches on its
+//     own, so there's nothing for the writer to add or remove, just where it leads next.
+//   - "battle": always exactly two fixed outcomes ("Победа" / "Поражение"), each independently
+//     routable.
+//   - "dialogue": the writer adds as many outcomes as they need, one per branch they care about
+//     (e.g. "Пощадить" / "Сражаться") — free-text labels chosen by the writer rather than
+//     mechanically derived from the referenced dialogue's actual node/choice graph, since that
+//     graph can have many possible terminal points with no single clean mapping onto "the"
+//     branches a scene cares about. sourceChoiceId is an optional loose cross-reference to a
+//     DialogueChoice.id, for the writer's own bookkeeping — not something the flow logic reads.
+export interface SceneOutcome {
+  id: string;
+  label: string; // e.g. "Далее", "Победа", "Поражение", or a free-text dialogue branch name
+  sourceChoiceId?: string; // dialogue steps only, optional — see note above
+  targetStepId?: string; // continue the flow at this OTHER SceneStep in the same scene...
+  endTransitionId?: string; // ...OR end the scene via this SceneTransition (mutually exclusive with targetStepId)
+}
+
 export interface SceneStep {
   id: string;
   kind: SceneStepKind;
   refId?: string; // dialogueId / cutsceneId / battleId / zoneId depending on kind
   note?: string; // free-text label shown on the step card, e.g. "Босс появляется"
+  outcomes: SceneOutcome[];
 }
 
-// "On finishing this scene, hand off to Scene X" — a scene that needs to move somewhere else
-// (forest -> cave) ends with one of these instead of trying to model multiple locations inside
-// a single Scene (see the Dynarain spec's "one Scene = one location" decision).
+// "On finishing this scene, hand off to Scene X" — fired from whichever SceneOutcome across the
+// flow points at it (endTransitionId), rather than being one flat list disconnected from the
+// flow. A scene that needs to move somewhere else (forest -> cave) ends with one of these instead
+// of trying to model multiple locations inside a single Scene (see the Dynarain spec's "one Scene
+// = one location" decision).
 export interface SceneTransition {
   id: string;
   targetSceneId?: string;
