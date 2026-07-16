@@ -634,6 +634,11 @@ export interface CameraClip {
   zoom?: number; // "zoom" -- 1 = normal (camera shows a native 320x180 window); 2 = shows a 160x90 window (closer)
   intensity?: number; // "shake" -- jitter amplitude, map cell units
   easing?: ClipEasing; // "move"/"zoom" only, defaults to "linear"
+  // Default true (respects the pause): while the cutscene is paused waiting on a blocking
+  // dialogue clip, this clip's own resolution freezes along with the rest of the timeline. Set
+  // to false so THIS clip keeps animating using real elapsed time even while everything else is
+  // held for the dialogue (e.g. a camera pan that should keep drifting during a conversation).
+  pausesForDialogue?: boolean;
 }
 
 // Where a clip's x/y position refers to within the character's sprite box -- mirrors the
@@ -656,6 +661,10 @@ export interface CharacterClip {
   y?: number;
   anim?: CharacterAnimState; // which sprite state plays during this clip (defaults to "walk" for move, "idle" for animate)
   easing?: ClipEasing; // "move" only, defaults to "linear"
+  // Default true (respects the pause) -- see CameraClip.pausesForDialogue for the full
+  // explanation; set to false so this specific character keeps moving/animating during a
+  // blocking dialogue instead of freezing with everything else.
+  pausesForDialogue?: boolean;
   // -- richer per-appearance actor properties (all optional, all additive) --
   speed?: number; // playback speed of the sprite animation itself, percent, default 100
   zIndex?: number; // draw order among characters on the same frame, default 0 (higher draws later/on top)
@@ -672,13 +681,15 @@ export interface CutsceneDialogueClip {
   atMs: number;
   durationMs: number; // how long the dialogue's first line stays up in the lightweight scrub-preview overlay
   dialogueId?: string;
-  // Default true: while actually PLAYING (not just scrubbing) the cutscene, reaching this clip
-  // pauses the timeline and opens the real dialogue Test-Play window (see TestPlayModal.tsx,
-  // reused byte-for-byte -- not a lookalike) until the player closes it; the timeline then
-  // resumes. Set to false for the documented exception case where some other track's event is
-  // meant to keep running WHILE this dialogue plays (e.g. an ambient effect), rather than the
-  // whole cutscene waiting on it.
-  blocking?: boolean;
+  // Reaching this clip while actually PLAYING (not just scrubbing) the cutscene ALWAYS pauses
+  // the timeline and shows the real interactive dialogue box embedded on the preview stage (see
+  // CutscenePreview.tsx's EmbeddedDialoguePlayer, using the exact same useDialoguePlayer core as
+  // the Dialogue editor's own Test-Play window) until the conversation finishes. The exception
+  // mechanism for "something should keep going WHILE this dialogue plays" now lives on the
+  // OTHER clip that should keep going (see CameraClip/CharacterClip/AudioFxClip's own
+  // `pausesForDialogue` field), not here -- simpler to reason about per element ("does THIS
+  // camera pan / this character / this fx cue care about a dialogue currently blocking the
+  // scene") than as a single blanket toggle on the dialogue itself.
 }
 
 export type AudioFxKind = "sound" | "music" | "fade" | "flash";
@@ -693,6 +704,8 @@ export interface AudioFxClip {
   durationMs?: number; // "fade"/"flash" -- how long the screen overlay takes
   color?: string; // "flash" -- overlay color, e.g. "#ffffff"
   direction?: "in" | "out"; // "fade" -- fade to black ("out") or from black ("in")
+  // Default true (respects the pause) -- see CameraClip.pausesForDialogue.
+  pausesForDialogue?: boolean;
 }
 
 export interface CutsceneMarker {

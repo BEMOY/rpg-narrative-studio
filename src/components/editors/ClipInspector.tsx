@@ -116,6 +116,20 @@ function TagsField({ value, onChange }: { value: string[] | undefined; onChange:
   );
 }
 
+// Shared "Ждёт диалог" toggle for camera/character/audiofx clips -- default true (respects a
+// currently-blocking dialogue elsewhere on the timeline and freezes along with it); unchecking
+// it lets this specific clip keep animating on real elapsed time while the rest of the scene is
+// paused for the conversation. See CameraClip.pausesForDialogue's doc comment for the full
+// rationale (this used to be one blanket checkbox on the dialogue clip itself).
+function PausesForDialogueField({ value, onChange }: { value: boolean | undefined; onChange: (v: boolean) => void }) {
+  return (
+    <label className="flex items-center gap-1.5 text-xs text-[var(--op-50)]">
+      <input type="checkbox" checked={value ?? true} onChange={(e) => onChange(e.target.checked)} />
+      Ждёт диалог
+    </label>
+  );
+}
+
 // Precise numeric/kind-specific property editor for whichever clip is currently selected on the
 // CutsceneTimeline (rendered alongside it in CutsceneEditorModal) -- the rough position/duration
 // are set by dragging on the timeline, this panel is for exact values and kind-specific params
@@ -185,6 +199,7 @@ export function ClipInspector({
           )}
           {clip.kind === "shake" && <NumField label="Сила" value={clip.intensity ?? 0.3} step={0.05} onChange={(v) => patch({ intensity: v })} />}
         </div>
+        <PausesForDialogueField value={clip.pausesForDialogue} onChange={(v) => patch({ pausesForDialogue: v })} />
       </div>
     );
   }
@@ -246,6 +261,7 @@ export function ClipInspector({
             Отражение по X
           </label>
         </div>
+        <PausesForDialogueField value={clip.pausesForDialogue} onChange={(v) => patch({ pausesForDialogue: v })} />
         <div className="pt-1 space-y-1.5 border-t border-[var(--op-10)] mt-1">
           <div className="text-[10px] uppercase tracking-wider text-[var(--op-30)] pt-1.5">Дополнительно</div>
           <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1">
@@ -303,15 +319,10 @@ export function ClipInspector({
             <ExternalLink size={12} /> Открыть в редакторе диалогов
           </button>
         )}
-        <label className="flex items-center gap-1.5 text-xs text-[var(--op-50)]">
-          <input type="checkbox" checked={clip.blocking ?? true} onChange={(e) => patch({ blocking: e.target.checked })} />
-          Катсцена ждёт окончания диалога
-        </label>
-        {!(clip.blocking ?? true) && (
-          <div className="text-[10px] text-[var(--op-30)]">
-            Исключение: остальные дорожки продолжают идти, пока показывается этот диалог.
-          </div>
-        )}
+        <div className="text-[10px] text-[var(--op-30)]">
+          Катсцена всегда ждёт окончания диалога. Чтобы конкретный клип камеры/персонажа/аудио продолжал
+          действовать во время этого диалога — снимите «Ждёт диалог» в его собственной панели параметров.
+        </div>
         <div className="flex items-center gap-2">
           <NumField label="Начало мс" value={clip.atMs} onChange={(v) => patch({ atMs: v })} />
           <NumField label="Показ мс" value={clip.durationMs} onChange={(v) => patch({ durationMs: v })} />
@@ -379,6 +390,7 @@ export function ClipInspector({
           </label>
         )}
       </div>
+      <PausesForDialogueField value={clip.pausesForDialogue} onChange={(v) => patch({ pausesForDialogue: v })} />
     </div>
   );
 }

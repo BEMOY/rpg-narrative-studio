@@ -44,8 +44,17 @@ export function CutsceneEditorModal({ entry, onClose }: { entry: Entry; onClose:
   // dialogue Test-Play window (see TestPlayModal.tsx, rendered further down, byte-identical to
   // the one in the Dialogue editor) takes over until the player closes it.
   const [awaitingDialogue, setAwaitingDialogue] = useState<CutsceneDialogueClip | null>(null);
+  // A second, independently free-running clock -- while `awaitingDialogue` is set, `t` itself
+  // is frozen (see the raf loop below, gated on `playing`), but any individual clip whose own
+  // `pausesForDialogue` is explicitly false is meant to keep animating on REAL elapsed time
+  // regardless. `tLive` starts counting from the freeze point the instant a dialogue gate
+  // begins and is what those specific clips get resolved against instead of the frozen `t` (see
+  // CutscenePreview's use of the `tLive` prop, threaded into resolveCamera/resolveCharacters).
+  const [tLive, setTLive] = useState(0);
   const rafRef = useRef<number | undefined>(undefined);
   const lastRef = useRef(0);
+  const tLiveRafRef = useRef<number | undefined>(undefined);
+  const tLiveLastRef = useRef(0);
   const prevTRef = useRef(-1); // sentinel below 0 so a dialogue clip sitting at atMs===0 still gates correctly on the very first tick
 
   useEffect(() => {
@@ -72,6 +81,29 @@ export function CutsceneEditorModal({ entry, onClose }: { entry: Entry; onClose:
     if (playing && t >= totalMs && !loop) setPlaying(false);
   }, [playing, t, totalMs, loop]);
 
+  // Runs only while gated on a blocking dialogue -- resets to the freeze point the instant
+  // gating begins, then free-runs on real elapsed time until the dialogue ends (awaitingDialogue
+  // goes back to null, at which point normal playback resumes from the still-frozen `t`, and any
+  // clip that WAS following tLive simply holds at wherever tLive left it, same as any other clip
+  // holds at its own last resolved value once its window has passed).
+  useEffect(() => {
+    if (!awaitingDialogue) return;
+    setTLive(t);
+    tLiveLastRef.current = 0;
+    const step = (ts: number) => {
+      if (tLiveLastRef.current === 0) tLiveLastRef.current = ts;
+      const dt = ts - tLiveLastRef.current;
+      tLiveLastRef.current = ts;
+      setTLive((prev) => prev + dt);
+      tLiveRafRef.current = requestAnimationFrame(step);
+    };
+    tLiveRafRef.current = requestAnimationFrame(step);
+    return () => {
+      if (tLiveRafRef.current !== undefined) cancelAnimationFrame(tLiveRafRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [awaitingDialogue]);
+
   // Dialogue gating -- only while actually playing (auto-advancing), never while the user is
   // just dragging the scrub slider by hand. Detects "just crossed into a blocking clip's atMs
   // since the last check" by comparing against prevTRef, rather than reacting inside setT's own
@@ -82,7 +114,7 @@ export function CutsceneEditorModal({ entry, onClose }: { entry: Entry; onClose:
       return;
     }
     const hit = (entry.cutsceneDialogueTrack ?? [])
-      .filter((c) => (c.blocking ?? true) && dialogues.some((d) => d.id === c.dialogueId))
+      .filter((c) => dialogues.some((d) => d.id === c.dialogueId))
       .find((c) => prevTRef.current < c.atMs && t >= c.atMs);
     if (hit) {
       setPlaying(false);
@@ -230,6 +262,7 @@ export function CutsceneEditorModal({ entry, onClose }: { entry: Entry; onClose:
               <CutscenePreview
                 entry={entry}
                 t={t}
+                tLive={awaitingDialogue ? tLive : t}
                 hiddenTracks={hiddenTracks}
                 awaitingDialogueEntry={awaitingDialogueEntry}
                 onDialogueDone={() => {

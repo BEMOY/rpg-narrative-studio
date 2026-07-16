@@ -76,8 +76,22 @@ export interface CameraState {
 // Camera position/zoom in map cell units + a deterministic (not truly random, so scrubbing the
 // timeline back and forth always shows the same wobble) shake jitter layered on top while a
 // "shake" clip's window is active.
-export function resolveCamera(clips: CameraClip[], t: number, defaultCenter: { x: number; y: number }): CameraState {
+//
+// `tLive` (defaults to `t` when the caller isn't currently gated on a blocking dialogue) lets a
+// camera clip whose own `pausesForDialogue` is false keep resolving on real elapsed time instead
+// of freezing with the rest of the scene -- decided once, up front, by checking whichever clip
+// is active at the FROZEN `t` (there's only one camera, so this is a single either/or choice
+// for the whole track, unlike per-character resolution below).
+export function resolveCamera(
+  clips: CameraClip[],
+  t: number,
+  defaultCenter: { x: number; y: number },
+  tLive: number = t
+): CameraState {
   const sorted = [...clips].sort((a, b) => a.startMs - b.startMs);
+  const activeAtFrozenT = sorted.find((c) => t >= c.startMs && t <= c.startMs + c.durationMs);
+  const effT = activeAtFrozenT?.pausesForDialogue === false ? tLive : t;
+
   const moveClips = sorted
     .filter((c): c is CameraClip & { x: number; y: number } => c.kind === "move" && c.x !== undefined && c.y !== undefined)
     .map((c) => ({ startMs: c.startMs, durationMs: c.durationMs, value: { x: c.x, y: c.y }, easing: c.easing }));
@@ -85,16 +99,16 @@ export function resolveCamera(clips: CameraClip[], t: number, defaultCenter: { x
     .filter((c): c is CameraClip & { zoom: number } => c.kind === "zoom" && c.zoom !== undefined)
     .map((c) => ({ startMs: c.startMs, durationMs: c.durationMs, value: c.zoom, easing: c.easing }));
 
-  const pos = resolveTween(moveClips, t, defaultCenter, lerpPoint);
-  const zoom = resolveTween(zoomClips, t, 1, lerpNum);
+  const pos = resolveTween(moveClips, effT, defaultCenter, lerpPoint);
+  const zoom = resolveTween(zoomClips, effT, 1, lerpNum);
 
-  const shakeClip = sorted.find((c) => c.kind === "shake" && t >= c.startMs && t <= c.startMs + c.durationMs);
+  const shakeClip = sorted.find((c) => c.kind === "shake" && effT >= c.startMs && effT <= c.startMs + c.durationMs);
   let shakeX = 0;
   let shakeY = 0;
   if (shakeClip) {
     const amp = shakeClip.intensity ?? 0.3;
-    shakeX = Math.sin(t * 0.031) * Math.cos(t * 0.017) * amp;
-    shakeY = Math.cos(t * 0.027) * Math.sin(t * 0.041) * amp;
+    shakeX = Math.sin(effT * 0.031) * Math.cos(effT * 0.017) * amp;
+    shakeY = Math.cos(effT * 0.027) * Math.sin(effT * 0.041) * amp;
   }
 
   return { x: pos.x + shakeX, y: pos.y + shakeY, zoom };
@@ -119,7 +133,18 @@ export interface ResolvedCharacter {
 // per-appearance fields (speed/zIndex/anchor/opacity/flipX) are NOT tweened between clips --
 // like `anim`, they're just read off whichever clip is currently active, falling back to sane
 // defaults when no clip covers `t`.
-export function resolveCharacters(clips: CharacterClip[], t: number, defaultPos: { x: number; y: number }): ResolvedCharacter[] {
+//
+// `tLive` (see resolveCamera's doc comment for the general idea) is resolved PER CHARACTER here
+// -- each character independently checks whichever of their own clips is active at the FROZEN
+// `t` and, if that clip's `pausesForDialogue` is false, resolves that character's entire
+// position/anim against `tLive` instead, so e.g. one ambient character can keep walking during a
+// blocking dialogue while the rest of the cast (and the camera) hold still.
+export function resolveCharacters(
+  clips: CharacterClip[],
+  t: number,
+  defaultPos: { x: number; y: number },
+  tLive: number = t
+): ResolvedCharacter[] {
   const byChar = new Map<string, CharacterClip[]>();
   for (const c of clips) {
     if (!c.characterId) continue;
@@ -129,12 +154,15 @@ export function resolveCharacters(clips: CharacterClip[], t: number, defaultPos:
   const result: ResolvedCharacter[] = [];
   for (const [characterId, charClips] of byChar) {
     const sorted = [...charClips].sort((a, b) => a.startMs - b.startMs);
+    const activeAtFrozenT = sorted.find((c) => t >= c.startMs && t <= c.startMs + c.durationMs);
+    const effT = activeAtFrozenT?.pausesForDialogue === false ? tLive : t;
+
     const moveClips = sorted
       .filter((c): c is CharacterClip & { x: number; y: number } => c.kind === "move" && c.x !== undefined && c.y !== undefined)
       .map((c) => ({ startMs: c.startMs, durationMs: c.durationMs, value: { x: c.x, y: c.y }, easing: c.easing }));
-    const pos = resolveTween(moveClips, t, defaultPos, lerpPoint);
+    const pos = resolveTween(moveClips, effT, defaultPos, lerpPoint);
 
-    const active = sorted.find((c) => t >= c.startMs && t <= c.startMs + c.durationMs);
+    const active = sorted.find((c) => effT >= c.startMs && effT <= c.startMs + c.durationMs);
     const anim: CharacterAnimState = active ? active.anim ?? (active.kind === "move" ? "walk" : "idle") : "idle";
 
     result.push({
@@ -174,17 +202,21 @@ export interface OverlayState {
   color: string;
 }
 
-// Screen fade/flash overlay state at time `t`. Fade ramps opacity linearly across durationMs
-// ("out" = fading to black, "in" = fading up from black); flash spikes 0 -> 1 -> 0 in a
-// triangle wave peaking at the clip's midpoint. If two clips' windows overlap (unusual), the
-// last one in the array wins -- simplicity over correctness for this rare edge case.
-export function resolveOverlay(clips: AudioFxClip[], t: number): OverlayState {
+// Screen fade/flash overlay state at time `t` (or `tLive` for a clip whose own
+// `pausesForDialogue` is false -- decided independently per clip since, unlike camera/character
+// tracks, there's no "settle then tween" carry-over between overlay clips to keep consistent).
+// Fade ramps opacity linearly across durationMs ("out" = fading to black, "in" = fading up from
+// black); flash spikes 0 -> 1 -> 0 in a triangle wave peaking at the clip's midpoint. If two
+// clips' windows overlap (unusual), the last one in the array wins -- simplicity over
+// correctness for this rare edge case.
+export function resolveOverlay(clips: AudioFxClip[], t: number, tLive: number = t): OverlayState {
   let result: OverlayState = { opacity: 0, color: "#000000" };
   for (const c of clips) {
     if (c.kind !== "fade" && c.kind !== "flash") continue;
+    const effT = c.pausesForDialogue === false ? tLive : t;
     const dur = Math.max(1, c.durationMs ?? 500);
-    if (t < c.atMs || t > c.atMs + dur) continue;
-    const f = (t - c.atMs) / dur;
+    if (effT < c.atMs || effT > c.atMs + dur) continue;
+    const f = (effT - c.atMs) / dur;
     if (c.kind === "fade") {
       result = { opacity: c.direction === "in" ? 1 - f : f, color: "#000000" };
     } else {

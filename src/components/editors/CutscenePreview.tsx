@@ -1,26 +1,29 @@
 import { useEffect, useRef, useState } from "react";
+import { Crosshair, Grid3x3, ZoomIn, ZoomOut } from "lucide-react";
 import type { Dialogue, DialogueColorStyle, Entry } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
 import { MapThumbnail } from "../mapeditor/MapThumbnail";
 import { SpriteAnimator } from "../common/SpriteAnimator";
-import { activeDialogueClip, anchorOffset, resolveCamera, resolveCharacters, resolveOverlay } from "../../lib/cutscenePreview";
+import { anchorOffset, resolveCamera, resolveCharacters, resolveOverlay } from "../../lib/cutscenePreview";
 import { audioFxTrackKey, cameraTrackKey, characterTrackKey, dialogueTrackKey } from "./CutsceneTimeline";
 import { CHARACTER_DRAG_MIME, DIALOGUE_DRAG_MIME } from "./CutsceneExplorerPanel";
 import { nextId } from "../../lib/mapDefaults";
 import { useDialoguePlayer } from "../../lib/useDialoguePlayer";
 import { DialoguePlayArea } from "../dialogue/DialoguePlayArea";
+import { ThemedSelect } from "../common/ThemedSelect";
 
 // The game's actual base resolution (see the project brief: 320x180, top-down pixel art) --
-// used as the camera's "native" viewport so zoom/pan in this preview means the same thing it
-// will in-engine, not an arbitrary made-up preview scale. STAGE_DISPLAY_W used to be a fixed
-// constant; the stage now sizes itself responsively (see useStageWidth below) between MIN and
-// MAX so it fills however much room the editor window actually gives it instead of always
-// rendering at a fixed 480px-wide box.
+// still what the CAMERA CLIP's own zoom means (zoom=2 => a 160x90 in-game window), but the
+// EDITOR's own view of the stage is now independent of that (see the `view` state below) so a
+// writer can pan/zoom around a location bigger than whatever the camera currently frames.
 const NATIVE_W = 320;
 const NATIVE_H = 180;
 const MIN_STAGE_W = 420;
 const MAX_STAGE_W = 1040;
 const DEFAULT_STAGE_W = 480;
+const MIN_VIEW_ZOOM = 0.25;
+const MAX_VIEW_ZOOM = 4;
+const GRID_SIZE_OPTIONS = [1, 2, 4, 8];
 
 // Measures the available space around the stage (via ResizeObserver on the wrapping panel) and
 // picks the largest stage width that still fits both the panel's width AND its height without
@@ -53,39 +56,61 @@ function useStageWidth() {
 // timeline and preview monitor being the same instrument). Renders the bound location's existing
 // MapThumbnail SVG as the world background, overlays animated character sprites (falling back to
 // a static portrait, then a plain initial-letter dot, if a character has no sprite strip
-// uploaded yet in CharacterSpritesSection), applies a CSS transform for camera pan/zoom/shake,
-// and layers a dialogue box + fade/flash overlay on top in screen-space (outside the transformed
-// "world" layer, same as real game UI staying put while the camera moves under it).
+// uploaded yet in CharacterSpritesSection), and layers a dialogue box + fade/flash overlay on
+// top in screen-space (outside the transformed "world" layer, same as real game UI staying put
+// while the camera moves under it).
 //
-// Two different dialogue presentations share the stage:
-//  - while merely SCRUBBING (not gated on a blocking clip), a lightweight non-interactive raw
-//    first-line preview is shown -- good enough for "what's roughly on screen at this time"
-//    without spinning up a full stateful conversation on every scrub tick.
-//  - while the cutscene is actually PLAYING and has paused on a blocking dialogue clip
-//    (`awaitingDialogueEntry` prop, set by CutsceneEditorModal), the REAL interactive dialogue
-//    box (useDialoguePlayer + DialoguePlayArea, the exact same core used by the standalone
-//    Test-Play modal) is rendered directly over the live scene with no dark backdrop -- exactly
-//    how it will look in the actual game, not a separate floating window.
+// The stage's own displayed VIEWPORT (pan via dragging the background, zoom via the +/- buttons,
+// "Crosshair" button to snap back to wherever the actual camera currently is) is independent of
+// the cutscene's own camera clips (`view` state below) -- editing convenience only, never
+// written to the project. The camera's real resolved frame is drawn as a dashed rectangle so you
+// can always see what the player will actually see vs. what you can currently pan around to.
+//
+// While the cutscene is actually PLAYING and has paused on a blocking dialogue clip
+// (`awaitingDialogueEntry` prop, set by CutsceneEditorModal), the real interactive dialogue box
+// (useDialoguePlayer + DialoguePlayArea, the exact same core used by the standalone Test-Play
+// modal) is rendered directly over the live scene with no dark backdrop -- exactly how it will
+// look in the actual game, not a separate floating window. There is no more lightweight
+// scrub-only raw-text preview box (removed per feedback) -- while merely scrubbing (not gated),
+// the stage just shows nothing dialogue-related, matching how the real game has no dialogue box
+// on screen outside of an actual conversation.
 export function CutscenePreview({
   entry,
   t,
+  tLive,
   hiddenTracks = new Set(),
   awaitingDialogueEntry,
   onDialogueDone,
 }: {
   entry: Entry;
   t: number;
+  tLive?: number;
   hiddenTracks?: Set<string>;
   awaitingDialogueEntry?: Dialogue;
   onDialogueDone?: () => void;
 }) {
   const allEntries = useProjectStore((s) => s.project.entries);
-  const dialogues = useProjectStore((s) => s.project.dialogues);
   const colorStyles = useProjectStore((s) => s.project.colorStyles);
   const updateEntry = useProjectStore((s) => s.updateEntry);
   const boundMap = allEntries.find((e) => e.id === entry.cutsceneMapId);
   const worldRef = useRef<HTMLDivElement>(null);
   const { containerRef, stageW } = useStageWidth();
+
+  // Editor-only viewport (pan/zoom), fully independent of the cutscene's own camera clips --
+  // initializes to the map's center the first time a map is bound, then only moves in response
+  // to the writer explicitly dragging/zooming/resetting (the Crosshair button snaps it to
+  // wherever the camera currently resolves to, on demand).
+  const [view, setView] = useState({ x: 0, y: 0, zoom: 1 });
+  const [viewInitFor, setViewInitFor] = useState<string | undefined>(undefined);
+  const [showGrid, setShowGrid] = useState(false);
+  const [gridCells, setGridCells] = useState(1);
+  const [dragChar, setDragChar] = useState<{ characterId: string; x: number; y: number } | null>(null);
+
+  useEffect(() => {
+    if (!boundMap?.map || viewInitFor === boundMap.id) return;
+    setView({ x: boundMap.map.width / 2, y: boundMap.map.height / 2, zoom: 1 });
+    setViewInitFor(boundMap.id);
+  }, [boundMap, viewInitFor]);
 
   if (!boundMap?.map) {
     return (
@@ -103,30 +128,35 @@ export function CutscenePreview({
   const characterClips = (entry.cutsceneCharacterTrack ?? []).filter(
     (c) => !c.characterId || !hiddenTracks.has(characterTrackKey(c.characterId))
   );
-  const dialogueClips = hiddenTracks.has(dialogueTrackKey()) ? [] : entry.cutsceneDialogueTrack ?? [];
   const fxClips = hiddenTracks.has(audioFxTrackKey()) ? [] : entry.cutsceneAudioFxTrack ?? [];
 
-  const camera = resolveCamera(cameraClips, t, mapCenterCell);
-  const resolvedChars = resolveCharacters(characterClips, t, mapCenterCell);
-  const activeDlgClip = awaitingDialogueEntry ? undefined : activeDialogueClip(dialogueClips, t);
-  const activeDialogue = activeDlgClip ? dialogues.find((d) => d.id === activeDlgClip.dialogueId) : undefined;
-  const firstLine = activeDialogue?.nodes.find((n) => n.id === activeDialogue.startNodeId)?.lines[0];
-  const overlay = resolveOverlay(fxClips, t);
+  const camera = resolveCamera(cameraClips, t, mapCenterCell, tLive);
+  const resolvedChars = resolveCharacters(characterClips, t, mapCenterCell, tLive);
+  const overlay = resolveOverlay(fxClips, t, tLive);
 
-  // Camera window into the world, in native (320x180-based) px -- zoom=2 shows a 160x90 window
-  // (things look 2x bigger/closer), matching how a real in-game camera zoom would behave.
-  const viewW = NATIVE_W / Math.max(0.1, camera.zoom);
-  const viewH = NATIVE_H / Math.max(0.1, camera.zoom);
-  const gridSize = map.gridSize;
-  const cameraPxX = camera.x * gridSize;
-  const cameraPxY = camera.y * gridSize;
+  const gridSize = map.gridSize; // px per map cell, native resolution
+  const viewW = NATIVE_W / Math.max(0.1, view.zoom);
+  const viewH = NATIVE_H / Math.max(0.1, view.zoom);
+  const viewPxX = view.x * gridSize;
+  const viewPxY = view.y * gridSize;
   const displayScale = stageW / viewW;
   const stageDisplayH = viewH * displayScale;
-  const translateX = -(cameraPxX - viewW / 2) * displayScale;
-  const translateY = -(cameraPxY - viewH / 2) * displayScale;
+  const translateX = -(viewPxX - viewW / 2) * displayScale;
+  const translateY = -(viewPxY - viewH / 2) * displayScale;
 
   const worldDisplayW = map.width * gridSize * displayScale;
   const worldDisplayH = map.height * gridSize * displayScale;
+
+  // The camera's OWN frame (what the player actually sees), drawn as a dashed rectangle inside
+  // the same world layer -- independent of the editor's pan/zoom above.
+  const camViewW = NATIVE_W / Math.max(0.1, camera.zoom);
+  const camViewH = NATIVE_H / Math.max(0.1, camera.zoom);
+  const camRectW = camViewW * displayScale;
+  const camRectH = camViewH * displayScale;
+  const camRectLeft = camera.x * gridSize * displayScale - camRectW / 2;
+  const camRectTop = camera.y * gridSize * displayScale - camRectH / 2;
+
+  const gridCellPx = gridCells * gridSize * displayScale;
 
   // Drag a character/dialogue from CutsceneExplorerPanel straight onto the stage -- a character
   // gets placed at the drop point (added to the cast if it isn't already, plus a "move" clip at
@@ -161,15 +191,115 @@ export function CutscenePreview({
     }
   };
 
+  // Panning the editor's own view -- mousedown on the stage BACKGROUND (not on a character,
+  // which stops propagation and starts its own reposition drag instead, see below). Standard
+  // window-mousemove/mouseup drag pattern used everywhere else in this codebase.
+  const startPan = (e: React.MouseEvent) => {
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const origX = view.x;
+    const origY = view.y;
+    const onMove = (ev: MouseEvent) => {
+      const dxCells = (ev.clientX - startX) / (gridSize * displayScale);
+      const dyCells = (ev.clientY - startY) / (gridSize * displayScale);
+      setView((v) => ({ ...v, x: origX - dxCells, y: origY - dyCells }));
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  const zoomView = (factor: number) =>
+    setView((v) => ({ ...v, zoom: Math.max(MIN_VIEW_ZOOM, Math.min(MAX_VIEW_ZOOM, v.zoom * factor)) }));
+  const resetViewToCamera = () => setView({ x: camera.x, y: camera.y, zoom: camera.zoom });
+
+  // Dragging a character already placed on stage repositions it AND sets/updates a keyframe at
+  // the current playhead time -- if a clip already starts exactly at (rounded) `t` for this
+  // character, its x/y are updated in place; otherwise a brand-new near-instant "move" clip is
+  // created there (durationMs: 1 -- effectively a keyframe/snap rather than a tween window).
+  const startCharacterDrag = (e: React.MouseEvent, characterId: string, origX: number, origY: number) => {
+    e.stopPropagation();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    setDragChar({ characterId, x: origX, y: origY });
+    const onMove = (ev: MouseEvent) => {
+      const dxCells = (ev.clientX - startX) / (gridSize * displayScale);
+      const dyCells = (ev.clientY - startY) / (gridSize * displayScale);
+      setDragChar({ characterId, x: origX + dxCells, y: origY + dyCells });
+    };
+    const onUp = (ev: MouseEvent) => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      const dxCells = (ev.clientX - startX) / (gridSize * displayScale);
+      const dyCells = (ev.clientY - startY) / (gridSize * displayScale);
+      const newX = origX + dxCells;
+      const newY = origY + dyCells;
+      const charTrack = entry.cutsceneCharacterTrack ?? [];
+      const roundedT = Math.round(t);
+      const existing = charTrack.find((c) => c.characterId === characterId && Math.round(c.startMs) === roundedT);
+      if (existing) {
+        updateEntry(entry.id, {
+          cutsceneCharacterTrack: charTrack.map((c) => (c.id === existing.id ? { ...c, x: newX, y: newY } : c)),
+        });
+      } else {
+        updateEntry(entry.id, {
+          cutsceneCharacterTrack: [
+            ...charTrack,
+            { id: nextId("cclip"), startMs: Math.max(0, roundedT), durationMs: 1, kind: "move", characterId, x: newX, y: newY },
+          ],
+        });
+      }
+      setDragChar(null);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
   return (
     <div ref={containerRef} className="glass rounded-lg p-5 space-y-3 w-full h-full flex flex-col overflow-hidden">
-      <div className="text-xs uppercase tracking-wider text-[var(--op-35)] shrink-0">Живое превью</div>
+      <div className="flex items-center gap-2 shrink-0">
+        <div className="text-xs uppercase tracking-wider text-[var(--op-35)] flex-1">Живое превью</div>
+        <button onClick={() => zoomView(0.8)} title="Отдалить вид" className="w-6 h-6 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]">
+          <ZoomOut size={12} />
+        </button>
+        <button onClick={() => zoomView(1.25)} title="Приблизить вид" className="w-6 h-6 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]">
+          <ZoomIn size={12} />
+        </button>
+        <button
+          onClick={resetViewToCamera}
+          title="Вернуть вид к текущей позиции камеры"
+          className="w-6 h-6 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]"
+        >
+          <Crosshair size={12} />
+        </button>
+        <button
+          onClick={() => setShowGrid((v) => !v)}
+          title="Показать/скрыть сетку"
+          className={`w-6 h-6 grid place-items-center rounded-md glass hover:bg-[var(--op-10)] ${showGrid ? "text-accent" : ""}`}
+        >
+          <Grid3x3 size={12} />
+        </button>
+        {showGrid && (
+          <div className="w-16">
+            <ThemedSelect
+              className="input text-xs"
+              value={String(gridCells)}
+              onChange={(v) => setGridCells(Number(v))}
+              options={GRID_SIZE_OPTIONS.map((n) => ({ value: String(n), label: `${n}` }))}
+            />
+          </div>
+        )}
+      </div>
 
       <div
         className="relative overflow-hidden rounded-md border border-[var(--op-10)] mx-auto shrink-0"
-        style={{ width: stageW, height: stageDisplayH, background: "#000" }}
+        style={{ width: stageW, height: stageDisplayH, background: "#000", cursor: "grab" }}
         onDragOver={(e) => e.preventDefault()}
         onDrop={handleDrop}
+        onMouseDown={startPan}
       >
         <div
           ref={worldRef}
@@ -177,18 +307,35 @@ export function CutscenePreview({
           style={{ width: worldDisplayW, height: worldDisplayH, transform: `translate(${translateX}px, ${translateY}px)` }}
         >
           <MapThumbnail map={map} entries={allEntries} />
+
+          {showGrid && gridCellPx > 2 && (
+            <div
+              className="absolute inset-0 pointer-events-none"
+              style={{
+                backgroundImage:
+                  "linear-gradient(to right, rgba(255,255,255,0.18) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.18) 1px, transparent 1px)",
+                backgroundSize: `${gridCellPx}px ${gridCellPx}px`,
+              }}
+            />
+          )}
+
           {resolvedChars.map((rc) => {
             const character = allEntries.find((e) => e.id === rc.characterId);
             if (!character) return null;
+            const isDragging = dragChar?.characterId === rc.characterId;
+            const cx = isDragging ? dragChar!.x : rc.x;
+            const cy = isDragging ? dragChar!.y : rc.y;
             const strip = character.spriteAnimations?.[rc.anim];
             const size = Math.max(12, gridSize * displayScale);
             const { ox, oy } = anchorOffset(rc.anchor);
-            const leftPx = rc.x * gridSize * displayScale - size * ox;
-            const topPx = rc.y * gridSize * displayScale - size * oy;
+            const leftPx = cx * gridSize * displayScale - size * ox;
+            const topPx = cy * gridSize * displayScale - size * oy;
             return (
               <div
                 key={rc.characterId}
-                className="absolute"
+                onMouseDown={(e) => startCharacterDrag(e, rc.characterId, rc.x, rc.y)}
+                title="Перетащите, чтобы переместить и поставить ключ в текущем времени"
+                className="absolute cursor-move"
                 style={{
                   left: leftPx,
                   top: topPx,
@@ -197,6 +344,7 @@ export function CutscenePreview({
                   zIndex: rc.zIndex,
                   opacity: rc.opacity / 100,
                   transform: rc.flipX ? "scaleX(-1)" : undefined,
+                  outline: isDragging ? "2px solid white" : undefined,
                 }}
               >
                 {strip ? (
@@ -216,24 +364,25 @@ export function CutscenePreview({
               </div>
             );
           })}
+
+          <div
+            className="absolute pointer-events-none border border-dashed border-white/50"
+            style={{ left: camRectLeft, top: camRectTop, width: camRectW, height: camRectH }}
+          />
         </div>
 
         {overlay.opacity > 0.01 && (
           <div className="absolute inset-0 pointer-events-none" style={{ background: overlay.color, opacity: overlay.opacity }} />
         )}
 
-        {awaitingDialogueEntry ? (
+        {awaitingDialogueEntry && (
           <div className="absolute inset-x-0 bottom-0">
             <EmbeddedDialoguePlayer dialogue={awaitingDialogueEntry} colorStyles={colorStyles} onDone={onDialogueDone} />
           </div>
-        ) : (
-          firstLine && (
-            <div className="absolute left-2 right-2 bottom-2 rounded-md bg-black/70 px-2.5 py-1.5 text-[11px] text-white">
-              {firstLine.speaker && <div className="font-medium text-[10px] text-white/70">{firstLine.speaker}</div>}
-              <div>{firstLine.text}</div>
-            </div>
-          )
         )}
+      </div>
+      <div className="text-[10px] text-[var(--op-30)] shrink-0">
+        Перетащите фон — панорама вида. Перетащите персонажа — переместить и поставить ключ в текущем времени. Пунктирная рамка — то, что реально видит камера.
       </div>
     </div>
   );
