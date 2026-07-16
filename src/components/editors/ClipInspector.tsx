@@ -6,9 +6,11 @@ import type {
   CharacterAnchor,
   CharacterAnimState,
   CharacterClip,
+  CharacterPositionKeyframe,
   ClipEasing,
   CutsceneDialogueClip,
   Entry,
+  Keyframe,
 } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
 import { ThemedSelect } from "../common/ThemedSelect";
@@ -166,40 +168,53 @@ export function ClipInspector({
     return (
       <div className="glass rounded-lg p-4 space-y-2">
         <div className="flex items-center justify-between">
-          <div className="text-xs uppercase tracking-wider text-[var(--op-35)]">Камера — клип</div>
+          <div className="text-xs uppercase tracking-wider text-[var(--op-35)]">Камера — тряска</div>
           <button onClick={remove} className="text-[var(--op-40)] hover:text-[var(--op-80)]">
             <Trash2 size={13} />
           </button>
         </div>
-        <ThemedSelect
-          className="input"
-          value={clip.kind}
-          onChange={(v) => patch({ kind: v as CameraClip["kind"] })}
-          options={[
-            { value: "move", label: "Движение" },
-            { value: "zoom", label: "Зум" },
-            { value: "shake", label: "Тряска" },
-          ]}
-        />
+        <div className="text-[10px] text-[var(--op-30)]">
+          Позиция и зум камеры теперь задаются ключами (ромбики на дорожках «Камера: X/Y/Zoom») — выберите ключ на
+          таймлайне, чтобы отредактировать его. Здесь — только клип тряски.
+        </div>
         <div className="flex items-center gap-2 flex-wrap">
           <NumField label="Начало мс" value={clip.startMs} onChange={(v) => patch({ startMs: v })} />
           <NumField label="Длит. мс" value={clip.durationMs} onChange={(v) => patch({ durationMs: v })} />
-          {clip.kind === "move" && (
-            <>
-              <NumField label="X" value={clip.x ?? 0} onChange={(v) => patch({ x: v })} />
-              <NumField label="Y" value={clip.y ?? 0} onChange={(v) => patch({ y: v })} />
-              <EasingField value={clip.easing} onChange={(v) => patch({ easing: v })} />
-            </>
-          )}
-          {clip.kind === "zoom" && (
-            <>
-              <NumField label="Зум" value={clip.zoom ?? 1} step={0.1} onChange={(v) => patch({ zoom: v })} />
-              <EasingField value={clip.easing} onChange={(v) => patch({ easing: v })} />
-            </>
-          )}
-          {clip.kind === "shake" && <NumField label="Сила" value={clip.intensity ?? 0.3} step={0.05} onChange={(v) => patch({ intensity: v })} />}
+          <NumField label="Сила" value={clip.intensity ?? 0.3} step={0.05} onChange={(v) => patch({ intensity: v })} />
         </div>
         <PausesForDialogueField value={clip.pausesForDialogue} onChange={(v) => patch({ pausesForDialogue: v })} />
+      </div>
+    );
+  }
+
+  if (selected.trackKind === "cameraKey") {
+    const channelField =
+      selected.channel === "x" ? "cutsceneCameraPosX" : selected.channel === "y" ? "cutsceneCameraPosY" : "cutsceneCameraZoomKeys";
+    const keys = (entry[channelField] ?? []) as Keyframe[];
+    const key = keys.find((k) => k.id === selected.id);
+    if (!key) return null;
+    const patch = (p: Partial<Keyframe>) => updateEntry(entry.id, { [channelField]: keys.map((k) => (k.id === key.id ? { ...k, ...p } : k)) });
+    const remove = () => {
+      updateEntry(entry.id, { [channelField]: keys.filter((k) => k.id !== key.id) });
+      onClose();
+    };
+    const channelLabel = selected.channel === "x" ? "X" : selected.channel === "y" ? "Y" : "Zoom";
+    return (
+      <div className="glass rounded-lg p-4 space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="text-xs uppercase tracking-wider text-[var(--op-35)]">Камера — ключ {channelLabel}</div>
+          <button onClick={remove} className="text-[var(--op-40)] hover:text-[var(--op-80)]">
+            <Trash2 size={13} />
+          </button>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <NumField label="Время мс" value={key.atMs} onChange={(v) => patch({ atMs: Math.max(0, v) })} />
+          <NumField label={channelLabel} value={key.value} step={selected.channel === "zoom" ? 0.1 : 0.1} onChange={(v) => patch({ value: v })} />
+          <EasingField value={key.easing} onChange={(v) => patch({ easing: v })} />
+        </div>
+        <div className="text-[10px] text-[var(--op-30)]">
+          Интерполяция идёт только между этим ключом и его соседями — изменение не затронет остальную часть таймлайна.
+        </div>
       </div>
     );
   }
@@ -217,35 +232,23 @@ export function ClipInspector({
     return (
       <div className="glass rounded-lg p-4 space-y-2">
         <div className="flex items-center justify-between">
-          <div className="text-xs uppercase tracking-wider text-[var(--op-35)]">Персонаж — клип{character ? ` (${character.name})` : ""}</div>
+          <div className="text-xs uppercase tracking-wider text-[var(--op-35)]">Персонаж — анимация{character ? ` (${character.name})` : ""}</div>
           <button onClick={remove} className="text-[var(--op-40)] hover:text-[var(--op-80)]">
             <Trash2 size={13} />
           </button>
         </div>
-        <ThemedSelect
-          className="input"
-          value={clip.kind}
-          onChange={(v) => patch({ kind: v as CharacterClip["kind"] })}
-          options={[
-            { value: "move", label: "Движение" },
-            { value: "animate", label: "Анимация" },
-          ]}
-        />
+        <div className="text-[10px] text-[var(--op-30)]">
+          Позиция теперь задаётся ключами (ромбики на дорожках «X»/«Y» этого персонажа) — выберите ключ на таймлайне,
+          чтобы отредактировать его. Здесь — состояние/внешний вид на этом отрезке времени.
+        </div>
         <div className="flex items-center gap-2 flex-wrap">
           <NumField label="Начало мс" value={clip.startMs} onChange={(v) => patch({ startMs: v })} />
           <NumField label="Длит. мс" value={clip.durationMs} onChange={(v) => patch({ durationMs: v })} />
-          {clip.kind === "move" && (
-            <>
-              <NumField label="X" value={clip.x ?? 0} onChange={(v) => patch({ x: v })} />
-              <NumField label="Y" value={clip.y ?? 0} onChange={(v) => patch({ y: v })} />
-              <EasingField value={clip.easing} onChange={(v) => patch({ easing: v })} />
-            </>
-          )}
           <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1">
             Действие
             <ThemedSelect
               className="input w-24"
-              value={clip.anim ?? (clip.kind === "move" ? "walk" : "idle")}
+              value={clip.anim ?? "idle"}
               onChange={(v) => patch({ anim: v as CharacterAnimState })}
               options={CHAR_ANIM_OPTIONS.map((a) => ({ value: a, label: ANIM_STATE_LABEL[a] }))}
             />
@@ -282,6 +285,40 @@ export function ClipInspector({
               onChange={(e) => patch({ notes: e.target.value })}
             />
           </label>
+        </div>
+      </div>
+    );
+  }
+
+  if (selected.trackKind === "characterKey") {
+    const posKeys = entry.cutsceneCharacterPositionKeys ?? [];
+    const key = posKeys.find((k) => k.id === selected.id);
+    if (!key) return null;
+    const character = allEntries.find((e) => e.id === key.characterId);
+    const patch = (p: Partial<CharacterPositionKeyframe>) =>
+      updateEntry(entry.id, { cutsceneCharacterPositionKeys: posKeys.map((k) => (k.id === key.id ? { ...k, ...p } : k)) });
+    const remove = () => {
+      updateEntry(entry.id, { cutsceneCharacterPositionKeys: posKeys.filter((k) => k.id !== key.id) });
+      onClose();
+    };
+    const axisLabel = key.axis === "x" ? "X" : "Y";
+    return (
+      <div className="glass rounded-lg p-4 space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="text-xs uppercase tracking-wider text-[var(--op-35)]">
+            {character?.name ?? "Персонаж"} — ключ {axisLabel}
+          </div>
+          <button onClick={remove} className="text-[var(--op-40)] hover:text-[var(--op-80)]">
+            <Trash2 size={13} />
+          </button>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <NumField label="Время мс" value={key.atMs} onChange={(v) => patch({ atMs: Math.max(0, v) })} />
+          <NumField label={axisLabel} value={key.value} step={0.1} onChange={(v) => patch({ value: v })} />
+          <EasingField value={key.easing} onChange={(v) => patch({ easing: v })} />
+        </div>
+        <div className="text-[10px] text-[var(--op-30)]">
+          Интерполяция идёт только между этим ключом и его соседями — изменение не затронет остальную часть таймлайна.
         </div>
       </div>
     );

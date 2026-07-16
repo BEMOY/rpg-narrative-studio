@@ -1,17 +1,23 @@
-import type { AudioFxClip, CameraClip, CharacterAnchor, CharacterAnimState, CharacterClip, ClipEasing, CutsceneDialogueClip, Entry } from "../types/database";
+import type {
+  AudioFxClip,
+  CameraClip,
+  CharacterAnchor,
+  CharacterAnimState,
+  CharacterClip,
+  CharacterPositionKeyframe,
+  ClipEasing,
+  CutsceneDialogueClip,
+  Entry,
+  Keyframe,
+} from "../types/database";
 
 // Pure, framework-free math for the Cutscene live preview (Dynarain Phase 2) -- kept separate
 // from the React rendering component (CutscenePreview.tsx) so the actual interpolation logic is
-// easy to read/verify by inspection without a live browser (no way to visually test this session).
+// easy to read/verify by inspection without a live browser.
 
-// Resolves a value at time `t` across a sequence of "settle-then-tween" clips: before the first
-// clip (or with no clips at all) returns `initial`; once a clip's window has fully elapsed its
-// value becomes the new resting value for everything after it; while a clip is still playing,
-// the value is linearly interpolated from whatever the resting value was going into it, to this
-// clip's own target. `clips` MUST already be sorted by startMs ascending.
-// Standard easing curve set (matches the options a keyframe's "Тип интерполяции" dropdown
-// offers in the editor) applied to the raw 0..1 progress fraction before handing it to lerp.
-// "bounce" is a simple standard out-bounce curve, not a physically simulated spring.
+// Standard easing curve set (matches the options a keyframe's "Плавность" dropdown offers in
+// the editor) applied to the raw 0..1 progress fraction before handing it to lerp. "bounce" is a
+// simple standard out-bounce curve, not a physically simulated spring.
 function applyEasing(f: number, easing: ClipEasing | undefined): number {
   const x = Math.max(0, Math.min(1, f));
   switch (easing) {
@@ -40,32 +46,36 @@ function applyEasing(f: number, easing: ClipEasing | undefined): number {
   }
 }
 
-export function resolveTween<T>(
-  clips: { startMs: number; durationMs: number; value: T; easing?: ClipEasing }[],
-  t: number,
-  initial: T,
-  lerp: (a: T, b: T, f: number) => T
-): T {
-  let current = initial;
-  for (const c of clips) {
-    if (t < c.startMs) break;
-    const end = c.startMs + c.durationMs;
-    if (t >= end) {
-      current = c.value;
-    } else {
-      const rawF = c.durationMs <= 0 ? 1 : (t - c.startMs) / c.durationMs;
-      current = lerp(current, c.value, applyEasing(rawF, c.easing));
-      break;
-    }
-  }
-  return current;
-}
-
 export const lerpNum = (a: number, b: number, f: number) => a + (b - a) * f;
 export const lerpPoint = (a: { x: number; y: number }, b: { x: number; y: number }, f: number) => ({
   x: lerpNum(a.x, b.x, f),
   y: lerpNum(a.y, b.y, f),
 });
+
+// Resolves a scalar property CHANNEL (a flat list of independent point-in-time keyframes) at
+// time `t` -- per writer design decision, this is deliberately a "classic" keyframe model, NOT
+// the old clip-chain "settle then tween" one: `t` only ever interpolates between the TWO
+// keyframes immediately bracketing it, using the arriving key's own easing. Before the first key
+// (or with no keys at all) the value holds at the first key's value (or `defaultValue` if there
+// are no keys); after the last key it holds at the last key's value. This means inserting,
+// moving, or deleting one key ONLY ever affects the (at most) two segments touching it -- never
+// ripples through the rest of the sequence the way the old model could.
+export function resolveChannel(keys: Keyframe[] | undefined, t: number, defaultValue: number): number {
+  const sorted = [...(keys ?? [])].sort((a, b) => a.atMs - b.atMs);
+  if (sorted.length === 0) return defaultValue;
+  if (t <= sorted[0].atMs) return sorted[0].value;
+  const last = sorted[sorted.length - 1];
+  if (t >= last.atMs) return last.value;
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const a = sorted[i];
+    const b = sorted[i + 1];
+    if (t >= a.atMs && t <= b.atMs) {
+      const f = b.atMs === a.atMs ? 1 : (t - a.atMs) / (b.atMs - a.atMs);
+      return lerpNum(a.value, b.value, applyEasing(f, b.easing));
+    }
+  }
+  return last.value;
+}
 
 export interface CameraState {
   x: number;
@@ -73,36 +83,30 @@ export interface CameraState {
   zoom: number;
 }
 
-// Camera position/zoom in map cell units + a deterministic (not truly random, so scrubbing the
+// Camera position/zoom (keyframe channels) + a deterministic (not truly random, so scrubbing the
 // timeline back and forth always shows the same wobble) shake jitter layered on top while a
-// "shake" clip's window is active.
+// "shake" clip's window is active (shake stays clip-based -- see CameraClip's doc comment).
 //
-// `tLive` (defaults to `t` when the caller isn't currently gated on a blocking dialogue) lets a
-// camera clip whose own `pausesForDialogue` is false keep resolving on real elapsed time instead
-// of freezing with the rest of the scene -- decided once, up front, by checking whichever clip
-// is active at the FROZEN `t` (there's only one camera, so this is a single either/or choice
-// for the whole track, unlike per-character resolution below).
+// `tLive` (defaults to `t` when the caller isn't currently gated on a blocking dialogue) lets
+// the whole camera channel set keep resolving on real elapsed time instead of freezing with the
+// rest of the scene when `cameraPausesForDialogue` is explicitly false.
 export function resolveCamera(
-  clips: CameraClip[],
+  posX: Keyframe[] | undefined,
+  posY: Keyframe[] | undefined,
+  zoomKeys: Keyframe[] | undefined,
+  shakeClips: CameraClip[],
   t: number,
   defaultCenter: { x: number; y: number },
+  cameraPausesForDialogue: boolean | undefined,
   tLive: number = t
 ): CameraState {
-  const sorted = [...clips].sort((a, b) => a.startMs - b.startMs);
-  const activeAtFrozenT = sorted.find((c) => t >= c.startMs && t <= c.startMs + c.durationMs);
-  const effT = activeAtFrozenT?.pausesForDialogue === false ? tLive : t;
+  const effT = cameraPausesForDialogue === false ? tLive : t;
 
-  const moveClips = sorted
-    .filter((c): c is CameraClip & { x: number; y: number } => c.kind === "move" && c.x !== undefined && c.y !== undefined)
-    .map((c) => ({ startMs: c.startMs, durationMs: c.durationMs, value: { x: c.x, y: c.y }, easing: c.easing }));
-  const zoomClips = sorted
-    .filter((c): c is CameraClip & { zoom: number } => c.kind === "zoom" && c.zoom !== undefined)
-    .map((c) => ({ startMs: c.startMs, durationMs: c.durationMs, value: c.zoom, easing: c.easing }));
+  const x = resolveChannel(posX, effT, defaultCenter.x);
+  const y = resolveChannel(posY, effT, defaultCenter.y);
+  const zoom = resolveChannel(zoomKeys, effT, 1);
 
-  const pos = resolveTween(moveClips, effT, defaultCenter, lerpPoint);
-  const zoom = resolveTween(zoomClips, effT, 1, lerpNum);
-
-  const shakeClip = sorted.find((c) => c.kind === "shake" && effT >= c.startMs && effT <= c.startMs + c.durationMs);
+  const shakeClip = shakeClips.find((c) => effT >= c.startMs && effT <= c.startMs + c.durationMs);
   let shakeX = 0;
   let shakeY = 0;
   if (shakeClip) {
@@ -111,7 +115,7 @@ export function resolveCamera(
     shakeY = Math.cos(effT * 0.027) * Math.sin(effT * 0.041) * amp;
   }
 
-  return { x: pos.x + shakeX, y: pos.y + shakeY, zoom };
+  return { x: x + shakeX, y: y + shakeY, zoom };
 }
 
 export interface ResolvedCharacter {
@@ -126,49 +130,41 @@ export interface ResolvedCharacter {
   flipX: boolean;
 }
 
-// Groups character clips by characterId, resolves each one's tweened position, and picks
-// whichever anim state is active at `t` (the clip covering `t`, if any -- move defaults to
-// "walk" and animate defaults to "idle" when the clip itself doesn't specify one; a character
-// with no clip covering `t` at all just stands "idle" wherever they currently are). The richer
-// per-appearance fields (speed/zIndex/anchor/opacity/flipX) are NOT tweened between clips --
-// like `anim`, they're just read off whichever clip is currently active, falling back to sane
-// defaults when no clip covers `t`.
+// Resolves every character's position (from cutsceneCharacterPositionKeys, keyframe channels --
+// see resolveChannel) and appearance state (from cutsceneCharacterTrack, still clip-based -- see
+// CharacterClip's doc comment for why position/appearance were split this way).
 //
-// `tLive` (see resolveCamera's doc comment for the general idea) is resolved PER CHARACTER here
-// -- each character independently checks whichever of their own clips is active at the FROZEN
-// `t` and, if that clip's `pausesForDialogue` is false, resolves that character's entire
-// position/anim against `tLive` instead, so e.g. one ambient character can keep walking during a
-// blocking dialogue while the rest of the cast (and the camera) hold still.
+// `tLive` is resolved PER CHARACTER -- each character independently checks whichever of their
+// own appearance clips is active at the FROZEN `t` and, if that clip's `pausesForDialogue` is
+// false, resolves that character's entire position/anim against `tLive` instead, so e.g. one
+// ambient character can keep walking during a blocking dialogue while the rest of the cast (and
+// the camera) hold still.
 export function resolveCharacters(
-  clips: CharacterClip[],
+  positionKeys: CharacterPositionKeyframe[],
+  appearanceClips: CharacterClip[],
+  characterIds: string[],
   t: number,
   defaultPos: { x: number; y: number },
   tLive: number = t
 ): ResolvedCharacter[] {
-  const byChar = new Map<string, CharacterClip[]>();
-  for (const c of clips) {
-    if (!c.characterId) continue;
-    if (!byChar.has(c.characterId)) byChar.set(c.characterId, []);
-    byChar.get(c.characterId)!.push(c);
-  }
   const result: ResolvedCharacter[] = [];
-  for (const [characterId, charClips] of byChar) {
-    const sorted = [...charClips].sort((a, b) => a.startMs - b.startMs);
-    const activeAtFrozenT = sorted.find((c) => t >= c.startMs && t <= c.startMs + c.durationMs);
+  for (const characterId of characterIds) {
+    const appearance = appearanceClips.filter((c) => c.characterId === characterId).sort((a, b) => a.startMs - b.startMs);
+    const activeAtFrozenT = appearance.find((c) => t >= c.startMs && t <= c.startMs + c.durationMs);
     const effT = activeAtFrozenT?.pausesForDialogue === false ? tLive : t;
 
-    const moveClips = sorted
-      .filter((c): c is CharacterClip & { x: number; y: number } => c.kind === "move" && c.x !== undefined && c.y !== undefined)
-      .map((c) => ({ startMs: c.startMs, durationMs: c.durationMs, value: { x: c.x, y: c.y }, easing: c.easing }));
-    const pos = resolveTween(moveClips, effT, defaultPos, lerpPoint);
+    const xKeys = positionKeys.filter((k) => k.characterId === characterId && k.axis === "x");
+    const yKeys = positionKeys.filter((k) => k.characterId === characterId && k.axis === "y");
+    const x = resolveChannel(xKeys, effT, defaultPos.x);
+    const y = resolveChannel(yKeys, effT, defaultPos.y);
 
-    const active = sorted.find((c) => effT >= c.startMs && effT <= c.startMs + c.durationMs);
-    const anim: CharacterAnimState = active ? active.anim ?? (active.kind === "move" ? "walk" : "idle") : "idle";
+    const active = appearance.find((c) => effT >= c.startMs && effT <= c.startMs + c.durationMs);
+    const anim: CharacterAnimState = active?.anim ?? "idle";
 
     result.push({
       characterId,
-      x: pos.x,
-      y: pos.y,
+      x,
+      y,
       anim,
       speed: active?.speed ?? 100,
       zIndex: active?.zIndex ?? 0,
@@ -204,11 +200,11 @@ export interface OverlayState {
 
 // Screen fade/flash overlay state at time `t` (or `tLive` for a clip whose own
 // `pausesForDialogue` is false -- decided independently per clip since, unlike camera/character
-// tracks, there's no "settle then tween" carry-over between overlay clips to keep consistent).
-// Fade ramps opacity linearly across durationMs ("out" = fading to black, "in" = fading up from
-// black); flash spikes 0 -> 1 -> 0 in a triangle wave peaking at the clip's midpoint. If two
-// clips' windows overlap (unusual), the last one in the array wins -- simplicity over
-// correctness for this rare edge case.
+// position channels, there's no cross-clip carry-over to keep consistent). Fade ramps opacity
+// linearly across durationMs ("out" = fading to black, "in" = fading up from black); flash
+// spikes 0 -> 1 -> 0 in a triangle wave peaking at the clip's midpoint. If two clips' windows
+// overlap (unusual), the last one in the array wins -- simplicity over correctness for this rare
+// edge case.
 export function resolveOverlay(clips: AudioFxClip[], t: number, tLive: number = t): OverlayState {
   let result: OverlayState = { opacity: 0, color: "#000000" };
   for (const c of clips) {
@@ -226,22 +222,27 @@ export function resolveOverlay(clips: AudioFxClip[], t: number, tLive: number = 
   return result;
 }
 
-// Total playable length of the cutscene, for the scrub slider's max value and loop point --
-// the furthest any clip on any track reaches, with a 1s floor so an empty/near-empty cutscene
-// still has a usable scrub range instead of a degenerate 0-length slider.
+// Total playable length of the cutscene, for the scrub slider's max value and loop point -- the
+// furthest any clip OR keyframe on any channel/track reaches, with a 1s floor so an
+// empty/near-empty cutscene still has a usable scrub range instead of a degenerate 0-length
+// slider.
 export function cutsceneTotalDurationMs(entry: Entry): number {
   const ends: number[] = [1000];
   for (const c of entry.cutsceneCameraTrack ?? []) ends.push(c.startMs + c.durationMs);
   for (const c of entry.cutsceneCharacterTrack ?? []) ends.push(c.startMs + c.durationMs);
   for (const c of entry.cutsceneDialogueTrack ?? []) ends.push(c.atMs + c.durationMs);
   for (const c of entry.cutsceneAudioFxTrack ?? []) ends.push(c.atMs + (c.durationMs ?? 0));
+  for (const k of entry.cutsceneCameraPosX ?? []) ends.push(k.atMs);
+  for (const k of entry.cutsceneCameraPosY ?? []) ends.push(k.atMs);
+  for (const k of entry.cutsceneCameraZoomKeys ?? []) ends.push(k.atMs);
+  for (const k of entry.cutsceneCharacterPositionKeys ?? []) ends.push(k.atMs);
   return Math.max(...ends);
 }
 
-// Every distinct clip boundary (start AND end time) across all four tracks, sorted ascending
-// with duplicates collapsed -- used by the editor's "jump to previous/next clip boundary"
-// transport buttons (coarser than the single-frame step buttons) so a director can hop straight
-// between edit points the way real NLEs let you jump keyframe-to-keyframe.
+// Every distinct clip/keyframe boundary across all tracks/channels, sorted ascending with
+// duplicates collapsed -- used by the editor's "jump to previous/next clip boundary" transport
+// buttons (coarser than the single-frame step buttons) so a director can hop straight between
+// edit points the way real NLEs let you jump keyframe-to-keyframe.
 export function allClipBoundaries(entry: Entry): number[] {
   const set = new Set<number>();
   for (const c of entry.cutsceneCameraTrack ?? []) {
@@ -260,5 +261,9 @@ export function allClipBoundaries(entry: Entry): number[] {
     set.add(c.atMs);
     set.add(c.atMs + (c.durationMs ?? 0));
   }
+  for (const k of entry.cutsceneCameraPosX ?? []) set.add(k.atMs);
+  for (const k of entry.cutsceneCameraPosY ?? []) set.add(k.atMs);
+  for (const k of entry.cutsceneCameraZoomKeys ?? []) set.add(k.atMs);
+  for (const k of entry.cutsceneCharacterPositionKeys ?? []) set.add(k.atMs);
   return Array.from(set).sort((a, b) => a - b);
 }

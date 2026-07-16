@@ -1,28 +1,32 @@
 import { useMemo, useRef, useState } from "react";
 import { X, Eye, EyeOff, Lock, Unlock, ChevronDown, ChevronRight, Flag, Plus, Scissors, Magnet } from "lucide-react";
-import type { AudioFxClip, CameraClip, CharacterClip, CutsceneDialogueClip, Entry } from "../../types/database";
+import type { AudioFxClip, CameraClip, CharacterClip, CharacterPositionAxis, CutsceneDialogueClip, Entry, Keyframe } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
-import { cutsceneTotalDurationMs, resolveCamera, resolveCharacters } from "../../lib/cutscenePreview";
+import { cutsceneTotalDurationMs, resolveChannel } from "../../lib/cutscenePreview";
 import { nextId } from "../../lib/mapDefaults";
 import { themedPrompt } from "../../lib/modals";
 import { CHARACTER_DRAG_MIME, DIALOGUE_DRAG_MIME } from "./CutsceneExplorerPanel";
 import { SearchSelect } from "../dialogue/SearchSelect";
 
-// Identifies exactly one clip on exactly one track kind -- used both to track which clip is
-// currently selected (highlighted here, and shown in the ClipInspector panel rendered alongside
-// this component in CutscenePanel/EntryEditor.tsx) and to route drag/resize edits to the right
-// track's array.
+// Identifies exactly one selectable thing on the timeline -- either a clip (camera shake,
+// character appearance/anim, dialogue, audio/fx -- all still duration-based regions) or a single
+// KEYFRAME on one of the position/zoom channels (camera X/Y/zoom, or one character's X/Y).
+// Routes both drag/edit gestures here and the ClipInspector panel's selected-item display to the
+// right data.
 export type ClipRef =
   | { trackKind: "camera"; id: string }
   | { trackKind: "character"; id: string }
   | { trackKind: "dialogue"; id: string }
-  | { trackKind: "audiofx"; id: string };
+  | { trackKind: "audiofx"; id: string }
+  | { trackKind: "cameraKey"; channel: "x" | "y" | "zoom"; id: string }
+  | { trackKind: "characterKey"; characterId: string; axis: CharacterPositionAxis; id: string };
 
-const LANE_H = 34;
+const LANE_H = 30;
 const RULER_H = 22;
 const LABEL_W = 136;
 const MIN_PX_PER_MS = 0.02;
 const MAX_PX_PER_MS = 0.6;
+const DIAMOND = 9;
 
 const TRACK_COLOR = {
   camera: "#5b8dd6",
@@ -31,27 +35,41 @@ const TRACK_COLOR = {
   audiofx: "#a06bc9",
 } as const;
 
-// A real multi-track timeline widget (Dynarain Phase 2, Cutscene) -- track-label column on the
-// left, a horizontally-scrollable/zoomable ruler+lanes area on the right. Clips are draggable
-// (move) and resizable (drag the right edge) using the same "mousedown starts a drag, window
-// listens for mousemove/mouseup" pattern already used for freehand brush strokes in
-// MapEditorModal.tsx, rather than the newer Pointer Capture API, to stay consistent with an
-// already-proven interaction in this codebase. Camera/Dialogue/Audio-FX are single fixed lanes;
-// Character lanes are added/removed per character via cutsceneCastCharacterIds, so a character
-// can have a lane reserved for them even before they have any clips yet. The overall timeline
-// LENGTH is always derived live from cutsceneTotalDurationMs (the furthest any clip on any
-// track reaches) -- there is no separately-stored "cutscene duration", it's computed, so it's
-// always in sync with what's actually on the tracks, per the "автоматическое определение
-// времени катсцены" requirement.
-// Track visibility/lock is ephemeral editing-session UI state (not persisted to project data)
-// -- "hidden" means skipped when CutscenePreview composites the stage (see its hiddenTracks
-// prop), "locked" means this component itself refuses to start a drag or add a new clip on it.
-// Matches the eye/lock icons real NLEs put in their track header column.
+// A real multi-track timeline widget (Dynarain Phase 2, Cutscene). Track-label column on the
+// left, a horizontally-scrollable/zoomable ruler+lanes area on the right. Two visually different
+// row types share this same lane area:
+//  - CLIP rows (camera shake, character appearance/anim, dialogue, audio/fx) -- colored bars,
+//    draggable (move) and resizable (drag the right edge), same "mousedown starts a drag, window
+//    listens for mousemove/mouseup" pattern used for freehand brush strokes in MapEditorModal.tsx.
+//  - KEYFRAME rows (camera X/Y/zoom, each character's X/Y) -- small diamond markers at a single
+//    point in time, draggable only in TIME (their VALUE is edited in the Inspector, or by
+//    dragging the actual object/camera on the live preview stage -- see CutscenePreview.tsx).
+//    Per writer design decision, position/zoom are classic point-keyframes that only interpolate
+//    against their own two neighbors (see resolveChannel in lib/cutscenePreview.ts) -- NOT the
+//    old clip-chain model.
+// The overall timeline LENGTH is always derived live from cutsceneTotalDurationMs (the furthest
+// any clip or keyframe reaches) -- there is no separately-stored "cutscene duration".
+// Track visibility/lock is ephemeral editing-session UI state (not persisted to project data).
 export function cameraTrackKey() {
   return "camera";
 }
+export function cameraPosXKey() {
+  return "cameraPosX";
+}
+export function cameraPosYKey() {
+  return "cameraPosY";
+}
+export function cameraZoomKey() {
+  return "cameraZoom";
+}
 export function characterTrackKey(characterId: string) {
   return `character:${characterId}`;
+}
+export function characterPosXKey(characterId: string) {
+  return `characterPosX:${characterId}`;
+}
+export function characterPosYKey(characterId: string) {
+  return `characterPosY:${characterId}`;
 }
 export function dialogueTrackKey() {
   return "dialogue";
@@ -94,7 +112,7 @@ export function CutsceneTimeline({
   // without needing a real generic nested-track-folder system.
   const [charsCollapsed, setCharsCollapsed] = useState(false);
   // Snap-to-frame is an editing-session convenience (like pxPerMs zoom) rather than persisted
-  // project data -- when on, dragging/resizing a clip rounds its start/duration to the nearest
+  // project data -- when on, dragging/resizing a clip OR keyframe rounds its time to the nearest
   // whole-frame boundary (1000/fps ms) instead of an arbitrary pixel-derived ms value.
   const [snapToFrame, setSnapToFrame] = useState(true);
   const laneAreaRef = useRef<HTMLDivElement>(null);
@@ -106,12 +124,16 @@ export function CutsceneTimeline({
   const timelineWidth = Math.max(400, totalMs * pxPerMs + 120);
 
   const cast = entry.cutsceneCastCharacterIds ?? [];
-  const cameraTrack = entry.cutsceneCameraTrack ?? [];
-  const charTrack = entry.cutsceneCharacterTrack ?? [];
+  const cameraTrack = entry.cutsceneCameraTrack ?? []; // shake clips only
+  const charTrack = entry.cutsceneCharacterTrack ?? []; // appearance/anim clips only
   const dlgTrack = entry.cutsceneDialogueTrack ?? [];
   const fxTrack = entry.cutsceneAudioFxTrack ?? [];
   const markers = entry.cutsceneMarkers ?? [];
   const charColors = entry.cutsceneCharacterTrackColors ?? {};
+  const camPosX = entry.cutsceneCameraPosX ?? [];
+  const camPosY = entry.cutsceneCameraPosY ?? [];
+  const camZoom = entry.cutsceneCameraZoomKeys ?? [];
+  const charPosKeys = entry.cutsceneCharacterPositionKeys ?? [];
 
   const setCameraTrack = (next: CameraClip[]) => updateEntry(entry.id, { cutsceneCameraTrack: next });
   const setCharTrack = (next: CharacterClip[]) => updateEntry(entry.id, { cutsceneCharacterTrack: next });
@@ -127,10 +149,8 @@ export function CutsceneTimeline({
   };
   const removeMarker = (id: string) => updateEntry(entry.id, { cutsceneMarkers: markers.filter((m) => m.id !== id) });
 
-  // Generic split-at-time helper for the scissors tool below -- works identically across all
-  // four track kinds since they all reduce to "a clip with some start time and some duration".
-  // Returns null (no-op) if the given time doesn't fall STRICTLY inside the clip's own window
-  // (splitting exactly on a boundary would just produce a zero-length sliver).
+  // Generic split-at-time helper for the scissors tool below -- works identically across the
+  // four remaining CLIP kinds (keyframes have no duration to split).
   function splitTrack<T extends { id: string }>(
     track: T[],
     clipId: string,
@@ -206,9 +226,12 @@ export function CutsceneTimeline({
       const c = find(dlgTrack) as CutsceneDialogueClip | undefined;
       return !!c && t > c.atMs && t < c.atMs + c.durationMs;
     }
-    const c = find(fxTrack) as AudioFxClip | undefined;
-    const dur = c?.durationMs ?? 500;
-    return !!c && t > c.atMs && t < c.atMs + dur;
+    if (selected.trackKind === "audiofx") {
+      const c = find(fxTrack) as AudioFxClip | undefined;
+      const dur = c?.durationMs ?? 500;
+      return !!c && t > c.atMs && t < c.atMs + dur;
+    }
+    return false; // keyframes have nothing to split
   })();
 
   const addCastMember = (characterId: string | undefined) => {
@@ -219,10 +242,13 @@ export function CutsceneTimeline({
     updateEntry(entry.id, {
       cutsceneCastCharacterIds: cast.filter((id) => id !== characterId),
       cutsceneCharacterTrack: charTrack.filter((c) => c.characterId !== characterId),
+      cutsceneCharacterPositionKeys: charPosKeys.filter((k) => k.characterId !== characterId),
     });
-    if (selected?.trackKind === "character") {
-      const clip = charTrack.find((c) => c.id === selected.id);
-      if (clip?.characterId === characterId) onSelect(null);
+    if (
+      (selected?.trackKind === "character" && charTrack.find((c) => c.id === selected.id)?.characterId === characterId) ||
+      (selected?.trackKind === "characterKey" && selected.characterId === characterId)
+    ) {
+      onSelect(null);
     }
   };
 
@@ -244,7 +270,7 @@ export function CutsceneTimeline({
     window.addEventListener("mouseup", onUp);
   };
 
-  // Shared drag/resize starter for every clip block below -- mirrors the mousedown-then-window-
+  // Shared drag/resize starter for every CLIP block below -- mirrors the mousedown-then-window-
   // listeners pattern from MapEditorModal's brush stroke handling (onStrokeStart/onMove/onEnd).
   const startClipDrag = (
     e: React.MouseEvent,
@@ -269,12 +295,26 @@ export function CutsceneTimeline({
     window.addEventListener("mouseup", onUp);
   };
 
+  // Dragging a KEYFRAME diamond only ever changes WHEN it happens, never its value -- value is
+  // edited in the Inspector (or by dragging the actual object/camera on the live preview stage).
+  const startKeyDrag = (e: React.MouseEvent, origAtMs: number, onChange: (atMs: number) => void) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const startX = e.clientX;
+    const onMove = (ev: MouseEvent) => {
+      const deltaMs = (ev.clientX - startX) / pxPerMs;
+      onChange(Math.max(0, Math.round(snap(origAtMs + deltaMs))));
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
   const ticks = useMemo(() => {
     const arr: { ms: number; label: string }[] = [];
-    // A stray huge startMs/durationMs typed into the inspector (fat-finger, extra zero) could
-    // otherwise balloon this into tens of thousands of DOM nodes -- cap how far we bother
-    // drawing ticks regardless of totalMs, safe since nothing meaningful is lost past ~1000
-    // ticks (the ruler just stops gaining labels, it doesn't stop scrolling/working).
     const MAX_TICKS = 1000;
     let stepMs = pxPerMs > 0.25 ? 500 : pxPerMs > 0.1 ? 1000 : pxPerMs > 0.04 ? 2000 : 5000;
     if (totalMs / stepMs > MAX_TICKS) stepMs = totalMs / MAX_TICKS;
@@ -295,7 +335,7 @@ export function CutsceneTimeline({
     locked: boolean,
     onChange: (p: { start?: number; dur?: number }) => void
   ) => {
-    const isSel = selected?.trackKind === ref.trackKind && selected.id === ref.id;
+    const isSel = selected?.trackKind === ref.trackKind && "id" in selected && selected.id === (ref as { id: string }).id;
     return (
       <div
         key={key}
@@ -323,6 +363,34 @@ export function CutsceneTimeline({
     );
   };
 
+  // A single diamond keyframe marker -- rotated square, centered on its atMs, draggable in time
+  // only (see startKeyDrag).
+  const renderKeyframe = (key: string, ref: ClipRef, atMs: number, color: string, locked: boolean, onDrag: (atMs: number) => void) => {
+    const isSel =
+      selected?.trackKind === ref.trackKind && "id" in selected && "id" in ref && selected.id === (ref as { id: string }).id;
+    return (
+      <div
+        key={key}
+        onMouseDown={(e) => {
+          onSelect(ref);
+          if (!locked) startKeyDrag(e, atMs, onDrag);
+        }}
+        title={`${(atMs / 1000).toFixed(2)}s`}
+        className={`absolute top-1/2 ${locked ? "cursor-not-allowed" : "cursor-ew-resize"}`}
+        style={{
+          left: atMs * pxPerMs - DIAMOND / 2,
+          width: DIAMOND,
+          height: DIAMOND,
+          marginTop: -DIAMOND / 2,
+          background: color,
+          transform: "rotate(45deg)",
+          border: isSel ? "1.5px solid white" : "1px solid rgba(0,0,0,0.3)",
+          borderRadius: 2,
+        }}
+      />
+    );
+  };
+
   const headerToggleButtons = (key: string) => {
     const hidden = hiddenTracks.has(key);
     const locked = lockedTracks.has(key);
@@ -346,20 +414,84 @@ export function CutsceneTimeline({
     );
   };
 
-  const renderTrackHeader = (key: string, label: string) => (
+  const renderTrackHeader = (key: string, label: string, indent = false) => (
     <div
       key={key}
       style={{ height: LANE_H }}
-      className="flex items-center gap-1.5 px-2 text-[10px] text-[var(--op-50)] border-t border-[var(--op-7)]"
+      className={`flex items-center gap-1.5 ${indent ? "pl-5" : "px-2"} pr-2 text-[10px] text-[var(--op-50)] border-t border-[var(--op-7)]`}
     >
       {headerToggleButtons(key)}
       <span className="truncate">{label}</span>
     </div>
   );
 
+  // Shared row for a keyframe channel lane (camera X/Y/zoom or one character's X/Y) -- handles
+  // both the header cell AND the lane cell for a given Keyframe[] array + setter, so camera and
+  // character channels can reuse the exact same rendering/interaction code.
+  const renderChannelRow = (
+    trackKeyStr: string,
+    label: string,
+    keys: Keyframe[],
+    setKeys: (next: Keyframe[]) => void,
+    makeRef: (id: string) => ClipRef,
+    color: string,
+    defaultValue: number,
+    indent = false
+  ) => {
+    const locked = lockedTracks.has(trackKeyStr);
+    const header = renderTrackHeader(trackKeyStr, label, indent);
+    const lane = (
+      <div
+        key={trackKeyStr}
+        style={{ height: LANE_H }}
+        className={`relative border-t border-[var(--op-7)] ${hiddenTracks.has(trackKeyStr) ? "opacity-40" : ""}`}
+        onDoubleClick={(e) => {
+          if (locked) return;
+          const ms = Math.max(0, Math.round(msFromClientX(e.clientX)));
+          // Default to whatever this channel already resolves to at this time -- don't jump.
+          const value = resolveChannel(keys, ms, defaultValue);
+          setKeys([...keys, { id: nextId("key"), atMs: ms, value }]);
+        }}
+      >
+        {keys.map((k) =>
+          renderKeyframe(k.id, makeRef(k.id), k.atMs, color, locked, (atMs) => setKeys(keys.map((kk) => (kk.id === k.id ? { ...kk, atMs } : kk))))
+        )}
+      </div>
+    );
+    return { header, lane };
+  };
+
+  const camPosXRow = renderChannelRow(
+    cameraPosXKey(),
+    "Камера: X",
+    camPosX,
+    (next) => updateEntry(entry.id, { cutsceneCameraPosX: next }),
+    (id) => ({ trackKind: "cameraKey", channel: "x", id }),
+    TRACK_COLOR.camera,
+    mapCenterCell.x
+  );
+  const camPosYRow = renderChannelRow(
+    cameraPosYKey(),
+    "Камера: Y",
+    camPosY,
+    (next) => updateEntry(entry.id, { cutsceneCameraPosY: next }),
+    (id) => ({ trackKind: "cameraKey", channel: "y", id }),
+    TRACK_COLOR.camera,
+    mapCenterCell.y
+  );
+  const camZoomRow = renderChannelRow(
+    cameraZoomKey(),
+    "Камера: Zoom",
+    camZoom,
+    (next) => updateEntry(entry.id, { cutsceneCameraZoomKeys: next }),
+    (id) => ({ trackKind: "cameraKey", channel: "zoom", id }),
+    TRACK_COLOR.camera,
+    1
+  );
+
   return (
     <div className="glass rounded-lg p-4 space-y-2">
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         <div className="text-xs uppercase tracking-wider text-[var(--op-35)] flex-1">Таймлайн</div>
         <button
           onClick={() => setPxPerMs((z) => Math.max(MIN_PX_PER_MS, z * 0.8))}
@@ -411,7 +543,10 @@ export function CutsceneTimeline({
       <div className="flex border border-[var(--op-10)] rounded-md overflow-hidden">
         <div className="shrink-0 bg-[var(--op-4)] border-r border-[var(--op-10)]" style={{ width: LABEL_W }}>
           <div style={{ height: RULER_H }} />
-          {renderTrackHeader(cameraTrackKey(), "Камера")}
+          {renderTrackHeader(cameraTrackKey(), "Камера: Тряска")}
+          {camPosXRow.header}
+          {camPosYRow.header}
+          {camZoomRow.header}
           {cast.length > 0 && (
             <div
               style={{ height: LANE_H }}
@@ -426,23 +561,26 @@ export function CutsceneTimeline({
             cast.map((charId) => {
               const ch = allEntries.find((e) => e.id === charId);
               return (
-                <div
-                  key={charId}
-                  style={{ height: LANE_H }}
-                  className="flex items-center gap-1 pl-4 pr-2 text-[10px] text-[var(--op-50)] border-t border-[var(--op-7)]"
-                >
-                  {headerToggleButtons(characterTrackKey(charId))}
-                  <input
-                    type="color"
-                    value={charColors[charId] ?? TRACK_COLOR.character}
-                    onChange={(e) => setCharColor(charId, e.target.value)}
-                    title="Цвет дорожки"
-                    className="w-3.5 h-3.5 rounded-sm border-0 bg-transparent shrink-0 cursor-pointer p-0"
-                  />
-                  <span className="truncate flex-1">{ch?.name ?? "?"}</span>
-                  <button onClick={() => removeCastMember(charId)} className="opacity-40 hover:opacity-100 shrink-0">
-                    <X size={10} />
-                  </button>
+                <div key={charId}>
+                  <div
+                    style={{ height: LANE_H }}
+                    className="flex items-center gap-1 pl-4 pr-2 text-[10px] text-[var(--op-50)] border-t border-[var(--op-7)]"
+                  >
+                    <input
+                      type="color"
+                      value={charColors[charId] ?? TRACK_COLOR.character}
+                      onChange={(e) => setCharColor(charId, e.target.value)}
+                      title="Цвет дорожки"
+                      className="w-3.5 h-3.5 rounded-sm border-0 bg-transparent shrink-0 cursor-pointer p-0"
+                    />
+                    <span className="truncate flex-1 font-medium">{ch?.name ?? "?"}</span>
+                    <button onClick={() => removeCastMember(charId)} className="opacity-40 hover:opacity-100 shrink-0">
+                      <X size={10} />
+                    </button>
+                  </div>
+                  {renderTrackHeader(characterPosXKey(charId), "X", true)}
+                  {renderTrackHeader(characterPosYKey(charId), "Y", true)}
+                  {renderTrackHeader(characterTrackKey(charId), "Анимация", true)}
                 </div>
               );
             })}
@@ -498,11 +636,7 @@ export function CutsceneTimeline({
               onDoubleClick={(e) => {
                 if (lockedTracks.has(cameraTrackKey())) return;
                 const ms = Math.max(0, Math.round(msFromClientX(e.clientX)));
-                // Default to wherever the camera ALREADY resolves to at this time, not a
-                // hardcoded 0,0 (map corner) -- so adding a keyframe doesn't make the camera
-                // visually jump anywhere until you actually drag it.
-                const resolved = resolveCamera(cameraTrack, ms, mapCenterCell);
-                setCameraTrack([...cameraTrack, { id: nextId("cam"), startMs: ms, durationMs: 1000, kind: "move", x: resolved.x, y: resolved.y }]);
+                setCameraTrack([...cameraTrack, { id: nextId("cam"), startMs: ms, durationMs: 1000, kind: "shake" }]);
               }}
             >
               {cameraTrack.map((c) =>
@@ -511,7 +645,7 @@ export function CutsceneTimeline({
                   { trackKind: "camera", id: c.id },
                   c.startMs,
                   c.durationMs,
-                  c.kind === "move" ? "Движение" : c.kind === "zoom" ? "Зум" : "Тряска",
+                  "Тряска",
                   TRACK_COLOR.camera,
                   true,
                   lockedTracks.has(cameraTrackKey()),
@@ -526,59 +660,108 @@ export function CutsceneTimeline({
                 )
               )}
             </div>
+            {camPosXRow.lane}
+            {camPosYRow.lane}
+            {camZoomRow.lane}
 
             {cast.length > 0 && <div style={{ height: LANE_H }} className="border-t border-[var(--op-7)]" />}
 
             {!charsCollapsed &&
               cast.map((charId) => {
-              const ch = allEntries.find((e) => e.id === charId);
-              const clips = charTrack.filter((c) => c.characterId === charId);
-              const color = charColors[charId] ?? TRACK_COLOR.character;
-              return (
-                <div
-                  key={charId}
-                  style={{ height: LANE_H }}
-                  className={`relative border-t border-[var(--op-7)] ${hiddenTracks.has(characterTrackKey(charId)) ? "opacity-40" : ""}`}
-                  onDoubleClick={(e) => {
-                    if (lockedTracks.has(characterTrackKey(charId))) return;
-                    const ms = Math.max(0, Math.round(msFromClientX(e.clientX)));
-                    // Same "don't jump to 0,0" fix as the camera lane -- default to wherever
-                    // THIS character already resolves to at this time.
-                    const resolved = resolveCharacters(
-                      charTrack.filter((c) => c.characterId === charId),
-                      ms,
-                      mapCenterCell
-                    );
-                    const pos = resolved.find((r) => r.characterId === charId) ?? mapCenterCell;
-                    setCharTrack([
-                      ...charTrack,
-                      { id: nextId("cclip"), startMs: ms, durationMs: 1000, kind: "move", characterId: charId, x: pos.x, y: pos.y },
-                    ]);
-                  }}
-                >
-                  {clips.map((c) =>
-                    renderClip(
-                      c.id,
-                      { trackKind: "character", id: c.id },
-                      c.startMs,
-                      c.durationMs,
-                      `${ch?.name ?? "?"} — ${c.kind === "move" ? "движение" : "анимация"}`,
-                      color,
-                      true,
-                      lockedTracks.has(characterTrackKey(charId)),
-                      (p) =>
-                        setCharTrack(
-                          charTrack.map((cc) =>
-                            cc.id === c.id
-                              ? { ...cc, ...(p.start !== undefined ? { startMs: p.start } : {}), ...(p.dur !== undefined ? { durationMs: p.dur } : {}) }
-                              : cc
-                          )
+                const ch = allEntries.find((e) => e.id === charId);
+                const clips = charTrack.filter((c) => c.characterId === charId);
+                const color = charColors[charId] ?? TRACK_COLOR.character;
+                const xKeys = charPosKeys.filter((k) => k.characterId === charId && k.axis === "x");
+                const yKeys = charPosKeys.filter((k) => k.characterId === charId && k.axis === "y");
+                const setAxisKeys = (axis: CharacterPositionAxis, next: Keyframe[]) => {
+                  const others = charPosKeys.filter((k) => !(k.characterId === charId && k.axis === axis));
+                  updateEntry(entry.id, {
+                    cutsceneCharacterPositionKeys: [
+                      ...others,
+                      ...next.map((k) => ({ ...k, characterId: charId, axis })),
+                    ],
+                  });
+                };
+                const xLocked = lockedTracks.has(characterPosXKey(charId));
+                const yLocked = lockedTracks.has(characterPosYKey(charId));
+                return (
+                  <div key={charId}>
+                    <div style={{ height: LANE_H }} className="border-t border-[var(--op-7)]" />
+                    <div
+                      style={{ height: LANE_H }}
+                      className={`relative border-t border-[var(--op-7)] ${hiddenTracks.has(characterPosXKey(charId)) ? "opacity-40" : ""}`}
+                      onDoubleClick={(e) => {
+                        if (xLocked) return;
+                        const ms = Math.max(0, Math.round(msFromClientX(e.clientX)));
+                        const value = resolveChannel(xKeys, ms, mapCenterCell.x);
+                        setAxisKeys("x", [...xKeys, { id: nextId("ckey"), atMs: ms, value }]);
+                      }}
+                    >
+                      {xKeys.map((k) =>
+                        renderKeyframe(
+                          k.id,
+                          { trackKind: "characterKey", characterId: charId, axis: "x", id: k.id },
+                          k.atMs,
+                          color,
+                          xLocked,
+                          (atMs) => setAxisKeys("x", xKeys.map((kk) => (kk.id === k.id ? { ...kk, atMs } : kk)))
                         )
-                    )
-                  )}
-                </div>
-              );
-            })}
+                      )}
+                    </div>
+                    <div
+                      style={{ height: LANE_H }}
+                      className={`relative border-t border-[var(--op-7)] ${hiddenTracks.has(characterPosYKey(charId)) ? "opacity-40" : ""}`}
+                      onDoubleClick={(e) => {
+                        if (yLocked) return;
+                        const ms = Math.max(0, Math.round(msFromClientX(e.clientX)));
+                        const value = resolveChannel(yKeys, ms, mapCenterCell.y);
+                        setAxisKeys("y", [...yKeys, { id: nextId("ckey"), atMs: ms, value }]);
+                      }}
+                    >
+                      {yKeys.map((k) =>
+                        renderKeyframe(
+                          k.id,
+                          { trackKind: "characterKey", characterId: charId, axis: "y", id: k.id },
+                          k.atMs,
+                          color,
+                          yLocked,
+                          (atMs) => setAxisKeys("y", yKeys.map((kk) => (kk.id === k.id ? { ...kk, atMs } : kk)))
+                        )
+                      )}
+                    </div>
+                    <div
+                      style={{ height: LANE_H }}
+                      className={`relative border-t border-[var(--op-7)] ${hiddenTracks.has(characterTrackKey(charId)) ? "opacity-40" : ""}`}
+                      onDoubleClick={(e) => {
+                        if (lockedTracks.has(characterTrackKey(charId))) return;
+                        const ms = Math.max(0, Math.round(msFromClientX(e.clientX)));
+                        setCharTrack([...charTrack, { id: nextId("cclip"), startMs: ms, durationMs: 1000, characterId: charId, anim: "idle" }]);
+                      }}
+                    >
+                      {clips.map((c) =>
+                        renderClip(
+                          c.id,
+                          { trackKind: "character", id: c.id },
+                          c.startMs,
+                          c.durationMs,
+                          `${ch?.name ?? "?"} — ${c.anim ?? "idle"}`,
+                          color,
+                          true,
+                          lockedTracks.has(characterTrackKey(charId)),
+                          (p) =>
+                            setCharTrack(
+                              charTrack.map((cc) =>
+                                cc.id === c.id
+                                  ? { ...cc, ...(p.start !== undefined ? { startMs: p.start } : {}), ...(p.dur !== undefined ? { durationMs: p.dur } : {}) }
+                                  : cc
+                              )
+                            )
+                        )
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
 
             <div
               style={{ height: LANE_H }}
@@ -658,7 +841,8 @@ export function CutsceneTimeline({
       </div>
 
       <div className="text-[10px] text-[var(--op-30)]">
-        Двойной клик по дорожке — добавить клип. Тяните клип целиком, чтобы сдвинуть его во времени; тяните правый край — чтобы растянуть длительность.
+        Ромбики — ключи (двойной клик по дорожке X/Y/Zoom — новый ключ, тянуть — сдвинуть по времени). Полоски — клипы (тряска/анимация/диалог/аудио):
+        двойной клик — новый, тянуть целиком — сдвинуть, тянуть правый край — растянуть длительность.
       </div>
     </div>
   );

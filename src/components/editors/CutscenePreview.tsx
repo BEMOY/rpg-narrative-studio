@@ -1,11 +1,21 @@
 import { useEffect, useRef, useState } from "react";
 import { Crosshair, Grid3x3, ZoomIn, ZoomOut } from "lucide-react";
-import type { Dialogue, DialogueColorStyle, Entry } from "../../types/database";
+import type { Dialogue, DialogueColorStyle, Entry, Keyframe } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
 import { MapThumbnail } from "../mapeditor/MapThumbnail";
 import { SpriteAnimator } from "../common/SpriteAnimator";
-import { anchorOffset, resolveCamera, resolveCharacters, resolveOverlay } from "../../lib/cutscenePreview";
-import { audioFxTrackKey, cameraTrackKey, characterTrackKey, dialogueTrackKey } from "./CutsceneTimeline";
+import { anchorOffset, resolveCamera, resolveCharacters, resolveChannel, resolveOverlay } from "../../lib/cutscenePreview";
+import {
+  audioFxTrackKey,
+  cameraPosXKey,
+  cameraPosYKey,
+  cameraTrackKey,
+  cameraZoomKey,
+  characterPosXKey,
+  characterPosYKey,
+  characterTrackKey,
+  dialogueTrackKey,
+} from "./CutsceneTimeline";
 import { CHARACTER_DRAG_MIME, DIALOGUE_DRAG_MIME } from "./CutsceneExplorerPanel";
 import { nextId } from "../../lib/mapDefaults";
 import { useDialoguePlayer } from "../../lib/useDialoguePlayer";
@@ -13,9 +23,9 @@ import { DialoguePlayArea } from "../dialogue/DialoguePlayArea";
 import { ThemedSelect } from "../common/ThemedSelect";
 
 // The game's actual base resolution (see the project brief: 320x180, top-down pixel art) --
-// still what the CAMERA CLIP's own zoom means (zoom=2 => a 160x90 in-game window), but the
-// EDITOR's own view of the stage is now independent of that (see the `view` state below) so a
-// writer can pan/zoom around a location bigger than whatever the camera currently frames.
+// still what the CAMERA's own zoom means (zoom=2 => a 160x90 in-game window), but the EDITOR's
+// own view of the stage is now independent of that (see the `view` state below) so a writer can
+// pan/zoom around a location bigger than whatever the camera currently frames.
 const NATIVE_W = 320;
 const NATIVE_H = 180;
 const MIN_STAGE_W = 420;
@@ -24,6 +34,11 @@ const DEFAULT_STAGE_W = 480;
 const MIN_VIEW_ZOOM = 0.25;
 const MAX_VIEW_ZOOM = 4;
 const GRID_SIZE_OPTIONS = [1, 2, 4, 8];
+// A drag shorter than this (in screen px) never creates or moves a keyframe -- it's read as a
+// plain click-to-select instead. Fixes keys appearing "spontaneously" from a hand's natural
+// tremor on mousedown/mouseup, and matches the Unity-style "select is not drag" split the writer
+// asked for.
+const MIN_DRAG_PX = 4;
 
 // Measures the available space around the stage (via ResizeObserver on the wrapping panel) and
 // picks the largest stage width that still fits both the panel's width AND its height without
@@ -49,6 +64,17 @@ function useStageWidth() {
   return { containerRef, stageW };
 }
 
+// Upserts a value into a single Keyframe[] channel: if a key already sits within
+// toleranceMs of atMs, its value (and atMs, snapped to atMs) is updated in place; otherwise a
+// brand-new keyframe is appended. This is the ONE place that decides "am I editing an existing
+// key or placing a new one", shared by every draggable channel (camera x/y/zoom, each
+// character's x/y) so they all behave identically.
+function upsertKeyframe(keys: Keyframe[], atMs: number, value: number, toleranceMs: number): Keyframe[] {
+  const existing = keys.find((k) => Math.abs(k.atMs - atMs) <= toleranceMs);
+  if (existing) return keys.map((k) => (k.id === existing.id ? { ...k, value } : k));
+  return [...keys, { id: nextId("key"), atMs: Math.max(0, atMs), value }];
+}
+
 // Live preview STAGE for a Cutscene's timeline (Dynarain Phase 2) -- a "dumb" component driven
 // entirely by the `t` (playhead, ms) prop, so it can stay in perfect sync with the
 // CutsceneTimeline editor's own playhead/scrubbing (both are views onto the same shared
@@ -62,22 +88,30 @@ function useStageWidth() {
 //
 // The stage's own displayed VIEWPORT (pan via dragging the background, zoom via the +/- buttons,
 // "Crosshair" button to snap back to wherever the actual camera currently is) is independent of
-// the cutscene's own camera clips (`view` state below) -- editing convenience only, never
-// written to the project. The camera's real resolved frame is drawn as a dashed rectangle so you
-// can always see what the player will actually see vs. what you can currently pan around to.
+// the cutscene's own camera position -- BUT only while paused/scrubbing. While `playing` is true
+// the view is forced to track the camera's resolved x/y/zoom every frame (per writer design
+// decision: "когда я нажимаю на проигрывание катсцены должен показываться тот вид что видит
+// камера"), so pressing Play always shows exactly what the in-game camera would show. The
+// camera's real resolved frame is ALSO always drawn as a dashed rectangle so you can see it even
+// while free-panning during pause.
+//
+// Camera x/y/zoom and each character's x/y are now true point keyframes (see
+// cutsceneCameraPosX/PosY/ZoomKeys, cutsceneCharacterPositionKeys in types/database.ts) --
+// dragging on stage always works (even mid-interpolation) and either nudges the nearest existing
+// key (within a small time tolerance) or places a brand-new one at the current playhead time, per
+// the writer's explicit "перетаскивание должно работать всегда" design mandate. A drag shorter
+// than MIN_DRAG_PX is treated as a plain click (select only, no key created/moved).
 //
 // While the cutscene is actually PLAYING and has paused on a blocking dialogue clip
 // (`awaitingDialogueEntry` prop, set by CutsceneEditorModal), the real interactive dialogue box
 // (useDialoguePlayer + DialoguePlayArea, the exact same core used by the standalone Test-Play
 // modal) is rendered directly over the live scene with no dark backdrop -- exactly how it will
-// look in the actual game, not a separate floating window. There is no more lightweight
-// scrub-only raw-text preview box (removed per feedback) -- while merely scrubbing (not gated),
-// the stage just shows nothing dialogue-related, matching how the real game has no dialogue box
-// on screen outside of an actual conversation.
+// look in the actual game, not a separate floating window.
 export function CutscenePreview({
   entry,
   t,
   tLive,
+  playing = false,
   hiddenTracks = new Set(),
   awaitingDialogueEntry,
   onDialogueDone,
@@ -85,6 +119,7 @@ export function CutscenePreview({
   entry: Entry;
   t: number;
   tLive?: number;
+  playing?: boolean;
   hiddenTracks?: Set<string>;
   awaitingDialogueEntry?: Dialogue;
   onDialogueDone?: () => void;
@@ -96,10 +131,8 @@ export function CutscenePreview({
   const worldRef = useRef<HTMLDivElement>(null);
   const { containerRef, stageW } = useStageWidth();
 
-  // Editor-only viewport (pan/zoom), fully independent of the cutscene's own camera clips --
-  // initializes to the map's center the first time a map is bound, then only moves in response
-  // to the writer explicitly dragging/zooming/resetting (the Crosshair button snaps it to
-  // wherever the camera currently resolves to, on demand).
+  // Editor-only viewport (pan/zoom) -- free while paused, force-synced to the camera's resolved
+  // frame every frame while playing (see the effect below).
   const [view, setView] = useState({ x: 0, y: 0, zoom: 1 });
   const [viewInitFor, setViewInitFor] = useState<string | undefined>(undefined);
   const [showGrid, setShowGrid] = useState(false);
@@ -111,8 +144,7 @@ export function CutscenePreview({
   // Half a frame's worth of tolerance when deciding whether a drag should UPDATE an existing
   // keyframe vs. create a brand new one -- without this, scrubbing to "roughly" a keyframe's
   // time (rounding/float drift from the playback clock) and then dragging would silently create
-  // a near-duplicate keyframe a couple ms away instead of adjusting the one you meant, which is
-  // exactly the kind of thing that makes dragging feel unpredictable.
+  // a near-duplicate keyframe a couple ms away instead of adjusting the one you meant.
   const keyMatchToleranceMs = oneFrameMs / 2;
 
   useEffect(() => {
@@ -133,14 +165,21 @@ export function CutscenePreview({
   const map = boundMap.map;
   const mapCenterCell = { x: map.width / 2, y: map.height / 2 };
 
-  const cameraClips = hiddenTracks.has(cameraTrackKey()) ? [] : entry.cutsceneCameraTrack ?? [];
-  const characterClips = (entry.cutsceneCharacterTrack ?? []).filter(
+  const shakeClips = hiddenTracks.has(cameraTrackKey()) ? [] : entry.cutsceneCameraTrack ?? [];
+  const camPosX = hiddenTracks.has(cameraPosXKey()) ? [] : entry.cutsceneCameraPosX ?? [];
+  const camPosY = hiddenTracks.has(cameraPosYKey()) ? [] : entry.cutsceneCameraPosY ?? [];
+  const camZoom = hiddenTracks.has(cameraZoomKey()) ? [] : entry.cutsceneCameraZoomKeys ?? [];
+  const appearanceClips = (entry.cutsceneCharacterTrack ?? []).filter(
     (c) => !c.characterId || !hiddenTracks.has(characterTrackKey(c.characterId))
   );
+  const positionKeys = (entry.cutsceneCharacterPositionKeys ?? []).filter((k) => {
+    const key = k.axis === "x" ? characterPosXKey(k.characterId) : characterPosYKey(k.characterId);
+    return !hiddenTracks.has(key);
+  });
   const fxClips = hiddenTracks.has(audioFxTrackKey()) ? [] : entry.cutsceneAudioFxTrack ?? [];
 
-  const camera = resolveCamera(cameraClips, t, mapCenterCell, tLive);
-  const resolvedChars = resolveCharacters(characterClips, t, mapCenterCell, tLive);
+  const camera = resolveCamera(camPosX, camPosY, camZoom, shakeClips, t, mapCenterCell, entry.cutsceneCameraPausesForDialogue, tLive);
+  const resolvedChars = resolveCharacters(positionKeys, appearanceClips, entry.cutsceneCastCharacterIds ?? [], t, mapCenterCell, tLive);
   const overlay = resolveOverlay(fxClips, t, tLive);
 
   const gridSize = map.gridSize; // px per map cell, native resolution
@@ -155,6 +194,15 @@ export function CutscenePreview({
 
   const worldDisplayW = map.width * gridSize * displayScale;
   const worldDisplayH = map.height * gridSize * displayScale;
+
+  // While playing, the editor viewport always tracks the camera's own resolved frame -- pressing
+  // Play shows exactly what the in-game camera sees, per writer design decision. Runs as an
+  // effect (not inline in render) so it doesn't fight the free-pan drag handlers while paused.
+  useEffect(() => {
+    if (!playing) return;
+    setView({ x: camera.x, y: camera.y, zoom: camera.zoom });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playing, camera.x, camera.y, camera.zoom]);
 
   // The camera's OWN frame (what the player actually sees), drawn as a dashed rectangle inside
   // the same world layer -- independent of the editor's pan/zoom above. Follows dragCam while
@@ -171,26 +219,43 @@ export function CutscenePreview({
 
   const gridCellPx = gridCells * gridSize * displayScale;
 
+  // Converts a raw client (screen) coordinate to a world CELL coordinate -- reads the world
+  // layer's OWN on-screen rect (post pan/zoom transform) rather than re-deriving it from `view`,
+  // so this stays correct regardless of how the transform is expressed. This is the single
+  // source of truth for "where in the world did the pointer land", used by both the
+  // Explorer-drop handler and (as a sanity cross-check) nowhere else -- drag-to-reposition below
+  // intentionally works from POINTER DELTAS instead (see startCharacterDrag/startCameraDrag),
+  // since deltas are immune to any transform-origin/rounding mismatch that an absolute
+  // client-to-world conversion could introduce.
+  const clientToCell = (clientX: number, clientY: number) => {
+    const worldRect = worldRef.current?.getBoundingClientRect();
+    if (!worldRect) return { x: 0, y: 0 };
+    return {
+      x: (clientX - worldRect.left) / (gridSize * displayScale),
+      y: (clientY - worldRect.top) / (gridSize * displayScale),
+    };
+  };
+
   // Drag a character/dialogue from CutsceneExplorerPanel straight onto the stage -- a character
-  // gets placed at the drop point (added to the cast if it isn't already, plus a "move" clip at
-  // the CURRENT playhead time so it appears exactly where dropped); a dialogue is dropped in at
-  // the current time regardless of x/y, since dialogue clips have no stage position.
+  // gets placed at the drop point (added to the cast if it isn't already, plus one X and one Y
+  // keyframe at the CURRENT playhead time so it appears exactly where dropped); a dialogue is
+  // dropped in at the current time regardless of x/y, since dialogue clips have no stage
+  // position.
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
-    const worldRect = worldRef.current?.getBoundingClientRect();
-    if (!worldRect) return;
-    const cellX = (e.clientX - worldRect.left) / (gridSize * displayScale);
-    const cellY = (e.clientY - worldRect.top) / (gridSize * displayScale);
+    const { x: cellX, y: cellY } = clientToCell(e.clientX, e.clientY);
 
     const characterId = e.dataTransfer.getData(CHARACTER_DRAG_MIME);
     if (characterId) {
       const cast = entry.cutsceneCastCharacterIds ?? [];
-      const charTrack = entry.cutsceneCharacterTrack ?? [];
+      const posKeys = entry.cutsceneCharacterPositionKeys ?? [];
+      const roundedT = Math.max(0, Math.round(t));
       updateEntry(entry.id, {
         cutsceneCastCharacterIds: cast.includes(characterId) ? cast : [...cast, characterId],
-        cutsceneCharacterTrack: [
-          ...charTrack,
-          { id: nextId("cclip"), startMs: Math.max(0, Math.round(t)), durationMs: 1000, kind: "move", characterId, x: cellX, y: cellY },
+        cutsceneCharacterPositionKeys: [
+          ...posKeys,
+          { id: nextId("ckey"), characterId, axis: "x", atMs: roundedT, value: cellX },
+          { id: nextId("ckey"), characterId, axis: "y", atMs: roundedT, value: cellY },
         ],
       });
       return;
@@ -205,9 +270,11 @@ export function CutscenePreview({
   };
 
   // Panning the editor's own view -- mousedown on the stage BACKGROUND (not on a character,
-  // which stops propagation and starts its own reposition drag instead, see below). Standard
-  // window-mousemove/mouseup drag pattern used everywhere else in this codebase.
+  // which stops propagation and starts its own reposition drag instead, see below). Disabled
+  // while playing (view is locked to the camera then). Standard window-mousemove/mouseup drag
+  // pattern used everywhere else in this codebase.
   const startPan = (e: React.MouseEvent) => {
+    if (playing) return;
     const startX = e.clientX;
     const startY = e.clientY;
     const origX = view.x;
@@ -229,87 +296,87 @@ export function CutscenePreview({
     setView((v) => ({ ...v, zoom: Math.max(MIN_VIEW_ZOOM, Math.min(MAX_VIEW_ZOOM, v.zoom * factor)) }));
   const resetViewToCamera = () => setView({ x: camera.x, y: camera.y, zoom: camera.zoom });
 
-  // Dragging a character already placed on stage repositions it AND sets/updates a keyframe at
-  // the current playhead time -- if a clip starts WITHIN keyMatchToleranceMs of `t` for this
-  // character, its x/y are updated in place (the tolerance absorbs tiny scrub/float imprecision
-  // instead of silently creating a near-duplicate stray keyframe a couple ms away); otherwise a
-  // brand-new one-frame "move" clip is created there (short enough to read as a keyframe/snap,
-  // not a slow tween).
+  // Dragging a character already placed on stage: ALWAYS repositions it (even mid-interpolation
+  // between two other keys, per writer design decision that dragging must always work) and
+  // upserts one keyframe per axis at the current playhead time -- within keyMatchToleranceMs of
+  // an existing key on that axis, that key's value is updated in place; otherwise a new one is
+  // inserted (which is exactly the "recompute the two neighboring segments" behavior, since
+  // resolveChannel only ever interpolates between a key and its immediate neighbors). A drag
+  // shorter than MIN_DRAG_PX total movement is treated as a plain click (select only) and never
+  // touches the data -- this is what stops keys from appearing "spontaneously".
   const startCharacterDrag = (e: React.MouseEvent, characterId: string, origX: number, origY: number) => {
     e.stopPropagation();
     const startX = e.clientX;
     const startY = e.clientY;
-    setDragChar({ characterId, x: origX, y: origY });
+    let moved = false;
     const onMove = (ev: MouseEvent) => {
-      const dxCells = (ev.clientX - startX) / (gridSize * displayScale);
-      const dyCells = (ev.clientY - startY) / (gridSize * displayScale);
+      const dxPx = ev.clientX - startX;
+      const dyPx = ev.clientY - startY;
+      if (!moved && Math.hypot(dxPx, dyPx) < MIN_DRAG_PX) return;
+      moved = true;
+      const dxCells = dxPx / (gridSize * displayScale);
+      const dyCells = dyPx / (gridSize * displayScale);
       setDragChar({ characterId, x: origX + dxCells, y: origY + dyCells });
     };
     const onUp = (ev: MouseEvent) => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      if (!moved) {
+        setDragChar(null);
+        return;
+      }
       const dxCells = (ev.clientX - startX) / (gridSize * displayScale);
       const dyCells = (ev.clientY - startY) / (gridSize * displayScale);
       const newX = origX + dxCells;
       const newY = origY + dyCells;
-      const charTrack = entry.cutsceneCharacterTrack ?? [];
-      const roundedT = Math.round(t);
-      const existing = charTrack.find((c) => c.characterId === characterId && Math.abs(c.startMs - roundedT) <= keyMatchToleranceMs);
-      if (existing) {
-        updateEntry(entry.id, {
-          cutsceneCharacterTrack: charTrack.map((c) => (c.id === existing.id ? { ...c, x: newX, y: newY } : c)),
-        });
-      } else {
-        updateEntry(entry.id, {
-          cutsceneCharacterTrack: [
-            ...charTrack,
-            { id: nextId("cclip"), startMs: Math.max(0, roundedT), durationMs: oneFrameMs, kind: "move", characterId, x: newX, y: newY },
-          ],
-        });
-      }
+      const roundedT = Math.max(0, Math.round(t));
+      const posKeys = entry.cutsceneCharacterPositionKeys ?? [];
+      const xKeys = posKeys.filter((k) => k.characterId === characterId && k.axis === "x");
+      const yKeys = posKeys.filter((k) => k.characterId === characterId && k.axis === "y");
+      const others = posKeys.filter((k) => k.characterId !== characterId);
+      const nextX = upsertKeyframe(xKeys, roundedT, newX, keyMatchToleranceMs).map((k) => ({ ...k, characterId, axis: "x" as const }));
+      const nextY = upsertKeyframe(yKeys, roundedT, newY, keyMatchToleranceMs).map((k) => ({ ...k, characterId, axis: "y" as const }));
+      updateEntry(entry.id, { cutsceneCharacterPositionKeys: [...others, ...nextX, ...nextY] });
       setDragChar(null);
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
   };
 
-  // Same drag-to-key pattern as characters, applied to the camera's own frame rectangle --
-  // mousedown+drag on the dashed rect updates/creates a camera "move" clip at the current
-  // playhead time instead of x/y number fields.
+  // Same always-works drag-to-key pattern as characters, applied to the camera's own frame
+  // rectangle -- upserts a keyframe on cutsceneCameraPosX/PosY at the current playhead time.
   const startCameraDrag = (e: React.MouseEvent) => {
     e.stopPropagation();
     const startX = e.clientX;
     const startY = e.clientY;
     const origX = camera.x;
     const origY = camera.y;
-    setDragCam({ x: origX, y: origY });
+    let moved = false;
     const onMove = (ev: MouseEvent) => {
-      const dxCells = (ev.clientX - startX) / (gridSize * displayScale);
-      const dyCells = (ev.clientY - startY) / (gridSize * displayScale);
+      const dxPx = ev.clientX - startX;
+      const dyPx = ev.clientY - startY;
+      if (!moved && Math.hypot(dxPx, dyPx) < MIN_DRAG_PX) return;
+      moved = true;
+      const dxCells = dxPx / (gridSize * displayScale);
+      const dyCells = dyPx / (gridSize * displayScale);
       setDragCam({ x: origX + dxCells, y: origY + dyCells });
     };
     const onUp = (ev: MouseEvent) => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      if (!moved) {
+        setDragCam(null);
+        return;
+      }
       const dxCells = (ev.clientX - startX) / (gridSize * displayScale);
       const dyCells = (ev.clientY - startY) / (gridSize * displayScale);
       const newX = origX + dxCells;
       const newY = origY + dyCells;
-      const camTrack = entry.cutsceneCameraTrack ?? [];
-      const roundedT = Math.round(t);
-      const existing = camTrack.find((c) => c.kind === "move" && Math.abs(c.startMs - roundedT) <= keyMatchToleranceMs);
-      if (existing) {
-        updateEntry(entry.id, {
-          cutsceneCameraTrack: camTrack.map((c) => (c.id === existing.id ? { ...c, x: newX, y: newY } : c)),
-        });
-      } else {
-        updateEntry(entry.id, {
-          cutsceneCameraTrack: [
-            ...camTrack,
-            { id: nextId("cam"), startMs: Math.max(0, roundedT), durationMs: oneFrameMs, kind: "move", x: newX, y: newY },
-          ],
-        });
-      }
+      const roundedT = Math.max(0, Math.round(t));
+      updateEntry(entry.id, {
+        cutsceneCameraPosX: upsertKeyframe(entry.cutsceneCameraPosX ?? [], roundedT, newX, keyMatchToleranceMs),
+        cutsceneCameraPosY: upsertKeyframe(entry.cutsceneCameraPosY ?? [], roundedT, newY, keyMatchToleranceMs),
+      });
       setDragCam(null);
     };
     window.addEventListener("mousemove", onMove);
@@ -320,16 +387,28 @@ export function CutscenePreview({
     <div ref={containerRef} className="glass rounded-lg p-5 space-y-3 w-full h-full flex flex-col overflow-hidden">
       <div className="flex items-center gap-2 shrink-0">
         <div className="text-xs uppercase tracking-wider text-[var(--op-35)] flex-1">Живое превью</div>
-        <button onClick={() => zoomView(0.8)} title="Отдалить вид" className="w-6 h-6 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]">
+        {playing && <div className="text-[10px] text-accent">Вид камеры (во время игры)</div>}
+        <button
+          onClick={() => zoomView(0.8)}
+          disabled={playing}
+          title="Отдалить вид"
+          className="w-6 h-6 grid place-items-center rounded-md glass hover:bg-[var(--op-10)] disabled:opacity-30"
+        >
           <ZoomOut size={12} />
         </button>
-        <button onClick={() => zoomView(1.25)} title="Приблизить вид" className="w-6 h-6 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]">
+        <button
+          onClick={() => zoomView(1.25)}
+          disabled={playing}
+          title="Приблизить вид"
+          className="w-6 h-6 grid place-items-center rounded-md glass hover:bg-[var(--op-10)] disabled:opacity-30"
+        >
           <ZoomIn size={12} />
         </button>
         <button
           onClick={resetViewToCamera}
+          disabled={playing}
           title="Вернуть вид к текущей позиции камеры"
-          className="w-6 h-6 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]"
+          className="w-6 h-6 grid place-items-center rounded-md glass hover:bg-[var(--op-10)] disabled:opacity-30"
         >
           <Crosshair size={12} />
         </button>
@@ -354,7 +433,7 @@ export function CutscenePreview({
 
       <div
         className="relative overflow-hidden rounded-md border border-[var(--op-10)] mx-auto shrink-0"
-        style={{ width: stageW, height: stageDisplayH, background: "#000", cursor: "grab" }}
+        style={{ width: stageW, height: stageDisplayH, background: "#000", cursor: playing ? "default" : "grab" }}
         onDragOver={(e) => e.preventDefault()}
         onDrop={handleDrop}
         onMouseDown={startPan}
@@ -391,9 +470,9 @@ export function CutscenePreview({
             return (
               <div
                 key={rc.characterId}
-                onMouseDown={(e) => startCharacterDrag(e, rc.characterId, rc.x, rc.y)}
+                onMouseDown={(e) => !playing && startCharacterDrag(e, rc.characterId, rc.x, rc.y)}
                 title="Перетащите, чтобы переместить и поставить ключ в текущем времени"
-                className="absolute cursor-move"
+                className={playing ? "absolute" : "absolute cursor-move"}
                 style={{
                   left: leftPx,
                   top: topPx,
@@ -428,18 +507,20 @@ export function CutscenePreview({
             );
           })}
 
-          <div
-            onMouseDown={startCameraDrag}
-            title="Перетащите, чтобы переместить камеру и поставить ключ в текущем времени"
-            className="absolute border border-dashed border-white/50 cursor-move"
-            style={{ left: camRectLeft, top: camRectTop, width: camRectW, height: camRectH }}
-          >
-            {dragCam && (
-              <div className="absolute left-1/2 -translate-x-1/2 -top-5 whitespace-nowrap text-[10px] font-mono bg-black/80 text-white px-1.5 py-0.5 rounded pointer-events-none">
-                Камера: {dragCam.x.toFixed(1)}, {dragCam.y.toFixed(1)}
-              </div>
-            )}
-          </div>
+          {!playing && (
+            <div
+              onMouseDown={startCameraDrag}
+              title="Перетащите, чтобы переместить камеру и поставить ключ в текущем времени"
+              className="absolute border border-dashed border-white/50 cursor-move"
+              style={{ left: camRectLeft, top: camRectTop, width: camRectW, height: camRectH }}
+            >
+              {dragCam && (
+                <div className="absolute left-1/2 -translate-x-1/2 -top-5 whitespace-nowrap text-[10px] font-mono bg-black/80 text-white px-1.5 py-0.5 rounded pointer-events-none">
+                  Камера: {dragCam.x.toFixed(1)}, {dragCam.y.toFixed(1)}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {overlay.opacity > 0.01 && (
@@ -453,7 +534,9 @@ export function CutscenePreview({
         )}
       </div>
       <div className="text-[10px] text-[var(--op-30)] shrink-0">
-        Перетащите фон — панорама вида. Перетащите персонажа или пунктирную рамку камеры — переместить и поставить ключ в текущем времени (координаты видны над тем, что тащите).
+        {playing
+          ? "Идёт проигрывание — вид показывает то, что видит камера."
+          : "Перетащите фон — панорама вида. Перетащите персонажа или пунктирную рамку камеры — переместить и поставить ключ в текущем времени."}
       </div>
     </div>
   );

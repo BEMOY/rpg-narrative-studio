@@ -5,6 +5,7 @@ import { saveProjectData } from "../cloud/projects";
 import { createChoice, createDialogue as makeDialogue, createLine, createNode, normalizeDialogue } from "../lib/dialogueDefaults";
 import { nextId } from "../lib/mapDefaults";
 import { normalizeSceneEntry } from "../lib/sceneDefaults";
+import { normalizeCutsceneEntry } from "../lib/cutsceneDefaults";
 
 interface EntryTab {
   kind: "entry";
@@ -151,7 +152,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       resistPresets: data.resistPresets ?? [],
       characterStatPresets: data.characterStatPresets ?? [],
       characterResistPresets: data.characterResistPresets ?? [],
-      entries: data.entries.map((e) => normalizeSceneEntry({ ...e, tags: e.tags ?? [], references: e.references ?? [] })),
+      entries: data.entries.map((e) => normalizeCutsceneEntry(normalizeSceneEntry({ ...e, tags: e.tags ?? [], references: e.references ?? [] }))),
     };
     set({
       projectId: id,

@@ -231,10 +231,28 @@ export interface Entry {
   // doesn't just disappear (a lane filtered purely from clip data would vanish the moment its
   // last clip was removed). Order here is also the lane's on-screen display order.
   cutsceneCastCharacterIds?: string[];
-  cutsceneCameraTrack?: CameraClip[];
-  cutsceneCharacterTrack?: CharacterClip[];
+  cutsceneCameraTrack?: CameraClip[]; // "shake" clips only as of the keyframe-channel rework -- see Keyframe below
+  cutsceneCharacterTrack?: CharacterClip[]; // appearance-state clips (anim/speed/zIndex/anchor/opacity/flipX/...) -- position no longer lives here, see cutsceneCharacterPositionKeys
   cutsceneDialogueTrack?: CutsceneDialogueClip[];
   cutsceneAudioFxTrack?: AudioFxClip[];
+  // -- Keyframe-channel position data (replaces the old "move"/"zoom" clip kinds) --
+  // Per writer design decision: POSITION (and zoom) are continuous properties best expressed as
+  // classic point-in-time keyframes, each independently interpolating only against its own two
+  // neighbors -- inserting/moving/deleting one key affects just the two segments touching it,
+  // never the whole sequence, unlike the old clip-chain "settle then tween" model. ANIMATION
+  // STATE (idle/walk/run) stays clip-based on purpose (see CharacterClip) -- it's a discrete
+  // state that holds until changed, not something you'd ever want to smoothly interpolate.
+  cutsceneCameraPosX?: Keyframe[];
+  cutsceneCameraPosY?: Keyframe[];
+  cutsceneCameraZoomKeys?: Keyframe[];
+  // Single toggle for the whole camera position/zoom channel set (default true, respects a
+  // blocking dialogue elsewhere) -- courser-grained than the old per-clip flag since there's
+  // only one camera and channels don't have a natural "current clip" to hang a flag off of.
+  // "shake" clips (still in cutsceneCameraTrack) keep their own per-clip pausesForDialogue.
+  cutsceneCameraPausesForDialogue?: boolean;
+  // Flat list (matches the existing cutsceneCharacterTrack convention) tagged by characterId +
+  // axis rather than a nested per-character map -- simpler to spread/update immutably.
+  cutsceneCharacterPositionKeys?: CharacterPositionKeyframe[];
   // Per-character track color (keyed by character Entry id) -- lets each character's lane and
   // clips stand out from the others instead of every character sharing one fixed color.
   cutsceneCharacterTrackColors?: Record<string, string>;
@@ -618,26 +636,49 @@ export interface SpriteStrip {
 // data" call made for the Scene flow editor. The DATA model here already fully supports a
 // proper visual timeline being layered on top later without a migration.
 
-// How a "move"/"zoom" clip's tween gets from its resting value to its target -- matches the
-// standard set any keyframe-based animation tool offers. Applied in resolveTween (see
-// lib/cutscenePreview.ts); "shake"/"animate" clips ignore this (nothing to ease, they're either
-// an instantaneous state or a jitter effect).
+// How a keyframe eases IN from its previous neighbor -- matches the standard set any
+// keyframe-based animation tool offers. Applied in resolveChannel (see lib/cutscenePreview.ts).
 export type ClipEasing = "linear" | "easeIn" | "easeOut" | "bounce";
+
+// A single point-in-time value on an animatable scalar property channel (camera X/Y/zoom,
+// character X/Y). `easing` describes the interpolation used for the SEGMENT arriving at this
+// key from whichever key precedes it (the very first key in a channel has no incoming segment,
+// so its own easing is unused). See resolveChannel's doc comment in lib/cutscenePreview.ts for
+// the full interpolation rules (holds constant before the first / after the last key).
+export interface Keyframe {
+  id: string;
+  atMs: number;
+  value: number;
+  easing?: ClipEasing;
+}
+
+// Per-character position keyframe -- flat list (see cutsceneCharacterPositionKeys), tagged by
+// which character and which axis this point belongs to, rather than a nested
+// Record<characterId, {x,y}> structure (flat lists are simpler to spread/update immutably, and
+// match the existing cutsceneCharacterTrack convention in this file).
+export type CharacterPositionAxis = "x" | "y";
+export interface CharacterPositionKeyframe {
+  id: string;
+  characterId: string;
+  axis: CharacterPositionAxis;
+  atMs: number;
+  value: number;
+  easing?: ClipEasing;
+}
 
 export interface CameraClip {
   id: string;
   startMs: number;
   durationMs: number;
-  kind: "move" | "zoom" | "shake";
-  x?: number; // "move" -- target camera center, map cell units
-  y?: number; // "move"
-  zoom?: number; // "zoom" -- 1 = normal (camera shows a native 320x180 window); 2 = shows a 160x90 window (closer)
-  intensity?: number; // "shake" -- jitter amplitude, map cell units
-  easing?: ClipEasing; // "move"/"zoom" only, defaults to "linear"
+  // "move"/"zoom" removed as of the keyframe-channel rework -- position/zoom now live in
+  // cutsceneCameraPosX/PosY/ZoomKeys (see Keyframe above). Only "shake" remains a clip/region,
+  // since it's a duration-based jitter effect rather than a value you'd keyframe a target for.
+  kind: "shake";
+  intensity?: number; // jitter amplitude, map cell units
   // Default true (respects the pause): while the cutscene is paused waiting on a blocking
   // dialogue clip, this clip's own resolution freezes along with the rest of the timeline. Set
   // to false so THIS clip keeps animating using real elapsed time even while everything else is
-  // held for the dialogue (e.g. a camera pan that should keep drifting during a conversation).
+  // held for the dialogue (e.g. a shake that should keep rumbling during a conversation).
   pausesForDialogue?: boolean;
 }
 
@@ -651,19 +692,21 @@ export type CharacterAnchor =
   | "middle-left" | "center" | "middle-right"
   | "bottom-left" | "bottom-center" | "bottom-right";
 
+// A character's APPEARANCE STATE over some span of time -- which sprite animation is playing,
+// draw order, opacity, flip, anchor, and reference-only metadata. Position no longer lives here
+// (see cutsceneCharacterPositionKeys / Keyframe) -- per writer design decision, "position is
+// keyed, appearance state is clipped": animation state is a discrete thing that HOLDS until
+// explicitly changed, so a duration+clip (not an interpolated value) is the right shape for it,
+// same as it always was; only the "move" clip kind (and its x/y/easing fields) has been removed.
 export interface CharacterClip {
   id: string;
   startMs: number;
   durationMs: number;
   characterId?: string; // Entry id, category "character"
-  kind: "move" | "animate";
-  x?: number; // "move" target, map cell units
-  y?: number;
-  anim?: CharacterAnimState; // which sprite state plays during this clip (defaults to "walk" for move, "idle" for animate)
-  easing?: ClipEasing; // "move" only, defaults to "linear"
+  anim?: CharacterAnimState; // which sprite state plays during this clip, default "idle"
   // Default true (respects the pause) -- see CameraClip.pausesForDialogue for the full
-  // explanation; set to false so this specific character keeps moving/animating during a
-  // blocking dialogue instead of freezing with everything else.
+  // explanation; set to false so this specific character keeps animating during a blocking
+  // dialogue instead of freezing with everything else.
   pausesForDialogue?: boolean;
   // -- richer per-appearance actor properties (all optional, all additive) --
   speed?: number; // playback speed of the sprite animation itself, percent, default 100

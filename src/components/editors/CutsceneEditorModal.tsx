@@ -263,6 +263,7 @@ export function CutsceneEditorModal({ entry, onClose }: { entry: Entry; onClose:
                 entry={entry}
                 t={t}
                 tLive={awaitingDialogue ? tLive : t}
+                playing={playing}
                 hiddenTracks={hiddenTracks}
                 awaitingDialogueEntry={awaitingDialogueEntry}
                 onDialogueDone={() => {
