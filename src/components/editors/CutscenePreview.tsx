@@ -5,7 +5,7 @@ import { useProjectStore } from "../../store/useProjectStore";
 import { MapThumbnail } from "../mapeditor/MapThumbnail";
 import { SpriteAnimator } from "../common/SpriteAnimator";
 import { anchorOffset, resolveCamera, resolveCharacters, resolveOverlay } from "../../lib/cutscenePreview";
-import { trackClips, withTrackClips } from "../../lib/cutsceneTracks";
+import { addCastMember as addCastMemberToList, ensureCharacterTrack, trackClips, withTrackClips } from "../../lib/cutsceneTracks";
 import {
   audioFxTrackKey,
   cameraPosXKey,
@@ -18,7 +18,7 @@ import {
   dialogueTrackKey,
   eventTrackKey,
 } from "./CutsceneTimeline";
-import { CHARACTER_DRAG_MIME, DIALOGUE_DRAG_MIME } from "./CutsceneExplorerPanel";
+import { ACTOR_DRAG_MIME, DIALOGUE_DRAG_MIME } from "./CutsceneExplorerPanel";
 import { nextId } from "../../lib/mapDefaults";
 import { useDialoguePlayer } from "../../lib/useDialoguePlayer";
 import { DialoguePlayArea } from "../dialogue/DialoguePlayArea";
@@ -187,8 +187,9 @@ export function CutscenePreview({
     return !hiddenTracks.has(key);
   });
 
+  const cast = entry.cutsceneCast ?? [];
   const camera = resolveCamera(camPosX, camPosY, camZoom, visibleTracks, t, mapCenterCell, entry.cutsceneCameraPausesForDialogue, tLive);
-  const resolvedChars = resolveCharacters(positionKeys, visibleTracks, entry.cutsceneCastCharacterIds ?? [], t, mapCenterCell, tLive);
+  const resolvedChars = resolveCharacters(positionKeys, visibleTracks, cast.map((m) => m.instanceId), t, mapCenterCell, tLive);
   const overlay = resolveOverlay(visibleTracks, t, tLive);
 
   const gridSize = map.gridSize; // px per map cell, native resolution
@@ -254,17 +255,24 @@ export function CutscenePreview({
     e.preventDefault();
     const { x: cellX, y: cellY } = clientToCell(e.clientX, e.clientY);
 
-    const characterId = e.dataTransfer.getData(CHARACTER_DRAG_MIME);
-    if (characterId) {
-      const cast = entry.cutsceneCastCharacterIds ?? [];
+    // Dropping an actor (character/object/item) from the Explorer straight onto the stage --
+    // always creates a brand-new cast INSTANCE (see CutsceneCastMember in types/database.ts), so
+    // dropping the same Entry more than once places independent copies rather than silently
+    // no-op'ing on a duplicate. Placed at the drop point, with an "active"/appear key at the
+    // CURRENT playhead time so it shows up exactly where and when it was dropped.
+    const entryId = e.dataTransfer.getData(ACTOR_DRAG_MIME);
+    if (entryId) {
       const posKeys = entry.cutsceneCharacterPositionKeys ?? [];
       const roundedT = Math.max(0, Math.round(t));
+      const { cast: nextCast, instanceId } = addCastMemberToList(cast, entryId);
       updateEntry(entry.id, {
-        cutsceneCastCharacterIds: cast.includes(characterId) ? cast : [...cast, characterId],
+        cutsceneCast: nextCast,
+        cutsceneTracks: ensureCharacterTrack(tracks, instanceId),
         cutsceneCharacterPositionKeys: [
           ...posKeys,
-          { id: nextId("ckey"), characterId, axis: "x", atMs: roundedT, value: cellX },
-          { id: nextId("ckey"), characterId, axis: "y", atMs: roundedT, value: cellY },
+          { id: nextId("ckey"), characterId: instanceId, axis: "x", atMs: roundedT, value: cellX },
+          { id: nextId("ckey"), characterId: instanceId, axis: "y", atMs: roundedT, value: cellY },
+          { id: nextId("ckey"), characterId: instanceId, axis: "active", atMs: roundedT, value: 1 },
         ],
       });
       return;
@@ -472,7 +480,12 @@ export function CutscenePreview({
           )}
 
           {resolvedChars.map((rc) => {
-            const character = allEntries.find((e) => e.id === rc.characterId);
+            // rc.characterId is a cast INSTANCE id, not necessarily an Entry id directly --
+            // resolve the underlying character/object/item Entry via the cast list (see
+            // CutsceneCastMember in types/database.ts) so two instances of the SAME Entry each
+            // render their own independent sprite/position correctly.
+            const castMember = cast.find((m) => m.instanceId === rc.characterId);
+            const character = allEntries.find((e) => e.id === castMember?.entryId);
             if (!character) return null;
             const isDragging = dragChar?.characterId === rc.characterId;
             const cx = isDragging ? dragChar!.x : rc.x;

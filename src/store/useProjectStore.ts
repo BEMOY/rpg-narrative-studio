@@ -254,7 +254,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       ...(category === "scene" ? { sceneFlow: [], sceneTransitions: [] } : {}),
       ...(category === "cutscene"
         ? {
-            cutsceneCastCharacterIds: [],
+            cutsceneCast: [],
             cutsceneTracks: [],
           }
         : {}),

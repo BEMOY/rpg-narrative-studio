@@ -121,6 +121,25 @@ export function resolveCamera(
   return { x: x + shakeX, y: y + shakeY, zoom };
 }
 
+// Resolves the "active" (appear/disappear) STEP channel at time `t` -- unlike resolveChannel
+// above, this deliberately does NOT interpolate: the value HOLDS at whichever key was most
+// recently crossed (a presence toggle has no meaningful in-between state). With no keys at all,
+// the actor is always active -- this is what keeps every pre-existing cutscene's cast rendering
+// exactly as it did before this "Активен" track existed. Once at least one key exists, the actor
+// is INACTIVE before the first key (it hasn't appeared yet) -- this is what actually lets a
+// writer drag a key onto the timeline to make an object/character appear at a specific moment.
+export function resolveActiveChannel(keys: Keyframe[] | undefined, t: number): boolean {
+  const sorted = [...(keys ?? [])].sort((a, b) => a.atMs - b.atMs);
+  if (sorted.length === 0) return true;
+  if (t < sorted[0].atMs) return false;
+  let value = sorted[0].value;
+  for (const k of sorted) {
+    if (k.atMs > t) break;
+    value = k.value;
+  }
+  return value >= 0.5;
+}
+
 export interface ResolvedCharacter {
   characterId: string;
   x: number;
@@ -157,6 +176,9 @@ export function resolveCharacters(
     const activeAtFrozenT = appearance.find((c) => t >= c.startMs && t <= c.startMs + c.durationMs);
     const activeComponent = activeAtFrozenT?.component.kind === "animation" ? activeAtFrozenT.component : undefined;
     const effT = activeComponent?.pausesForDialogue === false ? tLive : t;
+
+    const activeKeys = positionKeys.filter((k) => k.characterId === characterId && k.axis === "active");
+    if (!resolveActiveChannel(activeKeys, effT)) continue; // not present on stage at this moment
 
     const xKeys = positionKeys.filter((k) => k.characterId === characterId && k.axis === "x");
     const yKeys = positionKeys.filter((k) => k.characterId === characterId && k.axis === "y");

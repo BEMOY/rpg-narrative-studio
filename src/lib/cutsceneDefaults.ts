@@ -1,4 +1,4 @@
-import type { CharacterPositionKeyframe, CutsceneClip, CutsceneTrack, Entry, Keyframe } from "../types/database";
+import type { CharacterPositionKeyframe, CutsceneCastMember, CutsceneClip, CutsceneTrack, Entry, Keyframe } from "../types/database";
 import { nextId } from "./mapDefaults";
 
 // Backfills an Entry's Cutscene fields from OLDER shapes into the CURRENT one, the same "evolve,
@@ -13,6 +13,10 @@ import { nextId } from "./mapDefaults";
 //     list, each clip tagged with a typed `component` -- from the Track+Clip+Component
 //     architecture rework. See the doc comment above CutsceneTrackKind in types/database.ts for
 //     the full rationale.
+//  3. cutsceneCastCharacterIds: string[] -> cutsceneCast: CutsceneCastMember[] -- from the v75
+//     "Персонажи + Объекты/Предметы" + duplicate-instance rework. Identity migration: each old
+//     raw id becomes { instanceId: id, entryId: id }, since every character-track/position-key/
+//     color record was already keyed by that same raw id string -- no other data needs to change.
 //
 // Both migrations read the OLDER shapes via `as unknown as` casts against inline anonymous types
 // (rather than importing long-gone named interfaces) since the whole point is that those shapes
@@ -25,8 +29,9 @@ export function normalizeCutsceneEntry(entry: Entry): Entry {
     !entry.cutsceneCameraPosX && !entry.cutsceneCameraPosY && !entry.cutsceneCameraZoomKeys && legacyLen(entry, "cutsceneCameraTrack") > 0;
   const needsCharKeyMigration = !entry.cutsceneCharacterPositionKeys && legacyLen(entry, "cutsceneCharacterTrack") > 0;
   const needsTracksMigration = !entry.cutsceneTracks;
+  const needsCastMigration = !entry.cutsceneCast;
 
-  if (!needsCameraKeyMigration && !needsCharKeyMigration && !needsTracksMigration) return entry;
+  if (!needsCameraKeyMigration && !needsCharKeyMigration && !needsTracksMigration && !needsCastMigration) return entry;
 
   let cameraPosX: Keyframe[] = entry.cutsceneCameraPosX ?? [];
   let cameraPosY: Keyframe[] = entry.cutsceneCameraPosY ?? [];
@@ -72,6 +77,11 @@ export function normalizeCutsceneEntry(entry: Entry): Entry {
     legacyCharClips = newAppearance;
   }
 
+  let cast: CutsceneCastMember[] = entry.cutsceneCast ?? [];
+  if (needsCastMigration) {
+    cast = (entry.cutsceneCastCharacterIds ?? []).map((id) => ({ instanceId: id, entryId: id }));
+  }
+
   let tracks: CutsceneTrack[] = entry.cutsceneTracks ?? [];
   if (needsTracksMigration) {
     const cameraClips: CutsceneClip[] = legacyCameraClips.map((c) => ({
@@ -82,7 +92,7 @@ export function normalizeCutsceneEntry(entry: Entry): Entry {
     }));
 
     const characterTracks: CutsceneTrack[] = [];
-    const castIds = new Set<string>(entry.cutsceneCastCharacterIds ?? []);
+    const castIds = new Set<string>(cast.map((m) => m.instanceId));
     for (const c of legacyCharClips) if (c.characterId) castIds.add(c.characterId);
     for (const characterId of castIds) {
       const clips: CutsceneClip[] = legacyCharClips
@@ -147,6 +157,7 @@ export function normalizeCutsceneEntry(entry: Entry): Entry {
     cutsceneCameraZoomKeys: cameraZoomKeys,
     cutsceneCharacterPositionKeys: characterPositionKeys,
     cutsceneTracks: tracks,
+    cutsceneCast: cast,
   };
 }
 

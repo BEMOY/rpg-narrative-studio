@@ -1,6 +1,6 @@
 import type { Dialogue, Entry } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
-import { trackClips } from "../../lib/cutsceneTracks";
+import { castLabel, trackClips } from "../../lib/cutsceneTracks";
 import { EVENT_KIND_LABEL } from "./CutsceneTimeline";
 
 // Read-only "what's actually happening right now" panel (Dynarain Phase 2) -- shown alongside
@@ -26,17 +26,18 @@ export function CutsceneDebugPanel({
   const allEntries = useProjectStore((s) => s.project.entries);
   const dialogues = useProjectStore((s) => s.project.dialogues);
   const tracks = entry.cutsceneTracks ?? [];
-  const cast = entry.cutsceneCastCharacterIds ?? [];
+  const cast = entry.cutsceneCast ?? [];
 
   const activeAt = (startMs: number, durationMs: number) => t >= startMs && t <= startMs + durationMs;
 
   const shake = trackClips(tracks, "camera").find((c) => activeAt(c.startMs, c.durationMs));
 
   const activeChars = cast
-    .map((charId) => {
+    .map((member) => {
+      const charId = member.instanceId;
       const clip = trackClips(tracks, "character", charId).find((c) => activeAt(c.startMs, c.durationMs));
       const anim = clip?.component.kind === "animation" ? clip.component.anim ?? "idle" : undefined;
-      const name = allEntries.find((e) => e.id === charId)?.name ?? "?";
+      const name = castLabel(cast, allEntries, charId);
       return anim ? `${name}: ${anim}` : null;
     })
     .filter((v): v is string => !!v);

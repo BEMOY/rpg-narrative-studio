@@ -226,11 +226,23 @@ export interface Entry {
   // from Scene steps, never owned by one Scene.
   cutsceneMapId?: string;
   cutsceneFps?: number; // frame-step granularity for the editor's transport controls; defaults to 60
-  // Which characters have their own track/lane in the timeline editor -- kept separate from
-  // cutsceneCharacterTrack (the actual clips) so an added-but-still-empty character track
-  // doesn't just disappear (a lane filtered purely from clip data would vanish the moment its
-  // last clip was removed). Order here is also the lane's on-screen display order.
+  // LEGACY (pre-v75) -- which characters have their own track/lane in the timeline editor.
+  // Replaced by cutsceneCast below (each cast slot is now its own INSTANCE, distinct from the
+  // Entry id, so the same character/object/item can be added more than once). Old projects are
+  // migrated once at load time into cutsceneCast with instanceId === the old raw id, so every
+  // existing character-track/keyframe/color record (which are all keyed by this same id string
+  // already) keeps resolving correctly with zero further migration needed. Kept only for that
+  // migration; do not write to this field going forward.
   cutsceneCastCharacterIds?: string[];
+  // Which actors (characters, objects, or items -- see the "Персонажи + Объекты/Предметы"
+  // writer decision) have their own track/lane in the timeline editor, kept separate from the
+  // actual clips for the same reason as the old field above. `instanceId` is what every
+  // character-kind CutsceneTrack/CharacterPositionKeyframe/color entry is actually keyed by --
+  // it is a freshly generated id distinct from `entryId` (the underlying Codex Entry this
+  // instance represents) specifically so the SAME Entry can be placed on the stage more than
+  // once (e.g. two independent "Bandit" object instances), each moving/animating/appearing
+  // fully independently. Order here is also the lane's on-screen display order.
+  cutsceneCast?: CutsceneCastMember[];
   // Generic Track+Clip+Component model (v71) -- one flat list of tracks, each holding its own
   // ordered clips (see the doc comment above CutsceneTrackKind for the full rationale). Replaces
   // the four separately-typed cutsceneCameraTrack/cutsceneCharacterTrack/cutsceneDialogueTrack/
@@ -658,7 +670,17 @@ export interface Keyframe {
 // which character and which axis this point belongs to, rather than a nested
 // Record<characterId, {x,y}> structure (flat lists are simpler to spread/update immutably, and
 // match the existing cutsceneCharacterTrack convention in this file).
-export type CharacterPositionAxis = "x" | "y";
+export type CharacterPositionAxis = "x" | "y" | "active";
+// "active" axis keyframes are a STEP channel (hold at the last key's value, never
+// interpolated -- see resolveActiveChannel in lib/cutscenePreview.ts), reusing this same
+// Keyframe shape purely to plug into the existing per-character channel machinery (marquee
+// select, group-drag, delete, timeline rendering) for free. `value` is 1 (active/visible) or 0
+// (inactive/hidden); `easing` is ignored for this axis. No keys at all => always active (keeps
+// every pre-existing cutscene's cast rendering exactly as before this feature was added). If
+// keys exist, the actor is INACTIVE before the first key (hasn't appeared yet), then follows
+// whichever key was most recently crossed -- this is what lets a writer make an actor "appear"
+// and "disappear" at specific times on the timeline instead of being present for the whole
+// cutscene.
 export interface CharacterPositionKeyframe {
   id: string;
   characterId: string;
@@ -787,8 +809,19 @@ export interface CutsceneClip {
 export interface CutsceneTrack {
   id: string;
   kind: CutsceneTrackKind;
-  characterId?: string; // set only when kind === "character"
+  characterId?: string; // set only when kind === "character" -- holds a cast INSTANCE id (see
+                         // CutsceneCastMember), not necessarily an Entry id directly
   clips: CutsceneClip[];
+}
+
+// One "actor" slot placed on the cutscene stage -- a character, object, or item Entry, tagged
+// with its own instanceId so the exact same Entry can be added more than once (each instance
+// gets fully independent position keys, animation clips, active/presence keys, and color, all
+// keyed by instanceId the same way they were previously keyed directly by the character's Entry
+// id). See the doc comment on Entry.cutsceneCast for the full rationale.
+export interface CutsceneCastMember {
+  instanceId: string;
+  entryId: string; // the character/object/item Entry this instance represents
 }
 
 export interface CutsceneMarker {

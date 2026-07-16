@@ -1,4 +1,4 @@
-import type { CutsceneClip, CutsceneComponent, CutsceneTrack, CutsceneTrackKind } from "../types/database";
+import type { CutsceneCastMember, CutsceneClip, CutsceneComponent, CutsceneTrack, CutsceneTrackKind, Entry } from "../types/database";
 import { nextId } from "./mapDefaults";
 
 // Small pure-function API around the generic Track+Clip+Component model (see the doc comment
@@ -87,4 +87,42 @@ export function findClipAnywhere(
     if (clip) return { track: t, clip };
   }
   return undefined;
+}
+
+// -- Cast (v75 "Персонажи + Объекты/Предметы" + duplicate-instance rework) --
+// A cast member is one placed ACTOR instance on the cutscene stage -- see the doc comment on
+// CutsceneCastMember in types/database.ts for why this is a separate instanceId rather than the
+// underlying Entry's own id (it's what makes placing the SAME character/object/item twice work
+// without the two instances colliding on every character-track/keyframe/color lookup, which are
+// all keyed by instanceId).
+
+// Always creates a brand-new instance, even if this exact entryId is already in the cast --
+// that's the whole point (duplicates must work). Callers still need to ensureCharacterTrack(...)
+// with the returned instanceId so the lane actually shows up.
+export function addCastMember(cast: CutsceneCastMember[], entryId: string): { cast: CutsceneCastMember[]; instanceId: string } {
+  const instanceId = nextId("actor");
+  return { cast: [...cast, { instanceId, entryId }], instanceId };
+}
+
+// Removes one instance (and only that one -- a duplicate sharing the same entryId is untouched)
+// from the cast list. Callers are still responsible for also stripping that instanceId's
+// character track / position keys / color entry, same as the old "remove character" flow did.
+export function removeCastMember(cast: CutsceneCastMember[], instanceId: string): CutsceneCastMember[] {
+  return cast.filter((m) => m.instanceId !== instanceId);
+}
+
+// Display label for one cast instance -- falls back to "(отсутствует)" if its Entry was deleted
+// from the project elsewhere. Appends "#2", "#3", ... when more than one instance in this cast
+// shares the same underlying entryId, so duplicate objects/characters stay distinguishable in the
+// timeline's row headers, the Explorer picker, and the Inspector -- ordered by each instance's
+// position in the cast list (first placed = #1, left unlabeled).
+export function castLabel(cast: CutsceneCastMember[], allEntries: Entry[], instanceId: string): string {
+  const member = cast.find((m) => m.instanceId === instanceId);
+  if (!member) return "(отсутствует)";
+  const entry = allEntries.find((e) => e.id === member.entryId);
+  const name = entry?.name ?? "(отсутствует)";
+  const sameEntry = cast.filter((m) => m.entryId === member.entryId);
+  if (sameEntry.length <= 1) return name;
+  const idx = sameEntry.findIndex((m) => m.instanceId === instanceId);
+  return `${name} #${idx + 1}`;
 }

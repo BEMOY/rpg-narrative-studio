@@ -2,11 +2,20 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { X, Eye, EyeOff, Lock, Unlock, ChevronDown, ChevronRight, Flag, Scissors, Magnet } from "lucide-react";
 import type { CharacterPositionAxis, CutsceneClip, CutsceneEventKind, CutsceneTrackKind, Entry, Keyframe } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
-import { cutsceneTotalDurationMs, resolveChannel } from "../../lib/cutscenePreview";
-import { findClipAnywhere, removeCharacterTrack, trackClips, withTrackClips } from "../../lib/cutsceneTracks";
+import { cutsceneTotalDurationMs, resolveActiveChannel, resolveChannel } from "../../lib/cutscenePreview";
+import {
+  addCastMember as addCastMemberToList,
+  castLabel,
+  ensureCharacterTrack,
+  findClipAnywhere,
+  removeCastMember as removeCastMemberFromList,
+  removeCharacterTrack,
+  trackClips,
+  withTrackClips,
+} from "../../lib/cutsceneTracks";
 import { nextId } from "../../lib/mapDefaults";
 import { themedPrompt } from "../../lib/modals";
-import { CHARACTER_DRAG_MIME, DIALOGUE_DRAG_MIME } from "./CutsceneExplorerPanel";
+import { ACTOR_DRAG_MIME, DIALOGUE_DRAG_MIME } from "./CutsceneExplorerPanel";
 import { SearchSelect } from "../dialogue/SearchSelect";
 
 // Identifies exactly one selectable thing on the timeline -- either a clip (camera shake,
@@ -86,6 +95,9 @@ export function characterPosXKey(characterId: string) {
 export function characterPosYKey(characterId: string) {
   return `characterPosY:${characterId}`;
 }
+export function characterPosActiveKey(characterId: string) {
+  return `characterPosActive:${characterId}`;
+}
 export function dialogueTrackKey() {
   return "dialogue";
 }
@@ -116,7 +128,8 @@ interface ChannelReg {
 
 function rowKeyForRef(ref: ClipRef): string | undefined {
   if (ref.trackKind === "cameraKey") return ref.channel === "x" ? cameraPosXKey() : ref.channel === "y" ? cameraPosYKey() : cameraZoomKey();
-  if (ref.trackKind === "characterKey") return ref.axis === "x" ? characterPosXKey(ref.characterId) : characterPosYKey(ref.characterId);
+  if (ref.trackKind === "characterKey")
+    return ref.axis === "x" ? characterPosXKey(ref.characterId) : ref.axis === "y" ? characterPosYKey(ref.characterId) : characterPosActiveKey(ref.characterId);
   return undefined;
 }
 
@@ -144,7 +157,6 @@ export function CutsceneTimeline({
   const updateEntry = useProjectStore((s) => s.updateEntry);
   const allEntries = useProjectStore((s) => s.project.entries);
   const dialogues = useProjectStore((s) => s.project.dialogues);
-  const characters = allEntries.filter((e) => e.category === "character");
   const boundMap = allEntries.find((e) => e.id === entry.cutsceneMapId);
   const mapCenterCell = boundMap?.map ? { x: boundMap.map.width / 2, y: boundMap.map.height / 2 } : { x: 0, y: 0 };
 
@@ -179,7 +191,7 @@ export function CutsceneTimeline({
   const totalMs = cutsceneTotalDurationMs(entry);
   const timelineWidth = Math.max(400, totalMs * pxPerMs + 120);
 
-  const cast = entry.cutsceneCastCharacterIds ?? [];
+  const cast = entry.cutsceneCast ?? [];
   const tracks = entry.cutsceneTracks ?? [];
   const cameraClips = trackClips(tracks, "camera");
   const dlgClips = trackClips(tracks, "dialogue");
@@ -262,19 +274,27 @@ export function CutsceneTimeline({
     return !!clip && t > clip.startMs && t < clip.startMs + clip.durationMs;
   })();
 
-  const addCastMember = (characterId: string | undefined) => {
-    if (!characterId || cast.includes(characterId)) return;
-    updateEntry(entry.id, { cutsceneCastCharacterIds: [...cast, characterId] });
-  };
-  const removeCastMember = (characterId: string) => {
+  // Always creates a brand-new cast INSTANCE, even for an entryId already placed elsewhere in
+  // the cast -- this is what makes adding the same character/object/item twice ("даже
+  // дублированно") work without any special-casing: each instance gets its own independent
+  // track/keys/color, keyed by its own instanceId (see CutsceneCastMember in types/database.ts).
+  const addCastMember = (entryId: string | undefined) => {
+    if (!entryId) return;
+    const { cast: nextCast, instanceId } = addCastMemberToList(cast, entryId);
     updateEntry(entry.id, {
-      cutsceneCastCharacterIds: cast.filter((id) => id !== characterId),
-      cutsceneTracks: removeCharacterTrack(tracks, characterId),
-      cutsceneCharacterPositionKeys: charPosKeys.filter((k) => k.characterId !== characterId),
+      cutsceneCast: nextCast,
+      cutsceneTracks: ensureCharacterTrack(tracks, instanceId),
+    });
+  };
+  const removeCastMember = (instanceId: string) => {
+    updateEntry(entry.id, {
+      cutsceneCast: removeCastMemberFromList(cast, instanceId),
+      cutsceneTracks: removeCharacterTrack(tracks, instanceId),
+      cutsceneCharacterPositionKeys: charPosKeys.filter((k) => k.characterId !== instanceId),
     });
     if (
-      (selected?.trackKind === "character" && findClipAnywhere(tracks, "character", selected.id)?.track.characterId === characterId) ||
-      (selected?.trackKind === "characterKey" && selected.characterId === characterId)
+      (selected?.trackKind === "character" && findClipAnywhere(tracks, "character", selected.id)?.track.characterId === instanceId) ||
+      (selected?.trackKind === "characterKey" && selected.characterId === instanceId)
     ) {
       onSelect(null);
     }
@@ -649,11 +669,13 @@ export function CutsceneTimeline({
       if (byRow.has(cameraPosXKey())) updateEntry(entry.id, { cutsceneCameraPosX: camPosX.filter((k) => !byRow.get(cameraPosXKey())!.has(k.id)) });
       if (byRow.has(cameraPosYKey())) updateEntry(entry.id, { cutsceneCameraPosY: camPosY.filter((k) => !byRow.get(cameraPosYKey())!.has(k.id)) });
       if (byRow.has(cameraZoomKey())) updateEntry(entry.id, { cutsceneCameraZoomKeys: camZoom.filter((k) => !byRow.get(cameraZoomKey())!.has(k.id)) });
-      const charRowKeys = [...byRow.keys()].filter((rk) => rk.startsWith("characterPosX:") || rk.startsWith("characterPosY:"));
+      const charRowKeys = [...byRow.keys()].filter(
+        (rk) => rk.startsWith("characterPosX:") || rk.startsWith("characterPosY:") || rk.startsWith("characterPosActive:")
+      );
       if (charRowKeys.length > 0) {
         const idsToDelete = new Set<string>();
         byRow.forEach((ids, rk) => {
-          if (rk.startsWith("characterPosX:") || rk.startsWith("characterPosY:")) ids.forEach((id) => idsToDelete.add(id));
+          if (rk.startsWith("characterPosX:") || rk.startsWith("characterPosY:") || rk.startsWith("characterPosActive:")) ids.forEach((id) => idsToDelete.add(id));
         });
         updateEntry(entry.id, { cutsceneCharacterPositionKeys: charPosKeys.filter((k) => !idsToDelete.has(k.id)) });
       }
@@ -718,12 +740,19 @@ export function CutsceneTimeline({
         >
           +
         </button>
-        <div className="w-56">
+        <div className="w-64">
           <SearchSelect
             value={undefined}
             onChange={addCastMember}
-            options={characters.filter((c) => !cast.includes(c.id)).map((c) => ({ id: c.id, label: c.name }))}
-            placeholder="+ Дорожка персонажа…"
+            options={allEntries
+              .filter((e) => e.category === "character" || e.category === "object" || e.category === "item")
+              .map((e) => ({
+                id: e.id,
+                label: e.name,
+                sublabel: e.category === "character" ? "Персонаж" : e.category === "object" ? "Объект" : "Предмет",
+              }))}
+            placeholder="+ Добавить модуль…"
+            searchPlaceholder="Поиск персонажа/объекта/предмета…"
             allowClear={false}
           />
         </div>
@@ -776,8 +805,9 @@ export function CutsceneTimeline({
             </div>
           )}
           {!charsCollapsed &&
-            cast.map((charId) => {
-              const ch = allEntries.find((e) => e.id === charId);
+            cast.map((member) => {
+              const charId = member.instanceId;
+              const label = castLabel(cast, allEntries, charId);
               const objCollapsed = collapsedObjects.has(characterTrackKey(charId));
               return (
                 <div key={charId}>
@@ -792,12 +822,15 @@ export function CutsceneTimeline({
                         title="Цвет дорожки"
                         className="w-3.5 h-3.5 rounded-sm border-0 bg-transparent shrink-0 cursor-pointer p-0"
                       />
-                      <span className="truncate flex-1 font-medium select-none">{ch?.name ?? "?"}</span>
+                      <span className="truncate flex-1 font-medium select-none" title={label}>
+                        {label}
+                      </span>
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
                           removeCastMember(charId);
                         }}
+                        title="Убрать из состава катсцены (не путать со скрытием через ключи «Активен»)"
                         className="opacity-40 hover:opacity-100 shrink-0"
                       >
                         <X size={10} />
@@ -808,6 +841,7 @@ export function CutsceneTimeline({
                     <>
                       {renderTrackHeader(characterPosXKey(charId), "X", true)}
                       {renderTrackHeader(characterPosYKey(charId), "Y", true)}
+                      {renderTrackHeader(characterPosActiveKey(charId), "Активен", true)}
                       {renderTrackHeader(characterTrackKey(charId), "Анимация", true)}
                     </>
                   )}
@@ -824,8 +858,21 @@ export function CutsceneTimeline({
           className="flex-1 overflow-x-auto relative"
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => {
-            const characterId = e.dataTransfer.getData(CHARACTER_DRAG_MIME);
-            if (characterId) addCastMember(characterId);
+            // Dropping an actor (character/object/item) directly onto the timeline -- rather than
+            // the preview stage -- creates its track AND a single "Активен" appear-key at
+            // whichever moment in time the cursor landed on, so the object shows up on stage
+            // starting exactly there instead of being present for the whole cutscene. This is
+            // the drag-and-drop replacement for a "create object" button (see the doc comment on
+            // Entry.cutsceneCast for why a hard create/delete button doesn't make sense here).
+            const entryId = e.dataTransfer.getData(ACTOR_DRAG_MIME);
+            if (!entryId) return;
+            const ms = Math.max(0, Math.round(snap(msFromClientX(e.clientX))));
+            const { cast: nextCast, instanceId } = addCastMemberToList(cast, entryId);
+            updateEntry(entry.id, {
+              cutsceneCast: nextCast,
+              cutsceneTracks: ensureCharacterTrack(tracks, instanceId),
+              cutsceneCharacterPositionKeys: [...charPosKeys, { id: nextId("ckey"), characterId: instanceId, axis: "active", atMs: ms, value: 1 }],
+            });
           }}
         >
           <div ref={contentRef} style={{ width: timelineWidth, position: "relative" }}>
@@ -908,12 +955,14 @@ export function CutsceneTimeline({
             {cast.length > 0 && <div style={{ height: LANE_H }} className="border-t border-[var(--op-7)]" />}
 
             {!charsCollapsed &&
-              cast.map((charId) => {
-                const ch = allEntries.find((e) => e.id === charId);
+              cast.map((member) => {
+                const charId = member.instanceId;
+                const label = castLabel(cast, allEntries, charId);
                 const clips = trackClips(tracks, "character", charId);
                 const color = charColors[charId] ?? TRACK_COLOR.character;
                 const xKeys = charPosKeys.filter((k) => k.characterId === charId && k.axis === "x");
                 const yKeys = charPosKeys.filter((k) => k.characterId === charId && k.axis === "y");
+                const activeKeys = charPosKeys.filter((k) => k.characterId === charId && k.axis === "active");
                 const setAxisKeys = (axis: CharacterPositionAxis, next: Keyframe[]) => {
                   const others = charPosKeys.filter((k) => !(k.characterId === charId && k.axis === axis));
                   updateEntry(entry.id, {
@@ -925,8 +974,14 @@ export function CutsceneTimeline({
                 };
                 const xLocked = lockedTracks.has(characterPosXKey(charId));
                 const yLocked = lockedTracks.has(characterPosYKey(charId));
+                const activeLocked = lockedTracks.has(characterPosActiveKey(charId));
                 registry[characterPosXKey(charId)] = { keys: xKeys, setKeys: (next) => setAxisKeys("x", next), makeRef: (id) => ({ trackKind: "characterKey", characterId: charId, axis: "x", id }) };
                 registry[characterPosYKey(charId)] = { keys: yKeys, setKeys: (next) => setAxisKeys("y", next), makeRef: (id) => ({ trackKind: "characterKey", characterId: charId, axis: "y", id }) };
+                registry[characterPosActiveKey(charId)] = {
+                  keys: activeKeys,
+                  setKeys: (next) => setAxisKeys("active", next),
+                  makeRef: (id) => ({ trackKind: "characterKey", characterId: charId, axis: "active", id }),
+                };
                 const objCollapsed = collapsedObjects.has(characterTrackKey(charId));
                 return (
                   <div key={charId}>
@@ -988,6 +1043,37 @@ export function CutsceneTimeline({
                           )}
                         </div>
                         <div
+                          ref={(el) => {
+                            if (el) channelRowEls.current.set(characterPosActiveKey(charId), el);
+                            else channelRowEls.current.delete(characterPosActiveKey(charId));
+                          }}
+                          style={{ height: LANE_H }}
+                          className={`relative border-t border-[var(--op-7)] ${hiddenTracks.has(characterPosActiveKey(charId)) ? "opacity-40" : ""}`}
+                          onMouseDown={(e) => startMarquee(e, registry)}
+                          onDoubleClick={(e) => {
+                            if (activeLocked) return;
+                            const ms = Math.max(0, Math.round(msFromClientX(e.clientX)));
+                            // Double-click toggles: default the new key's value to the OPPOSITE
+                            // of whatever this actor already resolves to at this moment, so a
+                            // click on an "active" stretch adds a disappear-key and vice versa.
+                            const currentlyActive = resolveActiveChannel(activeKeys, ms);
+                            setAxisKeys("active", [...activeKeys, { id: nextId("ckey"), atMs: ms, value: currentlyActive ? 0 : 1 }]);
+                          }}
+                          title="Ключи появления/исчезновения -- двойной клик добавляет переключатель в этот момент"
+                        >
+                          {activeKeys.map((k) =>
+                            renderKeyframe(
+                              k.id,
+                              { trackKind: "characterKey", characterId: charId, axis: "active", id: k.id },
+                              k.atMs,
+                              k.value >= 0.5 ? "#59b37a" : "#8b8b8b",
+                              activeLocked,
+                              (atMs) => setAxisKeys("active", activeKeys.map((kk) => (kk.id === k.id ? { ...kk, atMs } : kk))),
+                              registry
+                            )
+                          )}
+                        </div>
+                        <div
                           style={{ height: LANE_H }}
                           className={`relative border-t border-[var(--op-7)] ${hiddenTracks.has(characterTrackKey(charId)) ? "opacity-40" : ""}`}
                           onDoubleClick={(e) => {
@@ -1007,7 +1093,7 @@ export function CutsceneTimeline({
                               { trackKind: "character", id: c.id },
                               c.startMs,
                               c.durationMs,
-                              `${ch?.name ?? "?"} — ${anim}`,
+                              `${label} — ${anim}`,
                               color,
                               true,
                               lockedTracks.has(characterTrackKey(charId)),

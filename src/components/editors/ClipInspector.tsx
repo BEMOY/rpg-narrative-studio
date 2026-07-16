@@ -10,7 +10,7 @@ import type {
   Keyframe,
 } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
-import { findClipAnywhere, trackClips, withTrackClips } from "../../lib/cutsceneTracks";
+import { castLabel, findClipAnywhere, trackClips, withTrackClips } from "../../lib/cutsceneTracks";
 import { ThemedSelect } from "../common/ThemedSelect";
 import { SearchSelect } from "../dialogue/SearchSelect";
 import { EVENT_KIND_LABEL } from "./CutsceneTimeline";
@@ -271,11 +271,11 @@ export function ClipInspector({
       updateEntry(entry.id, { cutsceneTracks: withTrackClips(tracks, "character", clips.filter((c) => c.id !== clip.id), characterId) });
       onClose();
     };
-    const character = allEntries.find((e) => e.id === characterId);
+    const actorLabel = castLabel(entry.cutsceneCast ?? [], allEntries, characterId);
     return (
       <div className="glass rounded-lg p-4 space-y-2">
         <div className="flex items-center justify-between">
-          <div className="text-xs uppercase tracking-wider text-[var(--op-35)]">Персонаж — анимация{character ? ` (${character.name})` : ""}</div>
+          <div className="text-xs uppercase tracking-wider text-[var(--op-35)]">Персонаж — анимация ({actorLabel})</div>
           <button onClick={remove} className="text-[var(--op-40)] hover:text-[var(--op-80)]">
             <Trash2 size={13} />
           </button>
@@ -337,19 +337,46 @@ export function ClipInspector({
     const posKeys = entry.cutsceneCharacterPositionKeys ?? [];
     const key = posKeys.find((k) => k.id === selected.id);
     if (!key) return null;
-    const character = allEntries.find((e) => e.id === key.characterId);
+    const cast = entry.cutsceneCast ?? [];
+    const actorLabel = castLabel(cast, allEntries, key.characterId);
     const patch = (p: Partial<CharacterPositionKeyframe>) =>
       updateEntry(entry.id, { cutsceneCharacterPositionKeys: posKeys.map((k) => (k.id === key.id ? { ...k, ...p } : k)) });
     const remove = () => {
       updateEntry(entry.id, { cutsceneCharacterPositionKeys: posKeys.filter((k) => k.id !== key.id) });
       onClose();
     };
+    if (key.axis === "active") {
+      // Step channel (see resolveActiveChannel in lib/cutscenePreview.ts) -- no in-between
+      // value, so this shows a plain appear/disappear toggle instead of a numeric field, and
+      // skips the easing dropdown entirely (a presence switch has nothing to ease between).
+      const isActive = key.value >= 0.5;
+      return (
+        <div className="glass rounded-lg p-4 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="text-xs uppercase tracking-wider text-[var(--op-35)]">{actorLabel} — ключ «Активен»</div>
+            <button onClick={remove} className="text-[var(--op-40)] hover:text-[var(--op-80)]">
+              <Trash2 size={13} />
+            </button>
+          </div>
+          <div className="flex items-center gap-3 flex-wrap">
+            <NumField label="Время мс" value={key.atMs} onChange={(v) => patch({ atMs: Math.max(0, v) })} />
+            <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1.5">
+              <input type="checkbox" checked={isActive} onChange={(e) => patch({ value: e.target.checked ? 1 : 0 })} />
+              Активен с этого момента
+            </label>
+          </div>
+          <div className="text-[10px] text-[var(--op-30)]">
+            С этой точки актёр {isActive ? "появляется на сцене" : "исчезает со сцены"} и остаётся так до следующего ключа «Активен».
+          </div>
+        </div>
+      );
+    }
     const axisLabel = key.axis === "x" ? "X" : "Y";
     return (
       <div className="glass rounded-lg p-4 space-y-2">
         <div className="flex items-center justify-between">
           <div className="text-xs uppercase tracking-wider text-[var(--op-35)]">
-            {character?.name ?? "Персонаж"} — ключ {axisLabel}
+            {actorLabel} — ключ {axisLabel}
           </div>
           <button onClick={remove} className="text-[var(--op-40)] hover:text-[var(--op-80)]">
             <Trash2 size={13} />
