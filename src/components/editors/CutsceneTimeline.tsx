@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { X, Eye, EyeOff, Lock, Unlock, ChevronDown, ChevronRight, Flag, Scissors, Magnet } from "lucide-react";
 import type { CharacterPositionAxis, CutsceneClip, CutsceneTrackKind, Entry, Keyframe } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
@@ -53,7 +53,14 @@ const TRACK_COLOR = {
 //    point in time, draggable only in TIME (their VALUE is edited in the Inspector, or by
 //    dragging the actual object/camera on the live preview stage -- see CutscenePreview.tsx).
 //    These are channels, a different concept from tracks/clips (see resolveChannel in
-//    lib/cutscenePreview.ts) -- untouched by the Track+Clip+Component rework.
+//    lib/cutscenePreview.ts) -- untouched by the Track+Clip+Component rework. A click-drag on a
+//    channel row's EMPTY background draws a marquee/rubber-band box (same interaction as the
+//    Dialogue graph editor's node canvas) selecting every key it overlaps, in time AND across
+//    however many channel rows the box vertically spans; dragging any one of the selected
+//    diamonds afterwards moves the whole group together, and Delete/Backspace removes them all.
+// Both the Camera group and each individual character can be collapsed down to just their own
+// header row (hiding their X/Y/Zoom/Animation sub-rows) to keep the timeline from growing too
+// tall once several characters are in the cast.
 // The overall timeline LENGTH is always derived live from cutsceneTotalDurationMs (the furthest
 // any clip or keyframe reaches) -- there is no separately-stored "cutscene duration".
 // Track visibility/lock is ephemeral editing-session UI state (not persisted to project data).
@@ -83,6 +90,21 @@ export function dialogueTrackKey() {
 }
 export function audioFxTrackKey() {
   return "audiofx";
+}
+
+// One registered keyframe channel row -- everything the marquee/group-drag/delete logic needs to
+// read and write that row's keys, keyed by the same row-key strings used for hidden/locked track
+// state (cameraPosXKey(), characterPosYKey(id), ...).
+interface ChannelReg {
+  keys: Keyframe[];
+  setKeys: (next: Keyframe[]) => void;
+  makeRef: (id: string) => ClipRef;
+}
+
+function rowKeyForRef(ref: ClipRef): string | undefined {
+  if (ref.trackKind === "cameraKey") return ref.channel === "x" ? cameraPosXKey() : ref.channel === "y" ? cameraPosYKey() : cameraZoomKey();
+  if (ref.trackKind === "characterKey") return ref.axis === "x" ? characterPosXKey(ref.characterId) : characterPosYKey(ref.characterId);
+  return undefined;
 }
 
 export function CutsceneTimeline({
@@ -116,13 +138,27 @@ export function CutsceneTimeline({
   const [pxPerMs, setPxPerMs] = useState(0.08);
   // Collapsing the whole "Персонажи" group is a purely visual/session convenience (like
   // collapsing a folder) -- not persisted, matches the mockup's Characters > Name grouping idea
-  // without needing a real generic nested-track-folder system.
+  // without needing a real generic nested-track-folder system. Collapsing the Camera group or ONE
+  // individual character (collapsedObjects) is finer-grained -- hides just that object's own
+  // X/Y/Zoom/Animation sub-rows so a busy cast doesn't force the whole timeline to keep growing.
   const [charsCollapsed, setCharsCollapsed] = useState(false);
+  const [collapsedObjects, setCollapsedObjects] = useState<Set<string>>(new Set());
+  const toggleObjectCollapsed = (key: string) =>
+    setCollapsedObjects((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
   // Snap-to-frame is an editing-session convenience (like pxPerMs zoom) rather than persisted
   // project data -- when on, dragging/resizing a clip OR keyframe rounds its time to the nearest
   // whole-frame boundary (1000/fps ms) instead of an arbitrary pixel-derived ms value.
   const [snapToFrame, setSnapToFrame] = useState(true);
   const laneAreaRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  // DOM element for every currently-rendered channel row, keyed by its row-key string -- used to
+  // hit-test the marquee box against each row's live on-screen vertical extent.
+  const channelRowEls = useRef(new Map<string, HTMLDivElement>());
   const fps = entry.cutsceneFps ?? 60;
   const frameMs = 1000 / fps;
   const snap = (ms: number) => (snapToFrame ? Math.round(ms / frameMs) * frameMs : ms);
@@ -147,6 +183,15 @@ export function CutsceneTimeline({
     setTracks(withTrackClips(tracks, kind, clips, characterId));
   const setCharColor = (characterId: string, color: string) =>
     updateEntry(entry.id, { cutsceneCharacterTrackColors: { ...charColors, [characterId]: color } });
+
+  // Marquee/rubber-band multi-select over KEYFRAMES only (clip bars keep their existing single-
+  // select), same interaction as DialogueCanvas's node marquee: left-drag on empty channel-row
+  // background draws a box in content-local (scroll-independent) coordinates; every key whose
+  // time falls in the box's ms range AND whose row vertically overlaps it gets selected live as
+  // the box grows. `boxSelection` is also what a *single* keyframe click sets (as a one-element
+  // array) so Delete/Backspace and group-drag work uniformly whether one key or many are selected.
+  const [marqueeBox, setMarqueeBox] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  const [boxSelection, setBoxSelection] = useState<ClipRef[]>([]);
 
   const addMarker = async () => {
     const label = await themedPrompt("Название маркера", "");
@@ -225,6 +270,7 @@ export function CutsceneTimeline({
   };
 
   const scrubStart = (e: React.MouseEvent) => {
+    e.preventDefault(); // otherwise the browser starts a native text-selection drag on mousedown
     onScrub(msFromClientX(e.clientX));
     const onMove = (ev: MouseEvent) => onScrub(msFromClientX(ev.clientX));
     const onUp = () => {
@@ -260,8 +306,9 @@ export function CutsceneTimeline({
     window.addEventListener("mouseup", onUp);
   };
 
-  // Dragging a KEYFRAME diamond only ever changes WHEN it happens, never its value -- value is
-  // edited in the Inspector (or by dragging the actual object/camera on the live preview stage).
+  // Dragging a single KEYFRAME diamond only ever changes WHEN it happens, never its value --
+  // value is edited in the Inspector (or by dragging the actual object/camera on the live preview
+  // stage).
   const startKeyDrag = (e: React.MouseEvent, origAtMs: number, onChange: (atMs: number) => void) => {
     e.stopPropagation();
     e.preventDefault();
@@ -271,6 +318,99 @@ export function CutsceneTimeline({
       onChange(Math.max(0, Math.round(snap(origAtMs + deltaMs))));
     };
     const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  // Dragging any diamond that's part of a multi-key box selection moves EVERY selected key by the
+  // same delta, each relative to its own original time -- so the whole group keeps its shape
+  // instead of collapsing onto the one you grabbed.
+  const startGroupKeyDrag = (e: React.MouseEvent, registry: Record<string, ChannelReg>, group: ClipRef[]) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const startX = e.clientX;
+    const origins: { ref: ClipRef; atMs: number }[] = [];
+    for (const ref of group) {
+      const rowKey = rowKeyForRef(ref);
+      const reg = rowKey ? registry[rowKey] : undefined;
+      const key = reg?.keys.find((k) => "id" in ref && k.id === ref.id);
+      if (reg && key) origins.push({ ref, atMs: key.atMs });
+    }
+    const apply = (deltaMs: number) => {
+      const byRow = new Map<string, { id: string; atMs: number }[]>();
+      for (const o of origins) {
+        const rowKey = rowKeyForRef(o.ref);
+        if (!rowKey || !("id" in o.ref)) continue;
+        if (!byRow.has(rowKey)) byRow.set(rowKey, []);
+        byRow.get(rowKey)!.push({ id: o.ref.id, atMs: o.atMs });
+      }
+      byRow.forEach((items, rowKey) => {
+        const reg = registry[rowKey];
+        if (!reg) return;
+        const origMap = new Map(items.map((i) => [i.id, i.atMs]));
+        reg.setKeys(reg.keys.map((k) => (origMap.has(k.id) ? { ...k, atMs: Math.max(0, Math.round(snap(origMap.get(k.id)! + deltaMs))) } : k)));
+      });
+    };
+    const onMove = (ev: MouseEvent) => apply((ev.clientX - startX) / pxPerMs);
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  // Marquee drag: mousedown directly on a channel row's own empty background (never fires when
+  // the mousedown target is a child element like a keyframe diamond, since those call
+  // stopPropagation on their own onMouseDown already, and this also double-checks via the
+  // target===currentTarget guard) starts a rubber-band box in content-local coordinates --
+  // content-local because contentRef IS the horizontally-scrolled element itself, so subtracting
+  // its own live bounding rect automatically accounts for scroll position with no extra math.
+  const startMarquee = (e: React.MouseEvent, registry: Record<string, ChannelReg>) => {
+    if (e.button !== 0 || e.target !== e.currentTarget) return;
+    const contentRect = contentRef.current?.getBoundingClientRect();
+    if (!contentRect) return;
+    e.preventDefault();
+    onSelect(null);
+    const startX = e.clientX - contentRect.left;
+    const startY = e.clientY - contentRect.top;
+    const initial = { x0: startX, y0: startY, x1: startX, y1: startY };
+
+    const compute = (box: typeof initial): ClipRef[] => {
+      const minX = Math.min(box.x0, box.x1);
+      const maxX = Math.max(box.x0, box.x1);
+      const minY = Math.min(box.y0, box.y1);
+      const maxY = Math.max(box.y0, box.y1);
+      const minMs = minX / pxPerMs;
+      const maxMs = maxX / pxPerMs;
+      const picked: ClipRef[] = [];
+      channelRowEls.current.forEach((el, rowKey) => {
+        if (lockedTracks.has(rowKey)) return;
+        const r = el.getBoundingClientRect();
+        const top = r.top - contentRect.top;
+        const bottom = r.bottom - contentRect.top;
+        if (bottom < minY || top > maxY) return;
+        const reg = registry[rowKey];
+        if (!reg) return;
+        for (const k of reg.keys) {
+          if (k.atMs >= minMs && k.atMs <= maxMs) picked.push(reg.makeRef(k.id));
+        }
+      });
+      return picked;
+    };
+
+    setMarqueeBox(initial);
+    setBoxSelection(compute(initial));
+    const onMove = (ev: MouseEvent) => {
+      const next = { ...initial, x1: ev.clientX - contentRect.left, y1: ev.clientY - contentRect.top };
+      setMarqueeBox(next);
+      setBoxSelection(compute(next));
+    };
+    const onUp = () => {
+      setMarqueeBox(null);
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
@@ -306,6 +446,7 @@ export function CutsceneTimeline({
         key={key}
         onMouseDown={(e) => {
           onSelect(ref);
+          setBoxSelection([]);
           if (!locked) startClipDrag(e, "move", startMs, durationMs, onChange);
         }}
         className={`absolute top-1 bottom-1 rounded-md px-1.5 flex items-center text-[10px] text-white overflow-hidden select-none ${
@@ -319,6 +460,7 @@ export function CutsceneTimeline({
           <div
             onMouseDown={(e) => {
               onSelect(ref);
+              setBoxSelection([]);
               startClipDrag(e, "resize", startMs, durationMs, onChange);
             }}
             className="absolute right-0 top-0 bottom-0 w-1.5 cursor-ew-resize bg-white/25 hover:bg-white/40"
@@ -328,20 +470,36 @@ export function CutsceneTimeline({
     );
   };
 
-  // A single diamond keyframe marker -- rotated square, centered on its atMs, draggable in time
-  // only (see startKeyDrag).
-  const renderKeyframe = (key: string, ref: ClipRef, atMs: number, color: string, locked: boolean, onDrag: (atMs: number) => void) => {
-    const isSel =
-      selected?.trackKind === ref.trackKind && "id" in selected && "id" in ref && selected.id === (ref as { id: string }).id;
+  // A single diamond keyframe marker -- rotated square, centered on its atMs. Dragging moves it
+  // in TIME only; if it's part of a multi-key box selection, dragging it moves the whole group
+  // instead (see startGroupKeyDrag).
+  const renderKeyframe = (
+    keyStr: string,
+    ref: ClipRef,
+    atMs: number,
+    color: string,
+    locked: boolean,
+    onDrag: (atMs: number) => void,
+    registry: Record<string, ChannelReg>
+  ) => {
+    const inBoxSelection = boxSelection.some((r) => "id" in r && "id" in ref && r.id === ref.id);
+    const isSel = (selected?.trackKind === ref.trackKind && "id" in selected && "id" in ref && selected.id === ref.id) || inBoxSelection;
     return (
       <div
-        key={key}
+        key={keyStr}
         onMouseDown={(e) => {
-          onSelect(ref);
-          if (!locked) startKeyDrag(e, atMs, onDrag);
+          e.stopPropagation();
+          const groupDrag = inBoxSelection && boxSelection.length > 1;
+          if (!groupDrag) {
+            onSelect(ref);
+            setBoxSelection([ref]);
+          }
+          if (locked) return;
+          if (groupDrag) startGroupKeyDrag(e, registry, boxSelection);
+          else startKeyDrag(e, atMs, onDrag);
         }}
         title={`${(atMs / 1000).toFixed(2)}s`}
-        className={`absolute top-1/2 ${locked ? "cursor-not-allowed" : "cursor-ew-resize"}`}
+        className={`absolute top-1/2 select-none ${locked ? "cursor-not-allowed" : "cursor-ew-resize"}`}
         style={{
           left: atMs * pxPerMs - DIAMOND / 2,
           width: DIAMOND,
@@ -351,6 +509,7 @@ export function CutsceneTimeline({
           transform: "rotate(45deg)",
           border: isSel ? "1.5px solid white" : "1px solid rgba(0,0,0,0.3)",
           borderRadius: 2,
+          boxShadow: inBoxSelection ? "0 0 0 2px var(--accent, #8b7bff)" : undefined,
         }}
       />
     );
@@ -386,13 +545,33 @@ export function CutsceneTimeline({
       className={`flex items-center gap-1.5 ${indent ? "pl-5" : "px-2"} pr-2 text-[10px] text-[var(--op-50)] border-t border-[var(--op-7)]`}
     >
       {headerToggleButtons(key)}
-      <span className="truncate">{label}</span>
+      <span className="truncate select-none">{label}</span>
     </div>
   );
 
+  // Collapsible group header row (Камера / one character's name) -- a chevron toggling whether
+  // that object's own X/Y/Zoom/Animation sub-rows are shown at all, independent of the master
+  // "Персонажи" group collapse (which folds every character at once).
+  const renderObjectHeader = (objectKey: string, content: React.ReactNode) => {
+    const collapsed = collapsedObjects.has(objectKey);
+    return (
+      <div
+        style={{ height: LANE_H }}
+        className="flex items-center gap-1 px-1 border-t border-[var(--op-7)] cursor-pointer select-none"
+        onClick={() => toggleObjectCollapsed(objectKey)}
+        title={collapsed ? "Развернуть каналы" : "Свернуть каналы"}
+      >
+        <span className="shrink-0 text-[var(--op-45)]">{collapsed ? <ChevronRight size={11} /> : <ChevronDown size={11} />}</span>
+        <div className="flex-1 min-w-0">{content}</div>
+      </div>
+    );
+  };
+
   // Shared row for a keyframe channel lane (camera X/Y/zoom or one character's X/Y) -- handles
   // both the header cell AND the lane cell for a given Keyframe[] array + setter, so camera and
-  // character channels can reuse the exact same rendering/interaction code.
+  // character channels can reuse the exact same rendering/interaction code. Also registers the
+  // row's ChannelReg (for marquee/group-drag/delete) and its live DOM element (for marquee hit
+  // testing) into the maps passed in.
   const renderChannelRow = (
     trackKeyStr: string,
     label: string,
@@ -401,15 +580,22 @@ export function CutsceneTimeline({
     makeRef: (id: string) => ClipRef,
     color: string,
     defaultValue: number,
+    registry: Record<string, ChannelReg>,
     indent = false
   ) => {
+    registry[trackKeyStr] = { keys, setKeys, makeRef };
     const locked = lockedTracks.has(trackKeyStr);
     const header = renderTrackHeader(trackKeyStr, label, indent);
     const lane = (
       <div
         key={trackKeyStr}
+        ref={(el) => {
+          if (el) channelRowEls.current.set(trackKeyStr, el);
+          else channelRowEls.current.delete(trackKeyStr);
+        }}
         style={{ height: LANE_H }}
         className={`relative border-t border-[var(--op-7)] ${hiddenTracks.has(trackKeyStr) ? "opacity-40" : ""}`}
+        onMouseDown={(e) => startMarquee(e, registry)}
         onDoubleClick={(e) => {
           if (locked) return;
           const ms = Math.max(0, Math.round(msFromClientX(e.clientX)));
@@ -418,44 +604,88 @@ export function CutsceneTimeline({
           setKeys([...keys, { id: nextId("key"), atMs: ms, value }]);
         }}
       >
-        {keys.map((k) =>
-          renderKeyframe(k.id, makeRef(k.id), k.atMs, color, locked, (atMs) => setKeys(keys.map((kk) => (kk.id === k.id ? { ...kk, atMs } : kk))))
-        )}
+        {keys.map((k) => renderKeyframe(k.id, makeRef(k.id), k.atMs, color, locked, (atMs) => setKeys(keys.map((kk) => (kk.id === k.id ? { ...kk, atMs } : kk))), registry))}
       </div>
     );
     return { header, lane };
   };
 
+  // Delete/Backspace removes every key in the current box selection (works for both a single
+  // click-selected key and a real multi-key marquee selection, since both populate boxSelection
+  // the same way) -- skipped while focus is inside a text input/textarea so normal text editing
+  // elsewhere in the app is unaffected.
+  useEffect(() => {
+    if (boxSelection.length === 0) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Delete" && e.key !== "Backspace") return;
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
+      e.preventDefault();
+      const byRow = new Map<string, Set<string>>();
+      for (const ref of boxSelection) {
+        const rowKey = rowKeyForRef(ref);
+        if (!rowKey || !("id" in ref)) continue;
+        if (!byRow.has(rowKey)) byRow.set(rowKey, new Set());
+        byRow.get(rowKey)!.add(ref.id);
+      }
+      if (byRow.has(cameraPosXKey())) updateEntry(entry.id, { cutsceneCameraPosX: camPosX.filter((k) => !byRow.get(cameraPosXKey())!.has(k.id)) });
+      if (byRow.has(cameraPosYKey())) updateEntry(entry.id, { cutsceneCameraPosY: camPosY.filter((k) => !byRow.get(cameraPosYKey())!.has(k.id)) });
+      if (byRow.has(cameraZoomKey())) updateEntry(entry.id, { cutsceneCameraZoomKeys: camZoom.filter((k) => !byRow.get(cameraZoomKey())!.has(k.id)) });
+      const charRowKeys = [...byRow.keys()].filter((rk) => rk.startsWith("characterPosX:") || rk.startsWith("characterPosY:"));
+      if (charRowKeys.length > 0) {
+        const idsToDelete = new Set<string>();
+        byRow.forEach((ids, rk) => {
+          if (rk.startsWith("characterPosX:") || rk.startsWith("characterPosY:")) ids.forEach((id) => idsToDelete.add(id));
+        });
+        updateEntry(entry.id, { cutsceneCharacterPositionKeys: charPosKeys.filter((k) => !idsToDelete.has(k.id)) });
+      }
+      setBoxSelection([]);
+      onSelect(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boxSelection, camPosX, camPosY, camZoom, charPosKeys]);
+
+  const registry: Record<string, ChannelReg> = {};
+
   const camPosXRow = renderChannelRow(
     cameraPosXKey(),
-    "Камера: X",
+    "X",
     camPosX,
     (next) => updateEntry(entry.id, { cutsceneCameraPosX: next }),
     (id) => ({ trackKind: "cameraKey", channel: "x", id }),
     TRACK_COLOR.camera,
-    mapCenterCell.x
+    mapCenterCell.x,
+    registry,
+    true
   );
   const camPosYRow = renderChannelRow(
     cameraPosYKey(),
-    "Камера: Y",
+    "Y",
     camPosY,
     (next) => updateEntry(entry.id, { cutsceneCameraPosY: next }),
     (id) => ({ trackKind: "cameraKey", channel: "y", id }),
     TRACK_COLOR.camera,
-    mapCenterCell.y
+    mapCenterCell.y,
+    registry,
+    true
   );
   const camZoomRow = renderChannelRow(
     cameraZoomKey(),
-    "Камера: Zoom",
+    "Zoom",
     camZoom,
     (next) => updateEntry(entry.id, { cutsceneCameraZoomKeys: next }),
     (id) => ({ trackKind: "cameraKey", channel: "zoom", id }),
     TRACK_COLOR.camera,
-    1
+    1,
+    registry,
+    true
   );
+  const cameraCollapsed = collapsedObjects.has(cameraTrackKey());
 
   return (
-    <div className="glass rounded-lg p-4 space-y-2">
+    <div className="glass rounded-lg p-4 space-y-2 select-none">
       <div className="flex items-center gap-2 flex-wrap">
         <div className="text-xs uppercase tracking-wider text-[var(--op-35)] flex-1">Таймлайн</div>
         <button
@@ -508,14 +738,19 @@ export function CutsceneTimeline({
       <div className="flex border border-[var(--op-10)] rounded-md overflow-hidden">
         <div className="shrink-0 bg-[var(--op-4)] border-r border-[var(--op-10)]" style={{ width: LABEL_W }}>
           <div style={{ height: RULER_H }} />
-          {renderTrackHeader(cameraTrackKey(), "Камера: Тряска")}
-          {camPosXRow.header}
-          {camPosYRow.header}
-          {camZoomRow.header}
+          {renderObjectHeader(cameraTrackKey(), <span className="truncate select-none">Камера</span>)}
+          {!cameraCollapsed && (
+            <>
+              {renderTrackHeader(cameraTrackKey(), "Тряска", true)}
+              {camPosXRow.header}
+              {camPosYRow.header}
+              {camZoomRow.header}
+            </>
+          )}
           {cast.length > 0 && (
             <div
               style={{ height: LANE_H }}
-              className="flex items-center gap-1 px-2 text-[10px] text-[var(--op-45)] border-t border-[var(--op-7)] cursor-pointer hover:text-[var(--op-70)]"
+              className="flex items-center gap-1 px-2 text-[10px] text-[var(--op-45)] border-t border-[var(--op-7)] cursor-pointer hover:text-[var(--op-70)] select-none"
               onClick={() => setCharsCollapsed((v) => !v)}
             >
               {charsCollapsed ? <ChevronRight size={11} /> : <ChevronDown size={11} />}
@@ -525,27 +760,39 @@ export function CutsceneTimeline({
           {!charsCollapsed &&
             cast.map((charId) => {
               const ch = allEntries.find((e) => e.id === charId);
+              const objCollapsed = collapsedObjects.has(characterTrackKey(charId));
               return (
                 <div key={charId}>
-                  <div
-                    style={{ height: LANE_H }}
-                    className="flex items-center gap-1 pl-4 pr-2 text-[10px] text-[var(--op-50)] border-t border-[var(--op-7)]"
-                  >
-                    <input
-                      type="color"
-                      value={charColors[charId] ?? TRACK_COLOR.character}
-                      onChange={(e) => setCharColor(charId, e.target.value)}
-                      title="Цвет дорожки"
-                      className="w-3.5 h-3.5 rounded-sm border-0 bg-transparent shrink-0 cursor-pointer p-0"
-                    />
-                    <span className="truncate flex-1 font-medium">{ch?.name ?? "?"}</span>
-                    <button onClick={() => removeCastMember(charId)} className="opacity-40 hover:opacity-100 shrink-0">
-                      <X size={10} />
-                    </button>
-                  </div>
-                  {renderTrackHeader(characterPosXKey(charId), "X", true)}
-                  {renderTrackHeader(characterPosYKey(charId), "Y", true)}
-                  {renderTrackHeader(characterTrackKey(charId), "Анимация", true)}
+                  {renderObjectHeader(
+                    characterTrackKey(charId),
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="color"
+                        value={charColors[charId] ?? TRACK_COLOR.character}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => setCharColor(charId, e.target.value)}
+                        title="Цвет дорожки"
+                        className="w-3.5 h-3.5 rounded-sm border-0 bg-transparent shrink-0 cursor-pointer p-0"
+                      />
+                      <span className="truncate flex-1 font-medium select-none">{ch?.name ?? "?"}</span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          removeCastMember(charId);
+                        }}
+                        className="opacity-40 hover:opacity-100 shrink-0"
+                      >
+                        <X size={10} />
+                      </button>
+                    </div>
+                  )}
+                  {!objCollapsed && (
+                    <>
+                      {renderTrackHeader(characterPosXKey(charId), "X", true)}
+                      {renderTrackHeader(characterPosYKey(charId), "Y", true)}
+                      {renderTrackHeader(characterTrackKey(charId), "Анимация", true)}
+                    </>
+                  )}
                 </div>
               );
             })}
@@ -562,8 +809,8 @@ export function CutsceneTimeline({
             if (characterId) addCastMember(characterId);
           }}
         >
-          <div style={{ width: timelineWidth, position: "relative" }}>
-            <div onMouseDown={scrubStart} style={{ height: RULER_H }} className="relative border-b border-[var(--op-10)] cursor-pointer bg-[var(--op-3)]">
+          <div ref={contentRef} style={{ width: timelineWidth, position: "relative" }}>
+            <div onMouseDown={scrubStart} style={{ height: RULER_H }} className="relative border-b border-[var(--op-10)] cursor-pointer bg-[var(--op-3)] select-none">
               {ticks.map((tick) => (
                 <div
                   key={tick.ms}
@@ -604,31 +851,32 @@ export function CutsceneTimeline({
                 setClipsFor("camera", [...cameraClips, { id: nextId("cam"), startMs: ms, durationMs: 1000, component: { kind: "shake" } }]);
               }}
             >
-              {cameraClips.map((c) =>
-                renderClip(
-                  c.id,
-                  { trackKind: "camera", id: c.id },
-                  c.startMs,
-                  c.durationMs,
-                  "Тряска",
-                  TRACK_COLOR.camera,
-                  true,
-                  lockedTracks.has(cameraTrackKey()),
-                  (p) =>
-                    setClipsFor(
-                      "camera",
-                      cameraClips.map((cc) =>
-                        cc.id === c.id
-                          ? { ...cc, ...(p.start !== undefined ? { startMs: p.start } : {}), ...(p.dur !== undefined ? { durationMs: p.dur } : {}) }
-                          : cc
+              {!cameraCollapsed &&
+                cameraClips.map((c) =>
+                  renderClip(
+                    c.id,
+                    { trackKind: "camera", id: c.id },
+                    c.startMs,
+                    c.durationMs,
+                    "Тряска",
+                    TRACK_COLOR.camera,
+                    true,
+                    lockedTracks.has(cameraTrackKey()),
+                    (p) =>
+                      setClipsFor(
+                        "camera",
+                        cameraClips.map((cc) =>
+                          cc.id === c.id
+                            ? { ...cc, ...(p.start !== undefined ? { startMs: p.start } : {}), ...(p.dur !== undefined ? { durationMs: p.dur } : {}) }
+                            : cc
+                        )
                       )
-                    )
-                )
-              )}
+                  )
+                )}
             </div>
-            {camPosXRow.lane}
-            {camPosYRow.lane}
-            {camZoomRow.lane}
+            {!cameraCollapsed && camPosXRow.lane}
+            {!cameraCollapsed && camPosYRow.lane}
+            {!cameraCollapsed && camZoomRow.lane}
 
             {cast.length > 0 && <div style={{ height: LANE_H }} className="border-t border-[var(--op-7)]" />}
 
@@ -650,88 +898,107 @@ export function CutsceneTimeline({
                 };
                 const xLocked = lockedTracks.has(characterPosXKey(charId));
                 const yLocked = lockedTracks.has(characterPosYKey(charId));
+                registry[characterPosXKey(charId)] = { keys: xKeys, setKeys: (next) => setAxisKeys("x", next), makeRef: (id) => ({ trackKind: "characterKey", characterId: charId, axis: "x", id }) };
+                registry[characterPosYKey(charId)] = { keys: yKeys, setKeys: (next) => setAxisKeys("y", next), makeRef: (id) => ({ trackKind: "characterKey", characterId: charId, axis: "y", id }) };
+                const objCollapsed = collapsedObjects.has(characterTrackKey(charId));
                 return (
                   <div key={charId}>
                     <div style={{ height: LANE_H }} className="border-t border-[var(--op-7)]" />
-                    <div
-                      style={{ height: LANE_H }}
-                      className={`relative border-t border-[var(--op-7)] ${hiddenTracks.has(characterPosXKey(charId)) ? "opacity-40" : ""}`}
-                      onDoubleClick={(e) => {
-                        if (xLocked) return;
-                        const ms = Math.max(0, Math.round(msFromClientX(e.clientX)));
-                        const value = resolveChannel(xKeys, ms, mapCenterCell.x);
-                        setAxisKeys("x", [...xKeys, { id: nextId("ckey"), atMs: ms, value }]);
-                      }}
-                    >
-                      {xKeys.map((k) =>
-                        renderKeyframe(
-                          k.id,
-                          { trackKind: "characterKey", characterId: charId, axis: "x", id: k.id },
-                          k.atMs,
-                          color,
-                          xLocked,
-                          (atMs) => setAxisKeys("x", xKeys.map((kk) => (kk.id === k.id ? { ...kk, atMs } : kk)))
-                        )
-                      )}
-                    </div>
-                    <div
-                      style={{ height: LANE_H }}
-                      className={`relative border-t border-[var(--op-7)] ${hiddenTracks.has(characterPosYKey(charId)) ? "opacity-40" : ""}`}
-                      onDoubleClick={(e) => {
-                        if (yLocked) return;
-                        const ms = Math.max(0, Math.round(msFromClientX(e.clientX)));
-                        const value = resolveChannel(yKeys, ms, mapCenterCell.y);
-                        setAxisKeys("y", [...yKeys, { id: nextId("ckey"), atMs: ms, value }]);
-                      }}
-                    >
-                      {yKeys.map((k) =>
-                        renderKeyframe(
-                          k.id,
-                          { trackKind: "characterKey", characterId: charId, axis: "y", id: k.id },
-                          k.atMs,
-                          color,
-                          yLocked,
-                          (atMs) => setAxisKeys("y", yKeys.map((kk) => (kk.id === k.id ? { ...kk, atMs } : kk)))
-                        )
-                      )}
-                    </div>
-                    <div
-                      style={{ height: LANE_H }}
-                      className={`relative border-t border-[var(--op-7)] ${hiddenTracks.has(characterTrackKey(charId)) ? "opacity-40" : ""}`}
-                      onDoubleClick={(e) => {
-                        if (lockedTracks.has(characterTrackKey(charId))) return;
-                        const ms = Math.max(0, Math.round(msFromClientX(e.clientX)));
-                        setClipsFor(
-                          "character",
-                          [...clips, { id: nextId("cclip"), startMs: ms, durationMs: 1000, component: { kind: "animation", anim: "idle" } }],
-                          charId
-                        );
-                      }}
-                    >
-                      {clips.map((c) => {
-                        const anim = c.component.kind === "animation" ? c.component.anim ?? "idle" : "idle";
-                        return renderClip(
-                          c.id,
-                          { trackKind: "character", id: c.id },
-                          c.startMs,
-                          c.durationMs,
-                          `${ch?.name ?? "?"} — ${anim}`,
-                          color,
-                          true,
-                          lockedTracks.has(characterTrackKey(charId)),
-                          (p) =>
+                    {!objCollapsed && (
+                      <>
+                        <div
+                          ref={(el) => {
+                            if (el) channelRowEls.current.set(characterPosXKey(charId), el);
+                            else channelRowEls.current.delete(characterPosXKey(charId));
+                          }}
+                          style={{ height: LANE_H }}
+                          className={`relative border-t border-[var(--op-7)] ${hiddenTracks.has(characterPosXKey(charId)) ? "opacity-40" : ""}`}
+                          onMouseDown={(e) => startMarquee(e, registry)}
+                          onDoubleClick={(e) => {
+                            if (xLocked) return;
+                            const ms = Math.max(0, Math.round(msFromClientX(e.clientX)));
+                            const value = resolveChannel(xKeys, ms, mapCenterCell.x);
+                            setAxisKeys("x", [...xKeys, { id: nextId("ckey"), atMs: ms, value }]);
+                          }}
+                        >
+                          {xKeys.map((k) =>
+                            renderKeyframe(
+                              k.id,
+                              { trackKind: "characterKey", characterId: charId, axis: "x", id: k.id },
+                              k.atMs,
+                              color,
+                              xLocked,
+                              (atMs) => setAxisKeys("x", xKeys.map((kk) => (kk.id === k.id ? { ...kk, atMs } : kk))),
+                              registry
+                            )
+                          )}
+                        </div>
+                        <div
+                          ref={(el) => {
+                            if (el) channelRowEls.current.set(characterPosYKey(charId), el);
+                            else channelRowEls.current.delete(characterPosYKey(charId));
+                          }}
+                          style={{ height: LANE_H }}
+                          className={`relative border-t border-[var(--op-7)] ${hiddenTracks.has(characterPosYKey(charId)) ? "opacity-40" : ""}`}
+                          onMouseDown={(e) => startMarquee(e, registry)}
+                          onDoubleClick={(e) => {
+                            if (yLocked) return;
+                            const ms = Math.max(0, Math.round(msFromClientX(e.clientX)));
+                            const value = resolveChannel(yKeys, ms, mapCenterCell.y);
+                            setAxisKeys("y", [...yKeys, { id: nextId("ckey"), atMs: ms, value }]);
+                          }}
+                        >
+                          {yKeys.map((k) =>
+                            renderKeyframe(
+                              k.id,
+                              { trackKind: "characterKey", characterId: charId, axis: "y", id: k.id },
+                              k.atMs,
+                              color,
+                              yLocked,
+                              (atMs) => setAxisKeys("y", yKeys.map((kk) => (kk.id === k.id ? { ...kk, atMs } : kk))),
+                              registry
+                            )
+                          )}
+                        </div>
+                        <div
+                          style={{ height: LANE_H }}
+                          className={`relative border-t border-[var(--op-7)] ${hiddenTracks.has(characterTrackKey(charId)) ? "opacity-40" : ""}`}
+                          onDoubleClick={(e) => {
+                            if (lockedTracks.has(characterTrackKey(charId))) return;
+                            const ms = Math.max(0, Math.round(msFromClientX(e.clientX)));
                             setClipsFor(
                               "character",
-                              clips.map((cc) =>
-                                cc.id === c.id
-                                  ? { ...cc, ...(p.start !== undefined ? { startMs: p.start } : {}), ...(p.dur !== undefined ? { durationMs: p.dur } : {}) }
-                                  : cc
-                              ),
+                              [...clips, { id: nextId("cclip"), startMs: ms, durationMs: 1000, component: { kind: "animation", anim: "idle" } }],
                               charId
-                            )
-                        );
-                      })}
-                    </div>
+                            );
+                          }}
+                        >
+                          {clips.map((c) => {
+                            const anim = c.component.kind === "animation" ? c.component.anim ?? "idle" : "idle";
+                            return renderClip(
+                              c.id,
+                              { trackKind: "character", id: c.id },
+                              c.startMs,
+                              c.durationMs,
+                              `${ch?.name ?? "?"} — ${anim}`,
+                              color,
+                              true,
+                              lockedTracks.has(characterTrackKey(charId)),
+                              (p) =>
+                                setClipsFor(
+                                  "character",
+                                  clips.map((cc) =>
+                                    cc.id === c.id
+                                      ? { ...cc, ...(p.start !== undefined ? { startMs: p.start } : {}), ...(p.dur !== undefined ? { durationMs: p.dur } : {}) }
+                                      : cc
+                                  ),
+                                  charId
+                                )
+                            );
+                          })}
+                        </div>
+                      </>
+                    )}
                   </div>
                 );
               })}
@@ -826,13 +1093,26 @@ export function CutsceneTimeline({
             </div>
 
             <div className="absolute top-0 bottom-0 w-px bg-red-400 pointer-events-none z-10" style={{ left: t * pxPerMs }} />
+
+            {marqueeBox && (
+              <div
+                className="absolute border border-accent/70 bg-accent/10 pointer-events-none z-20"
+                style={{
+                  left: Math.min(marqueeBox.x0, marqueeBox.x1),
+                  top: Math.min(marqueeBox.y0, marqueeBox.y1),
+                  width: Math.abs(marqueeBox.x1 - marqueeBox.x0),
+                  height: Math.abs(marqueeBox.y1 - marqueeBox.y0),
+                }}
+              />
+            )}
           </div>
         </div>
       </div>
 
       <div className="text-[10px] text-[var(--op-30)]">
-        Ромбики — ключи (двойной клик по дорожке X/Y/Zoom — новый ключ, тянуть — сдвинуть по времени). Полоски — клипы (тряска/анимация/диалог/аудио):
-        двойной клик — новый, тянуть целиком — сдвинуть, тянуть правый край — растянуть длительность.
+        {boxSelection.length > 1
+          ? `Выделено ключей: ${boxSelection.length} — тянуть один из них — сдвинуть всю группу, Delete/Backspace — удалить все.`
+          : "Ромбики — ключи (двойной клик по дорожке X/Y/Zoom — новый ключ, тянуть — сдвинуть по времени, тянуть по пустому месту — выделить область). Полоски — клипы (тряска/анимация/диалог/аудио): двойной клик — новый, тянуть целиком — сдвинуть, тянуть правый край — растянуть длительность."}
       </div>
     </div>
   );

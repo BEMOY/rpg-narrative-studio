@@ -285,6 +285,7 @@ export function CutscenePreview({
   // pattern used everywhere else in this codebase.
   const startPan = (e: React.MouseEvent) => {
     if (playing) return;
+    e.preventDefault(); // otherwise the browser starts a native text-selection drag on mousedown
     const startX = e.clientX;
     const startY = e.clientY;
     const origX = view.x;
@@ -316,6 +317,7 @@ export function CutscenePreview({
   // touches the data -- this is what stops keys from appearing "spontaneously".
   const startCharacterDrag = (e: React.MouseEvent, characterId: string, origX: number, origY: number) => {
     e.stopPropagation();
+    e.preventDefault();
     const startX = e.clientX;
     const startY = e.clientY;
     let moved = false;
@@ -357,6 +359,7 @@ export function CutscenePreview({
   // rectangle -- upserts a keyframe on cutsceneCameraPosX/PosY at the current playhead time.
   const startCameraDrag = (e: React.MouseEvent) => {
     e.stopPropagation();
+    e.preventDefault();
     const startX = e.clientX;
     const startY = e.clientY;
     const origX = camera.x;
@@ -442,7 +445,7 @@ export function CutscenePreview({
       </div>
 
       <div
-        className="relative overflow-hidden rounded-md border border-[var(--op-10)] mx-auto shrink-0"
+        className="relative overflow-hidden rounded-md border border-[var(--op-10)] mx-auto shrink-0 select-none"
         style={{ width: stageW, height: stageDisplayH, background: "#000", cursor: playing ? "default" : "grab" }}
         onDragOver={(e) => e.preventDefault()}
         onDrop={handleDrop}

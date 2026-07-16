@@ -200,7 +200,7 @@ export function CutsceneEditorModal({ entry, onClose }: { entry: Entry; onClose:
 
   return createPortal(
     <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-3">
-      <div className="glass rounded-lg w-full h-full max-w-[1500px] flex flex-col overflow-hidden">
+      <div className="glass rounded-lg w-full h-full max-w-[1500px] flex flex-col overflow-hidden select-none">
         <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--op-10)] shrink-0">
           <div className="text-sm font-medium px-1">Редактор катсцены — {entry.name}</div>
           <div className="flex-1" />
