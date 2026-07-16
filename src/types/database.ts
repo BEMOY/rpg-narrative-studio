@@ -235,6 +235,12 @@ export interface Entry {
   cutsceneCharacterTrack?: CharacterClip[];
   cutsceneDialogueTrack?: CutsceneDialogueClip[];
   cutsceneAudioFxTrack?: AudioFxClip[];
+  // Per-character track color (keyed by character Entry id) -- lets each character's lane and
+  // clips stand out from the others instead of every character sharing one fixed color.
+  cutsceneCharacterTrackColors?: Record<string, string>;
+  // Named points in time on the timeline ruler, purely for quick navigation (click a marker to
+  // jump the playhead there) -- e.g. "Boss Intro" / "Explosion" / "Music Drop" from the mockup.
+  cutsceneMarkers?: CutsceneMarker[];
 
   // equip/item economy + export fields — see docs/14_Export_System.md Field Mapping: Items
   value?: number;
@@ -645,8 +651,15 @@ export interface CharacterClip {
 export interface CutsceneDialogueClip {
   id: string;
   atMs: number;
-  durationMs: number; // how long the dialogue's first line stays up in the live preview overlay
+  durationMs: number; // how long the dialogue's first line stays up in the lightweight scrub-preview overlay
   dialogueId?: string;
+  // Default true: while actually PLAYING (not just scrubbing) the cutscene, reaching this clip
+  // pauses the timeline and opens the real dialogue Test-Play window (see TestPlayModal.tsx,
+  // reused byte-for-byte -- not a lookalike) until the player closes it; the timeline then
+  // resumes. Set to false for the documented exception case where some other track's event is
+  // meant to keep running WHILE this dialogue plays (e.g. an ambient effect), rather than the
+  // whole cutscene waiting on it.
+  blocking?: boolean;
 }
 
 export type AudioFxKind = "sound" | "music" | "fade" | "flash";
@@ -661,6 +674,12 @@ export interface AudioFxClip {
   durationMs?: number; // "fade"/"flash" -- how long the screen overlay takes
   color?: string; // "flash" -- overlay color, e.g. "#ffffff"
   direction?: "in" | "out"; // "fade" -- fade to black ("out") or from black ("in")
+}
+
+export interface CutsceneMarker {
+  id: string;
+  atMs: number;
+  label: string;
 }
 
 export interface DialogueChoice {

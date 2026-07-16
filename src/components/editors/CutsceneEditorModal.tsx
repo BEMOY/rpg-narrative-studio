@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { X, Play, Pause, ChevronLeft, ChevronRight, Repeat } from "lucide-react";
-import type { Entry } from "../../types/database";
+import type { CutsceneDialogueClip, Entry } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
 import { cutsceneTotalDurationMs } from "../../lib/cutscenePreview";
 import { SearchSelect } from "../dialogue/SearchSelect";
@@ -9,6 +9,8 @@ import { CutsceneTimeline } from "./CutsceneTimeline";
 import type { ClipRef } from "./CutsceneTimeline";
 import { CutscenePreview } from "./CutscenePreview";
 import { ClipInspector } from "./ClipInspector";
+import { CutsceneExplorerPanel } from "./CutsceneExplorerPanel";
+import { TestPlayModal } from "../dialogue/TestPlayModal";
 
 // The standalone Cutscene editor WINDOW (Dynarain Phase 2) -- a full-screen modal, same
 // architectural pattern as MapEditorModal.tsx, rather than settings buried inside the Entry
@@ -24,6 +26,7 @@ import { ClipInspector } from "./ClipInspector";
 export function CutsceneEditorModal({ entry, onClose }: { entry: Entry; onClose: () => void }) {
   const updateEntry = useProjectStore((s) => s.updateEntry);
   const allEntries = useProjectStore((s) => s.project.entries);
+  const dialogues = useProjectStore((s) => s.project.dialogues);
   const setActiveDialogue = useProjectStore((s) => s.setActiveDialogue);
   const showDialogues = useProjectStore((s) => s.showDialogues);
 
@@ -37,8 +40,14 @@ export function CutsceneEditorModal({ entry, onClose }: { entry: Entry; onClose:
   const [selected, setSelected] = useState<ClipRef | null>(null);
   const [hiddenTracks, setHiddenTracks] = useState<Set<string>>(new Set());
   const [lockedTracks, setLockedTracks] = useState<Set<string>>(new Set());
+  // Set while PLAYING (not while just scrubbing the slider) has just reached a dialogue clip
+  // whose `blocking` flag is true (default) -- the timeline stops advancing and the real
+  // dialogue Test-Play window (see TestPlayModal.tsx, rendered further down, byte-identical to
+  // the one in the Dialogue editor) takes over until the player closes it.
+  const [awaitingDialogue, setAwaitingDialogue] = useState<CutsceneDialogueClip | null>(null);
   const rafRef = useRef<number | undefined>(undefined);
   const lastRef = useRef(0);
+  const prevTRef = useRef(-1); // sentinel below 0 so a dialogue clip sitting at atMs===0 still gates correctly on the very first tick
 
   useEffect(() => {
     if (!playing) return;
@@ -63,6 +72,26 @@ export function CutsceneEditorModal({ entry, onClose }: { entry: Entry; onClose:
   useEffect(() => {
     if (playing && t >= totalMs && !loop) setPlaying(false);
   }, [playing, t, totalMs, loop]);
+
+  // Dialogue gating -- only while actually playing (auto-advancing), never while the user is
+  // just dragging the scrub slider by hand. Detects "just crossed into a blocking clip's atMs
+  // since the last check" by comparing against prevTRef, rather than reacting inside setT's own
+  // updater (which must stay a pure function of its previous value).
+  useEffect(() => {
+    if (!playing) {
+      prevTRef.current = t;
+      return;
+    }
+    const hit = (entry.cutsceneDialogueTrack ?? [])
+      .filter((c) => (c.blocking ?? true) && dialogues.some((d) => d.id === c.dialogueId))
+      .find((c) => prevTRef.current < c.atMs && t >= c.atMs);
+    if (hit) {
+      setPlaying(false);
+      setAwaitingDialogue(hit);
+    }
+    prevTRef.current = t;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [t, playing, entry.cutsceneDialogueTrack, dialogues]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -97,6 +126,8 @@ export function CutsceneEditorModal({ entry, onClose }: { entry: Entry; onClose:
     showDialogues();
     onClose();
   };
+
+  const awaitingDialogueEntry = awaitingDialogue ? dialogues.find((d) => d.id === awaitingDialogue.dialogueId) : undefined;
 
   return createPortal(
     <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-3">
@@ -165,6 +196,7 @@ export function CutsceneEditorModal({ entry, onClose }: { entry: Entry; onClose:
         </div>
 
         <div className="flex-1 flex overflow-hidden">
+          <CutsceneExplorerPanel />
           <div className="flex-1 flex flex-col overflow-hidden">
             <div className="flex-1 overflow-auto p-4 flex items-center justify-center">
               <CutscenePreview entry={entry} t={t} hiddenTracks={hiddenTracks} />
@@ -191,6 +223,18 @@ export function CutsceneEditorModal({ entry, onClose }: { entry: Entry; onClose:
           </div>
         </div>
       </div>
+
+      {awaitingDialogueEntry &&
+        createPortal(
+          <TestPlayModal
+            dialogue={awaitingDialogueEntry}
+            onClose={() => {
+              setAwaitingDialogue(null);
+              setPlaying(true);
+            }}
+          />,
+          document.body
+        )}
     </div>,
     document.body
   );

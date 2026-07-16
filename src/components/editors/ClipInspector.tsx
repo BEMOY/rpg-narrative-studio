@@ -219,6 +219,15 @@ export function ClipInspector({
             <ExternalLink size={12} /> Открыть в редакторе диалогов
           </button>
         )}
+        <label className="flex items-center gap-1.5 text-xs text-[var(--op-50)]">
+          <input type="checkbox" checked={clip.blocking ?? true} onChange={(e) => patch({ blocking: e.target.checked })} />
+          Катсцена ждёт окончания диалога
+        </label>
+        {!(clip.blocking ?? true) && (
+          <div className="text-[10px] text-[var(--op-30)]">
+            Исключение: остальные дорожки продолжают идти, пока показывается этот диалог.
+          </div>
+        )}
         <div className="flex items-center gap-2">
           <NumField label="Начало мс" value={clip.atMs} onChange={(v) => patch({ atMs: v })} />
           <NumField label="Показ мс" value={clip.durationMs} onChange={(v) => patch({ durationMs: v })} />

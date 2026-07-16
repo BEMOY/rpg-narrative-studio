@@ -1,9 +1,12 @@
+import { useRef } from "react";
 import type { Entry } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
 import { MapThumbnail } from "../mapeditor/MapThumbnail";
 import { SpriteAnimator } from "../common/SpriteAnimator";
 import { activeDialogueClip, resolveCamera, resolveCharacters, resolveOverlay } from "../../lib/cutscenePreview";
 import { audioFxTrackKey, cameraTrackKey, characterTrackKey, dialogueTrackKey } from "./CutsceneTimeline";
+import { CHARACTER_DRAG_MIME, DIALOGUE_DRAG_MIME } from "./CutsceneExplorerPanel";
+import { nextId } from "../../lib/mapDefaults";
 
 // The game's actual base resolution (see the project brief: 320x180, top-down pixel art) --
 // used as the camera's "native" viewport so zoom/pan in this preview means the same thing it
@@ -39,7 +42,9 @@ export function CutscenePreview({
 }) {
   const allEntries = useProjectStore((s) => s.project.entries);
   const dialogues = useProjectStore((s) => s.project.dialogues);
+  const updateEntry = useProjectStore((s) => s.updateEntry);
   const boundMap = allEntries.find((e) => e.id === entry.cutsceneMapId);
+  const worldRef = useRef<HTMLDivElement>(null);
 
   if (!boundMap?.map) {
     return (
@@ -82,6 +87,39 @@ export function CutscenePreview({
   const worldDisplayW = map.width * gridSize * displayScale;
   const worldDisplayH = map.height * gridSize * displayScale;
 
+  // Drag a character/dialogue from CutsceneExplorerPanel straight onto the stage -- a character
+  // gets placed at the drop point (added to the cast if it isn't already, plus a "move" clip at
+  // the CURRENT playhead time so it appears exactly where dropped); a dialogue is dropped in at
+  // the current time regardless of x/y, since dialogue clips have no stage position.
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    const worldRect = worldRef.current?.getBoundingClientRect();
+    if (!worldRect) return;
+    const cellX = (e.clientX - worldRect.left) / (gridSize * displayScale);
+    const cellY = (e.clientY - worldRect.top) / (gridSize * displayScale);
+
+    const characterId = e.dataTransfer.getData(CHARACTER_DRAG_MIME);
+    if (characterId) {
+      const cast = entry.cutsceneCastCharacterIds ?? [];
+      const charTrack = entry.cutsceneCharacterTrack ?? [];
+      updateEntry(entry.id, {
+        cutsceneCastCharacterIds: cast.includes(characterId) ? cast : [...cast, characterId],
+        cutsceneCharacterTrack: [
+          ...charTrack,
+          { id: nextId("cclip"), startMs: Math.max(0, Math.round(t)), durationMs: 1000, kind: "move", characterId, x: cellX, y: cellY },
+        ],
+      });
+      return;
+    }
+    const dialogueId = e.dataTransfer.getData(DIALOGUE_DRAG_MIME);
+    if (dialogueId) {
+      const dlgTrack = entry.cutsceneDialogueTrack ?? [];
+      updateEntry(entry.id, {
+        cutsceneDialogueTrack: [...dlgTrack, { id: nextId("dclip"), atMs: Math.max(0, Math.round(t)), durationMs: 3000, dialogueId }],
+      });
+    }
+  };
+
   return (
     <div className="glass rounded-lg p-5 space-y-3">
       <div className="text-xs uppercase tracking-wider text-[var(--op-35)]">Живое превью</div>
@@ -89,8 +127,11 @@ export function CutscenePreview({
       <div
         className="relative overflow-hidden rounded-md border border-[var(--op-10)] mx-auto"
         style={{ width: STAGE_DISPLAY_W, height: stageDisplayH, background: "#000" }}
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={handleDrop}
       >
         <div
+          ref={worldRef}
           className="absolute top-0 left-0"
           style={{ width: worldDisplayW, height: worldDisplayH, transform: `translate(${translateX}px, ${translateY}px)` }}
         >

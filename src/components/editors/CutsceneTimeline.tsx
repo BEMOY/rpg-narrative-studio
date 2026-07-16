@@ -1,9 +1,11 @@
 import { useMemo, useRef, useState } from "react";
-import { X, Eye, EyeOff, Lock, Unlock } from "lucide-react";
+import { X, Eye, EyeOff, Lock, Unlock, ChevronDown, ChevronRight, Flag, Plus } from "lucide-react";
 import type { AudioFxClip, CameraClip, CharacterClip, CutsceneDialogueClip, Entry } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
 import { cutsceneTotalDurationMs } from "../../lib/cutscenePreview";
 import { nextId } from "../../lib/mapDefaults";
+import { themedPrompt } from "../../lib/modals";
+import { CHARACTER_DRAG_MIME, DIALOGUE_DRAG_MIME } from "./CutsceneExplorerPanel";
 import { SearchSelect } from "../dialogue/SearchSelect";
 
 // Identifies exactly one clip on exactly one track kind -- used both to track which clip is
@@ -85,6 +87,10 @@ export function CutsceneTimeline({
   const characters = allEntries.filter((e) => e.category === "character");
 
   const [pxPerMs, setPxPerMs] = useState(0.08);
+  // Collapsing the whole "Персонажи" group is a purely visual/session convenience (like
+  // collapsing a folder) -- not persisted, matches the mockup's Characters > Name grouping idea
+  // without needing a real generic nested-track-folder system.
+  const [charsCollapsed, setCharsCollapsed] = useState(false);
   const laneAreaRef = useRef<HTMLDivElement>(null);
 
   const totalMs = cutsceneTotalDurationMs(entry);
@@ -95,11 +101,22 @@ export function CutsceneTimeline({
   const charTrack = entry.cutsceneCharacterTrack ?? [];
   const dlgTrack = entry.cutsceneDialogueTrack ?? [];
   const fxTrack = entry.cutsceneAudioFxTrack ?? [];
+  const markers = entry.cutsceneMarkers ?? [];
+  const charColors = entry.cutsceneCharacterTrackColors ?? {};
 
   const setCameraTrack = (next: CameraClip[]) => updateEntry(entry.id, { cutsceneCameraTrack: next });
   const setCharTrack = (next: CharacterClip[]) => updateEntry(entry.id, { cutsceneCharacterTrack: next });
   const setDlgTrack = (next: CutsceneDialogueClip[]) => updateEntry(entry.id, { cutsceneDialogueTrack: next });
   const setFxTrack = (next: AudioFxClip[]) => updateEntry(entry.id, { cutsceneAudioFxTrack: next });
+  const setCharColor = (characterId: string, color: string) =>
+    updateEntry(entry.id, { cutsceneCharacterTrackColors: { ...charColors, [characterId]: color } });
+
+  const addMarker = async () => {
+    const label = await themedPrompt("Название маркера", "");
+    if (label === null) return;
+    updateEntry(entry.id, { cutsceneMarkers: [...markers, { id: nextId("marker"), atMs: Math.round(t), label: label || "Маркер" }] });
+  };
+  const removeMarker = (id: string) => updateEntry(entry.id, { cutsceneMarkers: markers.filter((m) => m.id !== id) });
 
   const addCastMember = (characterId: string | undefined) => {
     if (!characterId || cast.includes(characterId)) return;
@@ -272,33 +289,66 @@ export function CutsceneTimeline({
             allowClear={false}
           />
         </div>
+        <button
+          onClick={addMarker}
+          title="Добавить маркер в текущей позиции плейхеда"
+          className="flex items-center gap-1 text-xs px-2 py-1 rounded-md glass hover:bg-[var(--op-10)] text-[var(--op-55)]"
+        >
+          <Flag size={11} /> Маркер
+        </button>
       </div>
 
       <div className="flex border border-[var(--op-10)] rounded-md overflow-hidden">
         <div className="shrink-0 bg-[var(--op-4)] border-r border-[var(--op-10)]" style={{ width: LABEL_W }}>
           <div style={{ height: RULER_H }} />
           {renderTrackHeader(cameraTrackKey(), "Камера")}
-          {cast.map((charId) => {
-            const ch = allEntries.find((e) => e.id === charId);
-            return (
-              <div
-                key={charId}
-                style={{ height: LANE_H }}
-                className="flex items-center gap-1 px-2 text-[10px] text-[var(--op-50)] border-t border-[var(--op-7)]"
-              >
-                {headerToggleButtons(characterTrackKey(charId))}
-                <span className="truncate flex-1">{ch?.name ?? "?"}</span>
-                <button onClick={() => removeCastMember(charId)} className="opacity-40 hover:opacity-100 shrink-0">
-                  <X size={10} />
-                </button>
-              </div>
-            );
-          })}
+          {cast.length > 0 && (
+            <div
+              style={{ height: LANE_H }}
+              className="flex items-center gap-1 px-2 text-[10px] text-[var(--op-45)] border-t border-[var(--op-7)] cursor-pointer hover:text-[var(--op-70)]"
+              onClick={() => setCharsCollapsed((v) => !v)}
+            >
+              {charsCollapsed ? <ChevronRight size={11} /> : <ChevronDown size={11} />}
+              <span className="truncate flex-1">Персонажи ({cast.length})</span>
+            </div>
+          )}
+          {!charsCollapsed &&
+            cast.map((charId) => {
+              const ch = allEntries.find((e) => e.id === charId);
+              return (
+                <div
+                  key={charId}
+                  style={{ height: LANE_H }}
+                  className="flex items-center gap-1 pl-4 pr-2 text-[10px] text-[var(--op-50)] border-t border-[var(--op-7)]"
+                >
+                  {headerToggleButtons(characterTrackKey(charId))}
+                  <input
+                    type="color"
+                    value={charColors[charId] ?? TRACK_COLOR.character}
+                    onChange={(e) => setCharColor(charId, e.target.value)}
+                    title="Цвет дорожки"
+                    className="w-3.5 h-3.5 rounded-sm border-0 bg-transparent shrink-0 cursor-pointer p-0"
+                  />
+                  <span className="truncate flex-1">{ch?.name ?? "?"}</span>
+                  <button onClick={() => removeCastMember(charId)} className="opacity-40 hover:opacity-100 shrink-0">
+                    <X size={10} />
+                  </button>
+                </div>
+              );
+            })}
           {renderTrackHeader(dialogueTrackKey(), "Диалоги")}
           {renderTrackHeader(audioFxTrackKey(), "Аудио/FX")}
         </div>
 
-        <div ref={laneAreaRef} className="flex-1 overflow-x-auto relative">
+        <div
+          ref={laneAreaRef}
+          className="flex-1 overflow-x-auto relative"
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            const characterId = e.dataTransfer.getData(CHARACTER_DRAG_MIME);
+            if (characterId) addCastMember(characterId);
+          }}
+        >
           <div style={{ width: timelineWidth, position: "relative" }}>
             <div onMouseDown={scrubStart} style={{ height: RULER_H }} className="relative border-b border-[var(--op-10)] cursor-pointer bg-[var(--op-3)]">
               {ticks.map((tick) => (
@@ -309,6 +359,26 @@ export function CutsceneTimeline({
                 >
                   {tick.label}
                 </div>
+              ))}
+              {markers.map((m) => (
+                <button
+                  key={m.id}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={() => onScrub(m.atMs)}
+                  onDoubleClick={async (e) => {
+                    e.stopPropagation();
+                    const label = await themedPrompt("Название маркера (пусто -- удалить)", m.label);
+                    if (label === null) return;
+                    if (label === "") removeMarker(m.id);
+                    else updateEntry(entry.id, { cutsceneMarkers: markers.map((mm) => (mm.id === m.id ? { ...mm, label } : mm)) });
+                  }}
+                  title={`${m.label} (${(m.atMs / 1000).toFixed(1)}s) -- двойной клик: переименовать/удалить`}
+                  className="absolute top-0 flex items-center gap-0.5 text-[9px] text-amber-200 hover:text-amber-100 z-10"
+                  style={{ left: m.atMs * pxPerMs }}
+                >
+                  <Flag size={10} className="fill-amber-400/70 shrink-0" />
+                  <span className="truncate max-w-[70px]">{m.label}</span>
+                </button>
               ))}
             </div>
 
@@ -343,9 +413,13 @@ export function CutsceneTimeline({
               )}
             </div>
 
-            {cast.map((charId) => {
+            {cast.length > 0 && <div style={{ height: LANE_H }} className="border-t border-[var(--op-7)]" />}
+
+            {!charsCollapsed &&
+              cast.map((charId) => {
               const ch = allEntries.find((e) => e.id === charId);
               const clips = charTrack.filter((c) => c.characterId === charId);
+              const color = charColors[charId] ?? TRACK_COLOR.character;
               return (
                 <div
                   key={charId}
@@ -364,7 +438,7 @@ export function CutsceneTimeline({
                       c.startMs,
                       c.durationMs,
                       `${ch?.name ?? "?"} — ${c.kind === "move" ? "движение" : "анимация"}`,
-                      TRACK_COLOR.character,
+                      color,
                       true,
                       lockedTracks.has(characterTrackKey(charId)),
                       (p) =>
@@ -388,6 +462,14 @@ export function CutsceneTimeline({
                 if (lockedTracks.has(dialogueTrackKey())) return;
                 const ms = Math.max(0, Math.round(msFromClientX(e.clientX)));
                 setDlgTrack([...dlgTrack, { id: nextId("dclip"), atMs: ms, durationMs: 3000 }]);
+              }}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                if (lockedTracks.has(dialogueTrackKey())) return;
+                const dialogueId = e.dataTransfer.getData(DIALOGUE_DRAG_MIME);
+                if (!dialogueId) return;
+                const ms = Math.max(0, Math.round(msFromClientX(e.clientX)));
+                setDlgTrack([...dlgTrack, { id: nextId("dclip"), atMs: ms, durationMs: 3000, dialogueId }]);
               }}
             >
               {dlgTrack.map((c) => {
