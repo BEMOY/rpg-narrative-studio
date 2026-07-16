@@ -10,7 +10,6 @@ import type { ClipRef } from "./CutsceneTimeline";
 import { CutscenePreview } from "./CutscenePreview";
 import { ClipInspector } from "./ClipInspector";
 import { CutsceneExplorerPanel } from "./CutsceneExplorerPanel";
-import { TestPlayModal } from "../dialogue/TestPlayModal";
 
 // The standalone Cutscene editor WINDOW (Dynarain Phase 2) -- a full-screen modal, same
 // architectural pattern as MapEditorModal.tsx, rather than settings buried inside the Entry
@@ -198,8 +197,17 @@ export function CutsceneEditorModal({ entry, onClose }: { entry: Entry; onClose:
         <div className="flex-1 flex overflow-hidden">
           <CutsceneExplorerPanel />
           <div className="flex-1 flex flex-col overflow-hidden">
-            <div className="flex-1 overflow-auto p-4 flex items-center justify-center">
-              <CutscenePreview entry={entry} t={t} hiddenTracks={hiddenTracks} />
+            <div className="flex-1 overflow-hidden p-4 flex items-center justify-center">
+              <CutscenePreview
+                entry={entry}
+                t={t}
+                hiddenTracks={hiddenTracks}
+                awaitingDialogueEntry={awaitingDialogueEntry}
+                onDialogueDone={() => {
+                  setAwaitingDialogue(null);
+                  setPlaying(true);
+                }}
+              />
             </div>
             <div className="shrink-0 overflow-x-auto p-3 border-t border-[var(--op-10)]">
               <CutsceneTimeline
@@ -224,17 +232,6 @@ export function CutsceneEditorModal({ entry, onClose }: { entry: Entry; onClose:
         </div>
       </div>
 
-      {awaitingDialogueEntry &&
-        createPortal(
-          <TestPlayModal
-            dialogue={awaitingDialogueEntry}
-            onClose={() => {
-              setAwaitingDialogue(null);
-              setPlaying(true);
-            }}
-          />,
-          document.body
-        )}
     </div>,
     document.body
   );
