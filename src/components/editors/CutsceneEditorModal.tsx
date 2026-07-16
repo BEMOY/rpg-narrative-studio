@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { X, Play, Pause, ChevronLeft, ChevronRight, Repeat, SkipBack, SkipForward } from "lucide-react";
-import type { CutsceneDialogueClip, Entry } from "../../types/database";
+import { X, Play, Pause, Square, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Repeat, SkipBack, SkipForward } from "lucide-react";
+import type { CutsceneClip, Entry } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
 import { allClipBoundaries, cutsceneTotalDurationMs } from "../../lib/cutscenePreview";
+import { trackClips } from "../../lib/cutsceneTracks";
 import { SearchSelect } from "../dialogue/SearchSelect";
 import { CutsceneTimeline } from "./CutsceneTimeline";
 import type { ClipRef } from "./CutsceneTimeline";
@@ -39,11 +40,15 @@ export function CutsceneEditorModal({ entry, onClose }: { entry: Entry; onClose:
   const [selected, setSelected] = useState<ClipRef | null>(null);
   const [hiddenTracks, setHiddenTracks] = useState<Set<string>>(new Set());
   const [lockedTracks, setLockedTracks] = useState<Set<string>>(new Set());
+  // Collapsing the timeline gives the preview stage the full window -- a "big screen" mode for
+  // when you just want to watch/scrub without the dorожки taking up half the height. Session-only
+  // UI state, not persisted.
+  const [timelineCollapsed, setTimelineCollapsed] = useState(false);
   // Set while PLAYING (not while just scrubbing the slider) has just reached a dialogue clip
   // whose `blocking` flag is true (default) -- the timeline stops advancing and the real
   // dialogue Test-Play window (see TestPlayModal.tsx, rendered further down, byte-identical to
   // the one in the Dialogue editor) takes over until the player closes it.
-  const [awaitingDialogue, setAwaitingDialogue] = useState<CutsceneDialogueClip | null>(null);
+  const [awaitingDialogue, setAwaitingDialogue] = useState<CutsceneClip | null>(null);
   // A second, independently free-running clock -- while `awaitingDialogue` is set, `t` itself
   // is frozen (see the raf loop below, gated on `playing`), but any individual clip whose own
   // `pausesForDialogue` is explicitly false is meant to keep animating on REAL elapsed time
@@ -113,16 +118,20 @@ export function CutsceneEditorModal({ entry, onClose }: { entry: Entry; onClose:
       prevTRef.current = t;
       return;
     }
-    const hit = (entry.cutsceneDialogueTrack ?? [])
-      .filter((c) => dialogues.some((d) => d.id === c.dialogueId))
-      .find((c) => prevTRef.current < c.atMs && t >= c.atMs);
+    const hit = trackClips(entry.cutsceneTracks ?? [], "dialogue")
+      .filter((c) => {
+        if (c.component.kind !== "dialogue") return false;
+        const dialogueId = c.component.dialogueId;
+        return dialogues.some((d) => d.id === dialogueId);
+      })
+      .find((c) => prevTRef.current < c.startMs && t >= c.startMs);
     if (hit) {
       setPlaying(false);
       setAwaitingDialogue(hit);
     }
     prevTRef.current = t;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [t, playing, entry.cutsceneDialogueTrack, dialogues]);
+  }, [t, playing, entry.cutsceneTracks, dialogues]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -135,6 +144,19 @@ export function CutsceneEditorModal({ entry, onClose }: { entry: Entry; onClose:
   const stepFrame = (dir: -1 | 1) => {
     setPlaying(false);
     setT((prev) => Math.max(0, Math.min(totalMs, prev + (dir * 1000) / fps)));
+  };
+
+  // Real STOP (not pause) -- ends the cutscene entirely and snaps everything back to 0, unlike
+  // Play/Pause which just freezes wherever the playhead happens to be. Also immediately tears
+  // down any dialogue currently blocking playback (rather than letting the player finish reading
+  // it) -- awaitingDialogue going back to null unmounts the embedded dialogue player in
+  // CutscenePreview on the very next render, so the dialogue box disappears instantly along with
+  // everything else resetting to t=0.
+  const stopCutscene = () => {
+    setPlaying(false);
+    setAwaitingDialogue(null);
+    setTLive(0);
+    setT(0);
   };
 
   // Coarser than stepFrame -- jumps straight to the nearest previous/next clip boundary (start
@@ -173,7 +195,8 @@ export function CutsceneEditorModal({ entry, onClose }: { entry: Entry; onClose:
     onClose();
   };
 
-  const awaitingDialogueEntry = awaitingDialogue ? dialogues.find((d) => d.id === awaitingDialogue.dialogueId) : undefined;
+  const awaitingDialogueId = awaitingDialogue?.component.kind === "dialogue" ? awaitingDialogue.component.dialogueId : undefined;
+  const awaitingDialogueEntry = awaitingDialogueId ? dialogues.find((d) => d.id === awaitingDialogueId) : undefined;
 
   return createPortal(
     <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-3">
@@ -211,6 +234,13 @@ export function CutsceneEditorModal({ entry, onClose }: { entry: Entry; onClose:
             className="w-7 h-7 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]"
           >
             {playing ? <Pause size={13} /> : <Play size={13} />}
+          </button>
+          <button
+            onClick={stopCutscene}
+            title="Стоп — закончить катсцену и вернуться к 0"
+            className="w-7 h-7 grid place-items-center rounded-md hover:bg-[var(--op-10)] text-[var(--op-55)]"
+          >
+            <Square size={12} />
           </button>
           <button onClick={() => stepFrame(1)} title="Следующий кадр" className="w-7 h-7 grid place-items-center rounded-md hover:bg-[var(--op-10)]">
             <ChevronRight size={14} />
@@ -272,21 +302,33 @@ export function CutsceneEditorModal({ entry, onClose }: { entry: Entry; onClose:
                 }}
               />
             </div>
-            <div className="shrink-0 overflow-x-auto p-3 border-t border-[var(--op-10)]">
-              <CutsceneTimeline
-                entry={entry}
-                t={t}
-                onScrub={(ms) => {
-                  setPlaying(false);
-                  setT(ms);
-                }}
-                selected={selected}
-                onSelect={setSelected}
-                hiddenTracks={hiddenTracks}
-                lockedTracks={lockedTracks}
-                onToggleHidden={toggleHidden}
-                onToggleLocked={toggleLocked}
-              />
+            <div className="shrink-0 border-t border-[var(--op-10)]">
+              <button
+                onClick={() => setTimelineCollapsed((v) => !v)}
+                title={timelineCollapsed ? "Развернуть таймлайн" : "Свернуть таймлайн (превью на весь экран)"}
+                className="w-full flex items-center gap-1.5 px-3 py-1 text-[10px] text-[var(--op-40)] hover:bg-[var(--op-5)] hover:text-[var(--op-70)]"
+              >
+                {timelineCollapsed ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+                Таймлайн{timelineCollapsed ? " (свёрнут)" : ""}
+              </button>
+              {!timelineCollapsed && (
+                <div className="overflow-x-auto px-3 pb-3">
+                  <CutsceneTimeline
+                    entry={entry}
+                    t={t}
+                    onScrub={(ms) => {
+                      setPlaying(false);
+                      setT(ms);
+                    }}
+                    selected={selected}
+                    onSelect={setSelected}
+                    hiddenTracks={hiddenTracks}
+                    lockedTracks={lockedTracks}
+                    onToggleHidden={toggleHidden}
+                    onToggleLocked={toggleLocked}
+                  />
+                </div>
+              )}
             </div>
           </div>
           <div className="w-72 shrink-0 border-l border-[var(--op-10)] overflow-y-auto p-3">

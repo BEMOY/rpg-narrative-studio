@@ -1,18 +1,15 @@
 import { Trash2, ExternalLink } from "lucide-react";
 import type {
-  AudioFxClip,
   AudioFxKind,
-  CameraClip,
   CharacterAnchor,
   CharacterAnimState,
-  CharacterClip,
   CharacterPositionKeyframe,
   ClipEasing,
-  CutsceneDialogueClip,
   Entry,
   Keyframe,
 } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
+import { findClipAnywhere, trackClips, withTrackClips } from "../../lib/cutsceneTracks";
 import { ThemedSelect } from "../common/ThemedSelect";
 import { SearchSelect } from "../dialogue/SearchSelect";
 import type { ClipRef } from "./CutsceneTimeline";
@@ -121,7 +118,7 @@ function TagsField({ value, onChange }: { value: string[] | undefined; onChange:
 // Shared "Ждёт диалог" toggle for camera/character/audiofx clips -- default true (respects a
 // currently-blocking dialogue elsewhere on the timeline and freezes along with it); unchecking
 // it lets this specific clip keep animating on real elapsed time while the rest of the scene is
-// paused for the conversation. See CameraClip.pausesForDialogue's doc comment for the full
+// paused for the conversation. See the "shake" CutsceneComponent's doc comment for the full
 // rationale (this used to be one blanket checkbox on the dialogue clip itself).
 function PausesForDialogueField({ value, onChange }: { value: boolean | undefined; onChange: (v: boolean) => void }) {
   return (
@@ -135,8 +132,11 @@ function PausesForDialogueField({ value, onChange }: { value: boolean | undefine
 // Precise numeric/kind-specific property editor for whichever clip is currently selected on the
 // CutsceneTimeline (rendered alongside it in CutsceneEditorModal) -- the rough position/duration
 // are set by dragging on the timeline, this panel is for exact values and kind-specific params
-// (camera x/y/zoom/intensity/easing, dialogue reference + a quick jump into the dialogue graph
-// editor itself, audio/fx asset name & color, etc).
+// (camera intensity/easing, actor appearance fields, dialogue reference + a quick jump into the
+// dialogue graph editor itself, audio/fx asset name & color, etc). Every clip kind here is a
+// generic CutsceneClip from entry.cutsceneTracks (see the Track+Clip+Component doc comment above
+// CutsceneTrackKind in types/database.ts) -- each section below just reads/writes that particular
+// clip's typed `component` payload.
 export function ClipInspector({
   entry,
   selected,
@@ -151,18 +151,36 @@ export function ClipInspector({
   const updateEntry = useProjectStore((s) => s.updateEntry);
   const dialogues = useProjectStore((s) => s.project.dialogues);
   const allEntries = useProjectStore((s) => s.project.entries);
+  const tracks = entry.cutsceneTracks ?? [];
 
   if (!selected) {
     return <div className="glass rounded-lg p-4 text-xs text-[var(--op-30)]">Выберите клип на таймлайне, чтобы отредактировать его параметры точно.</div>;
   }
 
   if (selected.trackKind === "camera") {
-    const track = entry.cutsceneCameraTrack ?? [];
-    const clip = track.find((c) => c.id === selected.id);
-    if (!clip) return null;
-    const patch = (p: Partial<CameraClip>) => updateEntry(entry.id, { cutsceneCameraTrack: track.map((c) => (c.id === clip.id ? { ...c, ...p } : c)) });
+    const clips = trackClips(tracks, "camera");
+    const clip = clips.find((c) => c.id === selected.id);
+    if (!clip || clip.component.kind !== "shake") return null;
+    const component = clip.component;
+    const patch = (p: { startMs?: number; durationMs?: number; intensity?: number; pausesForDialogue?: boolean }) =>
+      updateEntry(entry.id, {
+        cutsceneTracks: withTrackClips(
+          tracks,
+          "camera",
+          clips.map((c) =>
+            c.id === clip.id
+              ? {
+                  ...c,
+                  ...(p.startMs !== undefined ? { startMs: p.startMs } : {}),
+                  ...(p.durationMs !== undefined ? { durationMs: p.durationMs } : {}),
+                  component: { ...component, ...(p.intensity !== undefined ? { intensity: p.intensity } : {}), ...(p.pausesForDialogue !== undefined ? { pausesForDialogue: p.pausesForDialogue } : {}) },
+                }
+              : c
+          )
+        ),
+      });
     const remove = () => {
-      updateEntry(entry.id, { cutsceneCameraTrack: track.filter((c) => c.id !== clip.id) });
+      updateEntry(entry.id, { cutsceneTracks: withTrackClips(tracks, "camera", clips.filter((c) => c.id !== clip.id)) });
       onClose();
     };
     return (
@@ -180,9 +198,9 @@ export function ClipInspector({
         <div className="flex items-center gap-2 flex-wrap">
           <NumField label="Начало мс" value={clip.startMs} onChange={(v) => patch({ startMs: v })} />
           <NumField label="Длит. мс" value={clip.durationMs} onChange={(v) => patch({ durationMs: v })} />
-          <NumField label="Сила" value={clip.intensity ?? 0.3} step={0.05} onChange={(v) => patch({ intensity: v })} />
+          <NumField label="Сила" value={component.intensity ?? 0.3} step={0.05} onChange={(v) => patch({ intensity: v })} />
         </div>
-        <PausesForDialogueField value={clip.pausesForDialogue} onChange={(v) => patch({ pausesForDialogue: v })} />
+        <PausesForDialogueField value={component.pausesForDialogue} onChange={(v) => patch({ pausesForDialogue: v })} />
       </div>
     );
   }
@@ -220,15 +238,38 @@ export function ClipInspector({
   }
 
   if (selected.trackKind === "character") {
-    const track = entry.cutsceneCharacterTrack ?? [];
-    const clip = track.find((c) => c.id === selected.id);
-    if (!clip) return null;
-    const patch = (p: Partial<CharacterClip>) => updateEntry(entry.id, { cutsceneCharacterTrack: track.map((c) => (c.id === clip.id ? { ...c, ...p } : c)) });
+    const found = findClipAnywhere(tracks, "character", selected.id);
+    if (!found) return null;
+    const { track, clip } = found;
+    if (clip.component.kind !== "animation") return null;
+    const characterId = track.characterId!;
+    const clips = trackClips(tracks, "character", characterId);
+    const component = clip.component;
+    const patch = (p: Partial<typeof component> & { startMs?: number; durationMs?: number }) => {
+      const { startMs, durationMs, ...componentPatch } = p;
+      updateEntry(entry.id, {
+        cutsceneTracks: withTrackClips(
+          tracks,
+          "character",
+          clips.map((c) =>
+            c.id === clip.id
+              ? {
+                  ...c,
+                  ...(startMs !== undefined ? { startMs } : {}),
+                  ...(durationMs !== undefined ? { durationMs } : {}),
+                  component: { ...component, ...componentPatch },
+                }
+              : c
+          ),
+          characterId
+        ),
+      });
+    };
     const remove = () => {
-      updateEntry(entry.id, { cutsceneCharacterTrack: track.filter((c) => c.id !== clip.id) });
+      updateEntry(entry.id, { cutsceneTracks: withTrackClips(tracks, "character", clips.filter((c) => c.id !== clip.id), characterId) });
       onClose();
     };
-    const character = allEntries.find((e) => e.id === clip.characterId);
+    const character = allEntries.find((e) => e.id === characterId);
     return (
       <div className="glass rounded-lg p-4 space-y-2">
         <div className="flex items-center justify-between">
@@ -248,40 +289,40 @@ export function ClipInspector({
             Действие
             <ThemedSelect
               className="input w-24"
-              value={clip.anim ?? "idle"}
+              value={component.anim ?? "idle"}
               onChange={(v) => patch({ anim: v as CharacterAnimState })}
               options={CHAR_ANIM_OPTIONS.map((a) => ({ value: a, label: ANIM_STATE_LABEL[a] }))}
             />
           </label>
-          <NumField label="Скорость %" value={clip.speed ?? 100} onChange={(v) => patch({ speed: v })} />
-          <NumField label="Слой отрисовки" value={clip.zIndex ?? 0} onChange={(v) => patch({ zIndex: v })} />
-          <NumField label="Непрозрачность %" value={clip.opacity ?? 100} onChange={(v) => patch({ opacity: v })} />
+          <NumField label="Скорость %" value={component.speed ?? 100} onChange={(v) => patch({ speed: v })} />
+          <NumField label="Слой отрисовки" value={component.zIndex ?? 0} onChange={(v) => patch({ zIndex: v })} />
+          <NumField label="Непрозрачность %" value={component.opacity ?? 100} onChange={(v) => patch({ opacity: v })} />
         </div>
         <div className="flex items-center gap-3 flex-wrap pt-1">
-          <AnchorField value={clip.anchor} onChange={(v) => patch({ anchor: v })} />
+          <AnchorField value={component.anchor} onChange={(v) => patch({ anchor: v })} />
           <label className="flex items-center gap-1.5 text-xs text-[var(--op-50)]">
-            <input type="checkbox" checked={clip.flipX ?? false} onChange={(e) => patch({ flipX: e.target.checked })} />
+            <input type="checkbox" checked={component.flipX ?? false} onChange={(e) => patch({ flipX: e.target.checked })} />
             Отражение по X
           </label>
         </div>
-        <PausesForDialogueField value={clip.pausesForDialogue} onChange={(v) => patch({ pausesForDialogue: v })} />
+        <PausesForDialogueField value={component.pausesForDialogue} onChange={(v) => patch({ pausesForDialogue: v })} />
         <div className="pt-1 space-y-1.5 border-t border-[var(--op-10)] mt-1">
           <div className="text-[10px] uppercase tracking-wider text-[var(--op-30)] pt-1.5">Дополнительно</div>
           <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1">
             Условия запуска
             <input
               className="input text-xs flex-1"
-              value={clip.conditionExpr ?? ""}
+              value={component.conditionExpr ?? ""}
               placeholder="!flag.intro_end"
               onChange={(e) => patch({ conditionExpr: e.target.value })}
             />
           </label>
-          <TagsField value={clip.tags} onChange={(v) => patch({ tags: v })} />
+          <TagsField value={component.tags} onChange={(v) => patch({ tags: v })} />
           <label className="text-[10px] text-[var(--op-40)] flex flex-col gap-1">
             Заметки
             <textarea
               className="input text-xs w-full min-h-[44px] resize-y"
-              value={clip.notes ?? ""}
+              value={component.notes ?? ""}
               onChange={(e) => patch({ notes: e.target.value })}
             />
           </label>
@@ -325,13 +366,29 @@ export function ClipInspector({
   }
 
   if (selected.trackKind === "dialogue") {
-    const track = entry.cutsceneDialogueTrack ?? [];
-    const clip = track.find((c) => c.id === selected.id);
-    if (!clip) return null;
-    const patch = (p: Partial<CutsceneDialogueClip>) =>
-      updateEntry(entry.id, { cutsceneDialogueTrack: track.map((c) => (c.id === clip.id ? { ...c, ...p } : c)) });
+    const clips = trackClips(tracks, "dialogue");
+    const clip = clips.find((c) => c.id === selected.id);
+    if (!clip || clip.component.kind !== "dialogue") return null;
+    const component = clip.component;
+    const patch = (p: { startMs?: number; durationMs?: number; dialogueId?: string }) =>
+      updateEntry(entry.id, {
+        cutsceneTracks: withTrackClips(
+          tracks,
+          "dialogue",
+          clips.map((c) =>
+            c.id === clip.id
+              ? {
+                  ...c,
+                  ...(p.startMs !== undefined ? { startMs: p.startMs } : {}),
+                  ...(p.durationMs !== undefined ? { durationMs: p.durationMs } : {}),
+                  component: { ...component, ...(p.dialogueId !== undefined ? { dialogueId: p.dialogueId } : {}) },
+                }
+              : c
+          )
+        ),
+      });
     const remove = () => {
-      updateEntry(entry.id, { cutsceneDialogueTrack: track.filter((c) => c.id !== clip.id) });
+      updateEntry(entry.id, { cutsceneTracks: withTrackClips(tracks, "dialogue", clips.filter((c) => c.id !== clip.id)) });
       onClose();
     };
     return (
@@ -343,14 +400,14 @@ export function ClipInspector({
           </button>
         </div>
         <SearchSelect
-          value={clip.dialogueId}
+          value={component.dialogueId}
           onChange={(id) => patch({ dialogueId: id })}
           options={dialogues.map((d) => ({ id: d.id, label: d.name }))}
           placeholder="Диалог…"
         />
-        {clip.dialogueId && (
+        {component.dialogueId && (
           <button
-            onClick={() => onOpenDialogue(clip.dialogueId!)}
+            onClick={() => onOpenDialogue(component.dialogueId!)}
             className="flex items-center gap-1.5 text-xs text-[var(--op-50)] hover:text-[var(--op-80)]"
           >
             <ExternalLink size={12} /> Открыть в редакторе диалогов
@@ -361,19 +418,38 @@ export function ClipInspector({
           действовать во время этого диалога — снимите «Ждёт диалог» в его собственной панели параметров.
         </div>
         <div className="flex items-center gap-2">
-          <NumField label="Начало мс" value={clip.atMs} onChange={(v) => patch({ atMs: v })} />
+          <NumField label="Начало мс" value={clip.startMs} onChange={(v) => patch({ startMs: v })} />
           <NumField label="Показ мс" value={clip.durationMs} onChange={(v) => patch({ durationMs: v })} />
         </div>
       </div>
     );
   }
 
-  const track = entry.cutsceneAudioFxTrack ?? [];
-  const clip = track.find((c) => c.id === selected.id);
-  if (!clip) return null;
-  const patch = (p: Partial<AudioFxClip>) => updateEntry(entry.id, { cutsceneAudioFxTrack: track.map((c) => (c.id === clip.id ? { ...c, ...p } : c)) });
+  const clips = trackClips(tracks, "audiofx");
+  const clip = clips.find((c) => c.id === selected.id);
+  if (!clip || clip.component.kind !== "audio") return null;
+  const component = clip.component;
+  const patch = (p: { startMs?: number; durationMs?: number } & Partial<typeof component>) => {
+    const { startMs, durationMs, ...componentPatch } = p;
+    updateEntry(entry.id, {
+      cutsceneTracks: withTrackClips(
+        tracks,
+        "audiofx",
+        clips.map((c) =>
+          c.id === clip.id
+            ? {
+                ...c,
+                ...(startMs !== undefined ? { startMs } : {}),
+                ...(durationMs !== undefined ? { durationMs } : {}),
+                component: { ...component, ...componentPatch },
+              }
+            : c
+        )
+      ),
+    });
+  };
   const remove = () => {
-    updateEntry(entry.id, { cutsceneAudioFxTrack: track.filter((c) => c.id !== clip.id) });
+    updateEntry(entry.id, { cutsceneTracks: withTrackClips(tracks, "audiofx", clips.filter((c) => c.id !== clip.id)) });
     onClose();
   };
   return (
@@ -386,27 +462,32 @@ export function ClipInspector({
       </div>
       <ThemedSelect
         className="input"
-        value={clip.kind}
-        onChange={(v) => patch({ kind: v as AudioFxKind })}
+        value={component.audioKind}
+        onChange={(v) => patch({ audioKind: v as AudioFxKind })}
         options={(Object.keys(AUDIOFX_KIND_LABEL) as AudioFxKind[]).map((k) => ({ value: k, label: AUDIOFX_KIND_LABEL[k] }))}
       />
       <div className="flex items-center gap-2 flex-wrap">
-        <NumField label="Момент мс" value={clip.atMs} onChange={(v) => patch({ atMs: v })} />
-        {(clip.kind === "sound" || clip.kind === "music") && (
+        <NumField label="Момент мс" value={clip.startMs} onChange={(v) => patch({ startMs: v })} />
+        {(component.audioKind === "sound" || component.audioKind === "music") && (
           <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1">
             Ассет (GML)
-            <input className="input text-xs w-32" value={clip.assetName ?? ""} placeholder="snd_..." onChange={(e) => patch({ assetName: e.target.value })} />
+            <input
+              className="input text-xs w-32"
+              value={component.assetName ?? ""}
+              placeholder="snd_..."
+              onChange={(e) => patch({ assetName: e.target.value })}
+            />
           </label>
         )}
-        {(clip.kind === "fade" || clip.kind === "flash") && (
-          <NumField label="Длит. мс" value={clip.durationMs ?? 500} onChange={(v) => patch({ durationMs: v })} />
+        {(component.audioKind === "fade" || component.audioKind === "flash") && (
+          <NumField label="Длит. мс" value={clip.durationMs} onChange={(v) => patch({ durationMs: v })} />
         )}
-        {clip.kind === "fade" && (
+        {component.audioKind === "fade" && (
           <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1">
             Направление
             <ThemedSelect
               className="input w-28"
-              value={clip.direction ?? "out"}
+              value={component.direction ?? "out"}
               onChange={(v) => patch({ direction: v as "in" | "out" })}
               options={[
                 { value: "out", label: "В темноту" },
@@ -415,19 +496,19 @@ export function ClipInspector({
             />
           </label>
         )}
-        {clip.kind === "flash" && (
+        {component.audioKind === "flash" && (
           <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1">
             Цвет
             <input
               type="color"
               className="w-8 h-6 rounded border border-[var(--op-10)] bg-transparent"
-              value={clip.color ?? "#ffffff"}
+              value={component.color ?? "#ffffff"}
               onChange={(e) => patch({ color: e.target.value })}
             />
           </label>
         )}
       </div>
-      <PausesForDialogueField value={clip.pausesForDialogue} onChange={(v) => patch({ pausesForDialogue: v })} />
+      <PausesForDialogueField value={component.pausesForDialogue} onChange={(v) => patch({ pausesForDialogue: v })} />
     </div>
   );
 }

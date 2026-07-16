@@ -255,10 +255,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       ...(category === "cutscene"
         ? {
             cutsceneCastCharacterIds: [],
-            cutsceneCameraTrack: [],
-            cutsceneCharacterTrack: [],
-            cutsceneDialogueTrack: [],
-            cutsceneAudioFxTrack: [],
+            cutsceneTracks: [],
           }
         : {}),
     };

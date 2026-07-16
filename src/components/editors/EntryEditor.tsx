@@ -1161,7 +1161,7 @@ function ScenePanel({ entry }: { entry: Entry }) {
 }
 
 
-// The Cutscene entity (Dynarain Phase 2) -- see the doc comment above CameraClip in
+// The Cutscene entity (Dynarain Phase 2) -- see the doc comment above CutsceneTrackKind in
 // types/database.ts for the full data model. Editing itself now happens in its own full-screen
 // window (CutsceneEditorModal), matching how the Map editor works -- this card is just a quick
 // summary + launcher, not a place to actually drag clips around, per the "I need a real editor
@@ -1172,11 +1172,7 @@ function CutscenePanel({ entry }: { entry: Entry }) {
 
   const boundMap = allEntries.find((e) => e.id === entry.cutsceneMapId);
   const totalMs = cutsceneTotalDurationMs(entry);
-  const clipCount =
-    (entry.cutsceneCameraTrack?.length ?? 0) +
-    (entry.cutsceneCharacterTrack?.length ?? 0) +
-    (entry.cutsceneDialogueTrack?.length ?? 0) +
-    (entry.cutsceneAudioFxTrack?.length ?? 0);
+  const clipCount = (entry.cutsceneTracks ?? []).reduce((sum, track) => sum + track.clips.length, 0);
 
   return (
     <Section title="Катсцена">

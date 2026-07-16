@@ -1,47 +1,42 @@
-import type { CharacterPositionKeyframe, Entry, Keyframe } from "../types/database";
+import type { CharacterPositionKeyframe, CutsceneClip, CutsceneTrack, Entry, Keyframe } from "../types/database";
 import { nextId } from "./mapDefaults";
 
-// Backfills an Entry's Cutscene fields from the OLD clip-based camera "move"/"zoom" and
-// character "move" shapes (pre keyframe-channel rework) into the new Keyframe[] channels, the
-// same "evolve, never rewrite, backfill once at load time" approach already used for
-// Scene/Character data elsewhere in this codebase (see normalizeSceneEntry). Idempotent: once
-// the new channel fields exist, this is a no-op, so it's safe to run on every project load.
+// Backfills an Entry's Cutscene fields from OLDER shapes into the CURRENT one, the same "evolve,
+// never rewrite, backfill once at load time" approach already used for Scene/Character data
+// elsewhere in this codebase (see normalizeSceneEntry). Idempotent, and safe to run on every
+// project load. Two independent migrations live here, run in order:
 //
-// The conversion is a best-effort, not a byte-for-byte behavioral clone: each old "move"/"zoom"
-// clip becomes ONE arrival keyframe at `startMs + durationMs` carrying the clip's own target
-// value and easing (the clip's departure value came from whatever the PREVIOUS clip's resting
-// value was, which the new model reproduces anyway by simply holding constant before the next
-// key) -- the exact shape of the transition window can differ slightly from the old
-// "settle-then-tween" math if there were gaps between clips, but the actually-authored arrival
-// points and their easing are preserved faithfully, which is what matters for not losing work.
+//  1. clip-chain camera/character "move"/"zoom" clips -> keyframe channels (cutsceneCameraPosX/
+//     PosY/ZoomKeys, cutsceneCharacterPositionKeys) -- from the earlier keyframe-channel rework.
+//  2. the four separately-typed clip tracks (cutsceneCameraTrack/cutsceneCharacterTrack/
+//     cutsceneDialogueTrack/cutsceneAudioFxTrack) -> one generic cutsceneTracks: CutsceneTrack[]
+//     list, each clip tagged with a typed `component` -- from the Track+Clip+Component
+//     architecture rework. See the doc comment above CutsceneTrackKind in types/database.ts for
+//     the full rationale.
+//
+// Both migrations read the OLDER shapes via `as unknown as` casts against inline anonymous types
+// (rather than importing long-gone named interfaces) since the whole point is that those shapes
+// no longer exist in the current type system -- this is the one place still allowed to know what
+// they used to look like.
 export function normalizeCutsceneEntry(entry: Entry): Entry {
   if (entry.category !== "cutscene") return entry;
 
-  const needsCameraMigration =
-    !entry.cutsceneCameraPosX && !entry.cutsceneCameraPosY && !entry.cutsceneCameraZoomKeys && (entry.cutsceneCameraTrack?.length ?? 0) > 0;
-  const needsCharMigration = !entry.cutsceneCharacterPositionKeys && (entry.cutsceneCharacterTrack?.length ?? 0) > 0;
+  const needsCameraKeyMigration =
+    !entry.cutsceneCameraPosX && !entry.cutsceneCameraPosY && !entry.cutsceneCameraZoomKeys && legacyLen(entry, "cutsceneCameraTrack") > 0;
+  const needsCharKeyMigration = !entry.cutsceneCharacterPositionKeys && legacyLen(entry, "cutsceneCharacterTrack") > 0;
+  const needsTracksMigration = !entry.cutsceneTracks;
 
-  if (!needsCameraMigration && !needsCharMigration) return entry;
+  if (!needsCameraKeyMigration && !needsCharKeyMigration && !needsTracksMigration) return entry;
 
   let cameraPosX: Keyframe[] = entry.cutsceneCameraPosX ?? [];
   let cameraPosY: Keyframe[] = entry.cutsceneCameraPosY ?? [];
   let cameraZoomKeys: Keyframe[] = entry.cutsceneCameraZoomKeys ?? [];
-  let cameraShakeClips = entry.cutsceneCameraTrack ?? [];
+  // Shake-only camera clips, in the OLD per-kind shape -- becomes input to the tracks migration
+  // below regardless of which migration(s) actually run this pass.
+  let legacyCameraClips = (entry as unknown as { cutsceneCameraTrack?: LegacyCameraClip[] }).cutsceneCameraTrack ?? [];
 
-  if (needsCameraMigration) {
-    const oldCamClips = (entry.cutsceneCameraTrack ?? []) as unknown as Array<{
-      id: string;
-      startMs: number;
-      durationMs: number;
-      kind: string;
-      x?: number;
-      y?: number;
-      zoom?: number;
-      intensity?: number;
-      easing?: Keyframe["easing"];
-      pausesForDialogue?: boolean;
-    }>;
-    for (const c of oldCamClips) {
+  if (needsCameraKeyMigration) {
+    for (const c of legacyCameraClips) {
       const atMs = c.startMs + c.durationMs;
       if (c.kind === "move" && c.x !== undefined && c.y !== undefined) {
         cameraPosX = [...cameraPosX, { id: nextId("key"), atMs, value: c.x, easing: c.easing }];
@@ -50,37 +45,17 @@ export function normalizeCutsceneEntry(entry: Entry): Entry {
         cameraZoomKeys = [...cameraZoomKeys, { id: nextId("key"), atMs, value: c.zoom, easing: c.easing }];
       }
     }
-    // Only "shake" clips remain in the clip track going forward.
-    cameraShakeClips = oldCamClips.filter((c) => c.kind === "shake") as typeof cameraShakeClips;
+    // Only "shake" clips carry forward into the clip track going forward.
+    legacyCameraClips = legacyCameraClips.filter((c) => c.kind === "shake");
   }
 
   let characterPositionKeys: CharacterPositionKeyframe[] = entry.cutsceneCharacterPositionKeys ?? [];
-  let characterAppearanceClips = entry.cutsceneCharacterTrack ?? [];
+  let legacyCharClips = (entry as unknown as { cutsceneCharacterTrack?: LegacyCharacterClip[] }).cutsceneCharacterTrack ?? [];
 
-  if (needsCharMigration) {
-    const oldCharClips = (entry.cutsceneCharacterTrack ?? []) as unknown as Array<{
-      id: string;
-      startMs: number;
-      durationMs: number;
-      characterId?: string;
-      kind?: string;
-      x?: number;
-      y?: number;
-      anim?: any;
-      easing?: Keyframe["easing"];
-      pausesForDialogue?: boolean;
-      speed?: number;
-      zIndex?: number;
-      anchor?: any;
-      opacity?: number;
-      flipX?: boolean;
-      conditionExpr?: string;
-      tags?: string[];
-      notes?: string;
-    }>;
+  if (needsCharKeyMigration) {
     const newKeys: CharacterPositionKeyframe[] = [];
-    const newAppearance: typeof characterAppearanceClips = [];
-    for (const c of oldCharClips) {
+    const newAppearance: LegacyCharacterClip[] = [];
+    for (const c of legacyCharClips) {
       if (!c.characterId) continue;
       if (c.kind === "move" && c.x !== undefined && c.y !== undefined) {
         const atMs = c.startMs + c.durationMs;
@@ -88,12 +63,36 @@ export function normalizeCutsceneEntry(entry: Entry): Entry {
         newKeys.push({ id: nextId("ckey"), characterId: c.characterId, axis: "y", atMs, value: c.y, easing: c.easing });
         // A "move" clip could also carry an anim override -- preserve it as its own appearance
         // clip so that override isn't silently dropped by the migration.
-        if (c.anim) {
-          newAppearance.push({
-            id: c.id,
-            startMs: c.startMs,
-            durationMs: c.durationMs,
-            characterId: c.characterId,
+        if (c.anim) newAppearance.push({ ...c, kind: "animate" });
+      } else {
+        newAppearance.push(c);
+      }
+    }
+    characterPositionKeys = [...characterPositionKeys, ...newKeys];
+    legacyCharClips = newAppearance;
+  }
+
+  let tracks: CutsceneTrack[] = entry.cutsceneTracks ?? [];
+  if (needsTracksMigration) {
+    const cameraClips: CutsceneClip[] = legacyCameraClips.map((c) => ({
+      id: c.id,
+      startMs: c.startMs,
+      durationMs: c.durationMs,
+      component: { kind: "shake", intensity: c.intensity, pausesForDialogue: c.pausesForDialogue },
+    }));
+
+    const characterTracks: CutsceneTrack[] = [];
+    const castIds = new Set<string>(entry.cutsceneCastCharacterIds ?? []);
+    for (const c of legacyCharClips) if (c.characterId) castIds.add(c.characterId);
+    for (const characterId of castIds) {
+      const clips: CutsceneClip[] = legacyCharClips
+        .filter((c) => c.characterId === characterId)
+        .map((c) => ({
+          id: c.id,
+          startMs: c.startMs,
+          durationMs: c.durationMs,
+          component: {
+            kind: "animation",
             anim: c.anim,
             pausesForDialogue: c.pausesForDialogue,
             speed: c.speed,
@@ -104,29 +103,41 @@ export function normalizeCutsceneEntry(entry: Entry): Entry {
             conditionExpr: c.conditionExpr,
             tags: c.tags,
             notes: c.notes,
-          });
-        }
-      } else {
-        newAppearance.push({
-          id: c.id,
-          startMs: c.startMs,
-          durationMs: c.durationMs,
-          characterId: c.characterId,
-          anim: c.anim,
-          pausesForDialogue: c.pausesForDialogue,
-          speed: c.speed,
-          zIndex: c.zIndex,
-          anchor: c.anchor,
-          opacity: c.opacity,
-          flipX: c.flipX,
-          conditionExpr: c.conditionExpr,
-          tags: c.tags,
-          notes: c.notes,
-        });
-      }
+          },
+        }));
+      characterTracks.push({ id: nextId("track"), kind: "character", characterId, clips });
     }
-    characterPositionKeys = [...characterPositionKeys, ...newKeys];
-    characterAppearanceClips = newAppearance;
+
+    const legacyDialogueClips =
+      (entry as unknown as { cutsceneDialogueTrack?: LegacyDialogueClip[] }).cutsceneDialogueTrack ?? [];
+    const dialogueClips: CutsceneClip[] = legacyDialogueClips.map((c) => ({
+      id: c.id,
+      startMs: c.atMs,
+      durationMs: c.durationMs,
+      component: { kind: "dialogue", dialogueId: c.dialogueId },
+    }));
+
+    const legacyAudioClips = (entry as unknown as { cutsceneAudioFxTrack?: LegacyAudioFxClip[] }).cutsceneAudioFxTrack ?? [];
+    const audioClips: CutsceneClip[] = legacyAudioClips.map((c) => ({
+      id: c.id,
+      startMs: c.atMs,
+      durationMs: c.durationMs ?? 0,
+      component: {
+        kind: "audio",
+        audioKind: c.kind,
+        assetName: c.assetName,
+        color: c.color,
+        direction: c.direction,
+        pausesForDialogue: c.pausesForDialogue,
+      },
+    }));
+
+    tracks = [
+      { id: nextId("track"), kind: "camera", clips: cameraClips },
+      ...characterTracks,
+      { id: nextId("track"), kind: "dialogue", clips: dialogueClips },
+      { id: nextId("track"), kind: "audiofx", clips: audioClips },
+    ];
   }
 
   return {
@@ -134,8 +145,63 @@ export function normalizeCutsceneEntry(entry: Entry): Entry {
     cutsceneCameraPosX: cameraPosX,
     cutsceneCameraPosY: cameraPosY,
     cutsceneCameraZoomKeys: cameraZoomKeys,
-    cutsceneCameraTrack: cameraShakeClips,
     cutsceneCharacterPositionKeys: characterPositionKeys,
-    cutsceneCharacterTrack: characterAppearanceClips,
+    cutsceneTracks: tracks,
   };
+}
+
+function legacyLen(entry: Entry, field: "cutsceneCameraTrack" | "cutsceneCharacterTrack"): number {
+  return ((entry as unknown as Record<string, unknown[] | undefined>)[field] ?? []).length;
+}
+
+interface LegacyCameraClip {
+  id: string;
+  startMs: number;
+  durationMs: number;
+  kind: string;
+  x?: number;
+  y?: number;
+  zoom?: number;
+  intensity?: number;
+  easing?: Keyframe["easing"];
+  pausesForDialogue?: boolean;
+}
+
+interface LegacyCharacterClip {
+  id: string;
+  startMs: number;
+  durationMs: number;
+  characterId?: string;
+  kind?: string;
+  x?: number;
+  y?: number;
+  anim?: any;
+  easing?: Keyframe["easing"];
+  pausesForDialogue?: boolean;
+  speed?: number;
+  zIndex?: number;
+  anchor?: any;
+  opacity?: number;
+  flipX?: boolean;
+  conditionExpr?: string;
+  tags?: string[];
+  notes?: string;
+}
+
+interface LegacyDialogueClip {
+  id: string;
+  atMs: number;
+  durationMs: number;
+  dialogueId?: string;
+}
+
+interface LegacyAudioFxClip {
+  id: string;
+  atMs: number;
+  kind: "sound" | "music" | "fade" | "flash";
+  assetName?: string;
+  durationMs?: number;
+  color?: string;
+  direction?: "in" | "out";
+  pausesForDialogue?: boolean;
 }

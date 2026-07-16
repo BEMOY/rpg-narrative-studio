@@ -4,7 +4,8 @@ import type { Dialogue, DialogueColorStyle, Entry, Keyframe } from "../../types/
 import { useProjectStore } from "../../store/useProjectStore";
 import { MapThumbnail } from "../mapeditor/MapThumbnail";
 import { SpriteAnimator } from "../common/SpriteAnimator";
-import { anchorOffset, resolveCamera, resolveCharacters, resolveChannel, resolveOverlay } from "../../lib/cutscenePreview";
+import { anchorOffset, resolveCamera, resolveCharacters, resolveOverlay } from "../../lib/cutscenePreview";
+import { trackClips, withTrackClips } from "../../lib/cutsceneTracks";
 import {
   audioFxTrackKey,
   cameraPosXKey,
@@ -165,22 +166,28 @@ export function CutscenePreview({
   const map = boundMap.map;
   const mapCenterCell = { x: map.width / 2, y: map.height / 2 };
 
-  const shakeClips = hiddenTracks.has(cameraTrackKey()) ? [] : entry.cutsceneCameraTrack ?? [];
+  const tracks = entry.cutsceneTracks ?? [];
+  // Hiding a track from the preview (the eye icon in CutsceneTimeline) just means "don't let its
+  // clips affect what's resolved this frame" -- filter it out of the tracks list the resolve
+  // functions see, same effect as before this rework, just expressed generically over one list
+  // instead of four separate hidden-clip-array computations.
+  const visibleTracks = tracks.filter((tr) => {
+    if (tr.kind === "camera") return !hiddenTracks.has(cameraTrackKey());
+    if (tr.kind === "dialogue") return !hiddenTracks.has(dialogueTrackKey());
+    if (tr.kind === "audiofx") return !hiddenTracks.has(audioFxTrackKey());
+    return !tr.characterId || !hiddenTracks.has(characterTrackKey(tr.characterId));
+  });
   const camPosX = hiddenTracks.has(cameraPosXKey()) ? [] : entry.cutsceneCameraPosX ?? [];
   const camPosY = hiddenTracks.has(cameraPosYKey()) ? [] : entry.cutsceneCameraPosY ?? [];
   const camZoom = hiddenTracks.has(cameraZoomKey()) ? [] : entry.cutsceneCameraZoomKeys ?? [];
-  const appearanceClips = (entry.cutsceneCharacterTrack ?? []).filter(
-    (c) => !c.characterId || !hiddenTracks.has(characterTrackKey(c.characterId))
-  );
   const positionKeys = (entry.cutsceneCharacterPositionKeys ?? []).filter((k) => {
     const key = k.axis === "x" ? characterPosXKey(k.characterId) : characterPosYKey(k.characterId);
     return !hiddenTracks.has(key);
   });
-  const fxClips = hiddenTracks.has(audioFxTrackKey()) ? [] : entry.cutsceneAudioFxTrack ?? [];
 
-  const camera = resolveCamera(camPosX, camPosY, camZoom, shakeClips, t, mapCenterCell, entry.cutsceneCameraPausesForDialogue, tLive);
-  const resolvedChars = resolveCharacters(positionKeys, appearanceClips, entry.cutsceneCastCharacterIds ?? [], t, mapCenterCell, tLive);
-  const overlay = resolveOverlay(fxClips, t, tLive);
+  const camera = resolveCamera(camPosX, camPosY, camZoom, visibleTracks, t, mapCenterCell, entry.cutsceneCameraPausesForDialogue, tLive);
+  const resolvedChars = resolveCharacters(positionKeys, visibleTracks, entry.cutsceneCastCharacterIds ?? [], t, mapCenterCell, tLive);
+  const overlay = resolveOverlay(visibleTracks, t, tLive);
 
   const gridSize = map.gridSize; // px per map cell, native resolution
   const viewW = NATIVE_W / Math.max(0.1, view.zoom);
@@ -262,9 +269,12 @@ export function CutscenePreview({
     }
     const dialogueId = e.dataTransfer.getData(DIALOGUE_DRAG_MIME);
     if (dialogueId) {
-      const dlgTrack = entry.cutsceneDialogueTrack ?? [];
+      const dlgClips = trackClips(tracks, "dialogue");
       updateEntry(entry.id, {
-        cutsceneDialogueTrack: [...dlgTrack, { id: nextId("dclip"), atMs: Math.max(0, Math.round(t)), durationMs: 3000, dialogueId }],
+        cutsceneTracks: withTrackClips(tracks, "dialogue", [
+          ...dlgClips,
+          { id: nextId("dclip"), startMs: Math.max(0, Math.round(t)), durationMs: 3000, component: { kind: "dialogue", dialogueId } },
+        ]),
       });
     }
   };

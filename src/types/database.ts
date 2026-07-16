@@ -220,7 +220,7 @@ export interface Entry {
   // preview just falls back to the static image for that character.
   spriteAnimations?: Partial<Record<CharacterAnimState, SpriteStrip>>;
 
-  // isCutscene(category) -- see the doc comment above CameraClip for the full model. A Cutscene
+  // isCutscene(category) -- see the doc comment above CutsceneTrackKind for the full model. A Cutscene
   // is bound to one location (same "one location" simplification as Scene) purely so the live
   // preview has a map to render behind the action; standalone and reusable, referenced by id
   // from Scene steps, never owned by one Scene.
@@ -231,16 +231,18 @@ export interface Entry {
   // doesn't just disappear (a lane filtered purely from clip data would vanish the moment its
   // last clip was removed). Order here is also the lane's on-screen display order.
   cutsceneCastCharacterIds?: string[];
-  cutsceneCameraTrack?: CameraClip[]; // "shake" clips only as of the keyframe-channel rework -- see Keyframe below
-  cutsceneCharacterTrack?: CharacterClip[]; // appearance-state clips (anim/speed/zIndex/anchor/opacity/flipX/...) -- position no longer lives here, see cutsceneCharacterPositionKeys
-  cutsceneDialogueTrack?: CutsceneDialogueClip[];
-  cutsceneAudioFxTrack?: AudioFxClip[];
+  // Generic Track+Clip+Component model (v71) -- one flat list of tracks, each holding its own
+  // ordered clips (see the doc comment above CutsceneTrackKind for the full rationale). Replaces
+  // the four separately-typed cutsceneCameraTrack/cutsceneCharacterTrack/cutsceneDialogueTrack/
+  // cutsceneAudioFxTrack fields from before this rework -- old projects are migrated once at
+  // load time (see normalizeCutsceneTracks in lib/cutsceneDefaults.ts).
+  cutsceneTracks?: CutsceneTrack[];
   // -- Keyframe-channel position data (replaces the old "move"/"zoom" clip kinds) --
   // Per writer design decision: POSITION (and zoom) are continuous properties best expressed as
   // classic point-in-time keyframes, each independently interpolating only against its own two
   // neighbors -- inserting/moving/deleting one key affects just the two segments touching it,
   // never the whole sequence, unlike the old clip-chain "settle then tween" model. ANIMATION
-  // STATE (idle/walk/run) stays clip-based on purpose (see CharacterClip) -- it's a discrete
+  // STATE (idle/walk/run) stays clip-based on purpose (see the "animation" CutsceneComponent) -- it's a discrete
   // state that holds until changed, not something you'd ever want to smoothly interpolate.
   cutsceneCameraPosX?: Keyframe[];
   cutsceneCameraPosY?: Keyframe[];
@@ -666,22 +668,6 @@ export interface CharacterPositionKeyframe {
   easing?: ClipEasing;
 }
 
-export interface CameraClip {
-  id: string;
-  startMs: number;
-  durationMs: number;
-  // "move"/"zoom" removed as of the keyframe-channel rework -- position/zoom now live in
-  // cutsceneCameraPosX/PosY/ZoomKeys (see Keyframe above). Only "shake" remains a clip/region,
-  // since it's a duration-based jitter effect rather than a value you'd keyframe a target for.
-  kind: "shake";
-  intensity?: number; // jitter amplitude, map cell units
-  // Default true (respects the pause): while the cutscene is paused waiting on a blocking
-  // dialogue clip, this clip's own resolution freezes along with the rest of the timeline. Set
-  // to false so THIS clip keeps animating using real elapsed time even while everything else is
-  // held for the dialogue (e.g. a shake that should keep rumbling during a conversation).
-  pausesForDialogue?: boolean;
-}
-
 // Where a clip's x/y position refers to within the character's sprite box -- mirrors the
 // classic 3x3 "anchor/pivot" grid (top-left ... bottom-right), defaulting to "center". This is a
 // per-CLIP placement convenience (e.g. "bottom-center" so x/y tracks the character's feet on a
@@ -692,63 +678,92 @@ export type CharacterAnchor =
   | "middle-left" | "center" | "middle-right"
   | "bottom-left" | "bottom-center" | "bottom-right";
 
-// A character's APPEARANCE STATE over some span of time -- which sprite animation is playing,
-// draw order, opacity, flip, anchor, and reference-only metadata. Position no longer lives here
-// (see cutsceneCharacterPositionKeys / Keyframe) -- per writer design decision, "position is
-// keyed, appearance state is clipped": animation state is a discrete thing that HOLDS until
-// explicitly changed, so a duration+clip (not an interpolated value) is the right shape for it,
-// same as it always was; only the "move" clip kind (and its x/y/easing fields) has been removed.
-export interface CharacterClip {
+export type AudioFxKind = "sound" | "music" | "fade" | "flash";
+
+// --- Generic Track + Clip + Component model (v71 architecture rework) ---
+// Every clip on every cutscene track used to be its own hard-coded TS type (CameraClip,
+// CharacterClip, CutsceneDialogueClip, AudioFxClip) living in its own dedicated Entry field
+// (cutsceneCameraTrack, cutsceneCharacterTrack, ...). That meant adding any new capability (an
+// Events track, a Particle track, a future Weather system) meant inventing a whole new Entry
+// field and re-plumbing it through every file that touches cutscenes. Per writer design
+// decision, this is replaced by ONE generic shape: a Track holds an ordered list of Clips, and
+// each Clip carries exactly one typed "component" payload (its actual behavior/data) tagged by
+// `kind`. Adding a new capability later (e.g. "weather") means adding ONE new variant to
+// CutsceneComponent -- it then automatically has a place in the track/clip data, the Action
+// Palette, the Inspector, search, and export, without inventing new plumbing.
+//
+// Position/zoom are deliberately NOT modeled as components here -- per the earlier keyframe
+// rework, those are continuous, interpolated CHANNELS (Keyframe[] on camera X/Y/zoom, character
+// X/Y), a fundamentally different shape from a clip (no start/duration, just points in time).
+// They stay on their own Entry fields (cutsceneCameraPosX/PosY/ZoomKeys,
+// cutsceneCharacterPositionKeys) exactly as before -- this mirrors the reference architecture's
+// own phasing (Tracks/Clips come first, Channels/Keys are unlocked once a track exists).
+export type CutsceneTrackKind = "camera" | "character" | "dialogue" | "audiofx";
+
+export type CutsceneComponent =
+  | {
+      kind: "shake";
+      intensity?: number; // jitter amplitude, map cell units
+      // Default true (respects the pause): while the cutscene is paused waiting on a blocking
+      // dialogue clip, this clip's own resolution freezes along with the rest of the timeline.
+      // Set to false so THIS clip keeps animating using real elapsed time even while everything
+      // else is held for the dialogue (e.g. a shake that should keep rumbling during a
+      // conversation).
+      pausesForDialogue?: boolean;
+    }
+  | {
+      // A character's APPEARANCE STATE over some span of time -- which sprite animation is
+      // playing, draw order, opacity, flip, anchor, and reference-only metadata. Position lives
+      // on the channel keyframes, not here (see the doc comment above CutsceneTrackKind).
+      kind: "animation";
+      anim?: CharacterAnimState; // which sprite state plays during this clip, default "idle"
+      pausesForDialogue?: boolean;
+      speed?: number; // playback speed of the sprite animation itself, percent, default 100
+      zIndex?: number; // draw order among characters on the same frame, default 0 (higher draws later/on top)
+      anchor?: CharacterAnchor; // default "center"
+      opacity?: number; // 0-100, default 100
+      flipX?: boolean; // mirror the sprite horizontally, default false
+      conditionExpr?: string; // free-text flag/condition expression (data-only -- captured for the writer's own reference and for a future GML export, not evaluated live in this preview)
+      tags?: string[];
+      notes?: string;
+    }
+  | {
+      // Reaching this clip while actually PLAYING (not just scrubbing) the cutscene ALWAYS
+      // pauses the timeline and shows the real interactive dialogue box embedded on the preview
+      // stage (see CutscenePreview.tsx's EmbeddedDialoguePlayer) until the conversation
+      // finishes. The exception mechanism for "something should keep going WHILE this dialogue
+      // plays" lives on the OTHER clip that should keep going (its own `pausesForDialogue`), not
+      // here -- simpler to reason about per element than as a single blanket toggle.
+      kind: "dialogue";
+      dialogueId?: string;
+    }
+  | {
+      kind: "audio";
+      audioKind: AudioFxKind;
+      assetName?: string; // "sound"/"music" -- GML sound asset name reference (data-only, matches the
+                           // rest of this tool's "no code-gen" export philosophy; no real audio file
+                           // is uploaded or played back in the preview, this is just a marker)
+      color?: string; // "flash" -- overlay color, e.g. "#ffffff"
+      direction?: "in" | "out"; // "fade" -- fade to black ("out") or from black ("in")
+      pausesForDialogue?: boolean;
+    };
+
+// One region of time on a track. `durationMs` is meaningful for every kind now (previously
+// dialogue/audiofx used a separate `atMs` + optional durationMs convention) -- "instant" events
+// like a sound cue or a dialogue trigger just use a small/zero duration, same as any other point
+// event on a real NLE timeline.
+export interface CutsceneClip {
   id: string;
   startMs: number;
   durationMs: number;
-  characterId?: string; // Entry id, category "character"
-  anim?: CharacterAnimState; // which sprite state plays during this clip, default "idle"
-  // Default true (respects the pause) -- see CameraClip.pausesForDialogue for the full
-  // explanation; set to false so this specific character keeps animating during a blocking
-  // dialogue instead of freezing with everything else.
-  pausesForDialogue?: boolean;
-  // -- richer per-appearance actor properties (all optional, all additive) --
-  speed?: number; // playback speed of the sprite animation itself, percent, default 100
-  zIndex?: number; // draw order among characters on the same frame, default 0 (higher draws later/on top)
-  anchor?: CharacterAnchor; // default "center"
-  opacity?: number; // 0-100, default 100
-  flipX?: boolean; // mirror the sprite horizontally, default false
-  conditionExpr?: string; // free-text flag/condition expression (data-only -- captured for the writer's own reference and for a future GML export, not evaluated live in this preview)
-  tags?: string[];
-  notes?: string;
+  component: CutsceneComponent;
 }
 
-export interface CutsceneDialogueClip {
+export interface CutsceneTrack {
   id: string;
-  atMs: number;
-  durationMs: number; // how long the dialogue's first line stays up in the lightweight scrub-preview overlay
-  dialogueId?: string;
-  // Reaching this clip while actually PLAYING (not just scrubbing) the cutscene ALWAYS pauses
-  // the timeline and shows the real interactive dialogue box embedded on the preview stage (see
-  // CutscenePreview.tsx's EmbeddedDialoguePlayer, using the exact same useDialoguePlayer core as
-  // the Dialogue editor's own Test-Play window) until the conversation finishes. The exception
-  // mechanism for "something should keep going WHILE this dialogue plays" now lives on the
-  // OTHER clip that should keep going (see CameraClip/CharacterClip/AudioFxClip's own
-  // `pausesForDialogue` field), not here -- simpler to reason about per element ("does THIS
-  // camera pan / this character / this fx cue care about a dialogue currently blocking the
-  // scene") than as a single blanket toggle on the dialogue itself.
-}
-
-export type AudioFxKind = "sound" | "music" | "fade" | "flash";
-
-export interface AudioFxClip {
-  id: string;
-  atMs: number;
-  kind: AudioFxKind;
-  assetName?: string; // "sound"/"music" -- GML sound asset name reference (data-only, matches the
-                       // rest of this tool's "no code-gen" export philosophy; no real audio file
-                       // is uploaded or played back in the preview, this is just a marker)
-  durationMs?: number; // "fade"/"flash" -- how long the screen overlay takes
-  color?: string; // "flash" -- overlay color, e.g. "#ffffff"
-  direction?: "in" | "out"; // "fade" -- fade to black ("out") or from black ("in")
-  // Default true (respects the pause) -- see CameraClip.pausesForDialogue.
-  pausesForDialogue?: boolean;
+  kind: CutsceneTrackKind;
+  characterId?: string; // set only when kind === "character"
+  clips: CutsceneClip[];
 }
 
 export interface CutsceneMarker {

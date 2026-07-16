@@ -1,18 +1,23 @@
 import { useMemo, useRef, useState } from "react";
-import { X, Eye, EyeOff, Lock, Unlock, ChevronDown, ChevronRight, Flag, Plus, Scissors, Magnet } from "lucide-react";
-import type { AudioFxClip, CameraClip, CharacterClip, CharacterPositionAxis, CutsceneDialogueClip, Entry, Keyframe } from "../../types/database";
+import { X, Eye, EyeOff, Lock, Unlock, ChevronDown, ChevronRight, Flag, Scissors, Magnet } from "lucide-react";
+import type { CharacterPositionAxis, CutsceneClip, CutsceneTrackKind, Entry, Keyframe } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
 import { cutsceneTotalDurationMs, resolveChannel } from "../../lib/cutscenePreview";
+import { findClipAnywhere, removeCharacterTrack, trackClips, withTrackClips } from "../../lib/cutsceneTracks";
 import { nextId } from "../../lib/mapDefaults";
 import { themedPrompt } from "../../lib/modals";
 import { CHARACTER_DRAG_MIME, DIALOGUE_DRAG_MIME } from "./CutsceneExplorerPanel";
 import { SearchSelect } from "../dialogue/SearchSelect";
 
 // Identifies exactly one selectable thing on the timeline -- either a clip (camera shake,
-// character appearance/anim, dialogue, audio/fx -- all still duration-based regions) or a single
-// KEYFRAME on one of the position/zoom channels (camera X/Y/zoom, or one character's X/Y).
-// Routes both drag/edit gestures here and the ClipInspector panel's selected-item display to the
-// right data.
+// character appearance/anim, dialogue, audio/fx -- all still duration-based regions, each now a
+// generic CutsceneClip tagged by a typed `component`, see CutsceneTrackKind in types/database.ts)
+// or a single KEYFRAME on one of the position/zoom channels (camera X/Y/zoom, or one character's
+// X/Y -- channels are a separate concept from tracks/clips, unaffected by the Track+Clip+
+// Component rework). Routes both drag/edit gestures here and the ClipInspector panel's
+// selected-item display to the right data. Note "character"/"camera" clip refs carry only a clip
+// id, not which specific track owns it (a given clip id only ever exists on ONE track of that
+// kind) -- see findClipAnywhere in lib/cutsceneTracks.ts for how callers resolve that back.
 export type ClipRef =
   | { trackKind: "camera"; id: string }
   | { trackKind: "character"; id: string }
@@ -41,12 +46,14 @@ const TRACK_COLOR = {
 //  - CLIP rows (camera shake, character appearance/anim, dialogue, audio/fx) -- colored bars,
 //    draggable (move) and resizable (drag the right edge), same "mousedown starts a drag, window
 //    listens for mousemove/mouseup" pattern used for freehand brush strokes in MapEditorModal.tsx.
+//    Under the hood each bar is one generic CutsceneClip on one of the four CutsceneTrackKinds
+//    (see lib/cutsceneTracks.ts for the read/write helpers all of this goes through) --
+//    everything track-specific about a clip lives in its typed `component` field.
 //  - KEYFRAME rows (camera X/Y/zoom, each character's X/Y) -- small diamond markers at a single
 //    point in time, draggable only in TIME (their VALUE is edited in the Inspector, or by
 //    dragging the actual object/camera on the live preview stage -- see CutscenePreview.tsx).
-//    Per writer design decision, position/zoom are classic point-keyframes that only interpolate
-//    against their own two neighbors (see resolveChannel in lib/cutscenePreview.ts) -- NOT the
-//    old clip-chain model.
+//    These are channels, a different concept from tracks/clips (see resolveChannel in
+//    lib/cutscenePreview.ts) -- untouched by the Track+Clip+Component rework.
 // The overall timeline LENGTH is always derived live from cutsceneTotalDurationMs (the furthest
 // any clip or keyframe reaches) -- there is no separately-stored "cutscene duration".
 // Track visibility/lock is ephemeral editing-session UI state (not persisted to project data).
@@ -124,10 +131,10 @@ export function CutsceneTimeline({
   const timelineWidth = Math.max(400, totalMs * pxPerMs + 120);
 
   const cast = entry.cutsceneCastCharacterIds ?? [];
-  const cameraTrack = entry.cutsceneCameraTrack ?? []; // shake clips only
-  const charTrack = entry.cutsceneCharacterTrack ?? []; // appearance/anim clips only
-  const dlgTrack = entry.cutsceneDialogueTrack ?? [];
-  const fxTrack = entry.cutsceneAudioFxTrack ?? [];
+  const tracks = entry.cutsceneTracks ?? [];
+  const cameraClips = trackClips(tracks, "camera");
+  const dlgClips = trackClips(tracks, "dialogue");
+  const fxClips = trackClips(tracks, "audiofx");
   const markers = entry.cutsceneMarkers ?? [];
   const charColors = entry.cutsceneCharacterTrackColors ?? {};
   const camPosX = entry.cutsceneCameraPosX ?? [];
@@ -135,10 +142,9 @@ export function CutsceneTimeline({
   const camZoom = entry.cutsceneCameraZoomKeys ?? [];
   const charPosKeys = entry.cutsceneCharacterPositionKeys ?? [];
 
-  const setCameraTrack = (next: CameraClip[]) => updateEntry(entry.id, { cutsceneCameraTrack: next });
-  const setCharTrack = (next: CharacterClip[]) => updateEntry(entry.id, { cutsceneCharacterTrack: next });
-  const setDlgTrack = (next: CutsceneDialogueClip[]) => updateEntry(entry.id, { cutsceneDialogueTrack: next });
-  const setFxTrack = (next: AudioFxClip[]) => updateEntry(entry.id, { cutsceneAudioFxTrack: next });
+  const setTracks = (next: typeof tracks) => updateEntry(entry.id, { cutsceneTracks: next });
+  const setClipsFor = (kind: CutsceneTrackKind, clips: CutsceneClip[], characterId?: string) =>
+    setTracks(withTrackClips(tracks, kind, clips, characterId));
   const setCharColor = (characterId: string, color: string) =>
     updateEntry(entry.id, { cutsceneCharacterTrackColors: { ...charColors, [characterId]: color } });
 
@@ -149,23 +155,17 @@ export function CutsceneTimeline({
   };
   const removeMarker = (id: string) => updateEntry(entry.id, { cutsceneMarkers: markers.filter((m) => m.id !== id) });
 
-  // Generic split-at-time helper for the scissors tool below -- works identically across the
-  // four remaining CLIP kinds (keyframes have no duration to split).
-  function splitTrack<T extends { id: string }>(
-    track: T[],
-    clipId: string,
-    at: number,
-    getRange: (c: T) => { start: number; dur: number },
-    withRange: (c: T, start: number, dur: number) => T
-  ): T[] | null {
-    const idx = track.findIndex((c) => c.id === clipId);
+  // Splits a clip at time `at`, keeping its component untouched on both halves -- works
+  // identically across every clip kind now that they all share the same startMs/durationMs shape
+  // (previously dialogue/audiofx used a separate atMs+optional-durationMs convention).
+  function splitClip(clips: CutsceneClip[], clipId: string, at: number): CutsceneClip[] | null {
+    const idx = clips.findIndex((c) => c.id === clipId);
     if (idx === -1) return null;
-    const c = track[idx];
-    const { start, dur } = getRange(c);
-    if (at <= start || at >= start + dur) return null;
-    const first = withRange(c, start, at - start);
-    const second = withRange({ ...c, id: nextId("split") }, at, start + dur - at);
-    const next = [...track];
+    const c = clips[idx];
+    if (at <= c.startMs || at >= c.startMs + c.durationMs) return null;
+    const first = { ...c, durationMs: at - c.startMs };
+    const second = { ...c, id: nextId("split"), startMs: at, durationMs: c.startMs + c.durationMs - at };
+    const next = [...clips];
     next.splice(idx, 1, first, second);
     return next;
   }
@@ -173,65 +173,30 @@ export function CutsceneTimeline({
   const splitSelected = () => {
     if (!selected) return;
     if (selected.trackKind === "camera") {
-      const next = splitTrack(
-        cameraTrack,
-        selected.id,
-        t,
-        (c) => ({ start: c.startMs, dur: c.durationMs }),
-        (c, start, dur) => ({ ...c, startMs: start, durationMs: dur })
-      );
-      if (next) setCameraTrack(next);
+      const next = splitClip(cameraClips, selected.id, t);
+      if (next) setClipsFor("camera", next);
     } else if (selected.trackKind === "character") {
-      const next = splitTrack(
-        charTrack,
-        selected.id,
-        t,
-        (c) => ({ start: c.startMs, dur: c.durationMs }),
-        (c, start, dur) => ({ ...c, startMs: start, durationMs: dur })
-      );
-      if (next) setCharTrack(next);
+      const found = findClipAnywhere(tracks, "character", selected.id);
+      if (!found) return;
+      const next = splitClip(found.track.clips, selected.id, t);
+      if (next) setClipsFor("character", next, found.track.characterId);
     } else if (selected.trackKind === "dialogue") {
-      const next = splitTrack(
-        dlgTrack,
-        selected.id,
-        t,
-        (c) => ({ start: c.atMs, dur: c.durationMs }),
-        (c, start, dur) => ({ ...c, atMs: start, durationMs: dur })
-      );
-      if (next) setDlgTrack(next);
+      const next = splitClip(dlgClips, selected.id, t);
+      if (next) setClipsFor("dialogue", next);
     } else if (selected.trackKind === "audiofx") {
-      const next = splitTrack(
-        fxTrack,
-        selected.id,
-        t,
-        (c) => ({ start: c.atMs, dur: c.durationMs ?? 500 }),
-        (c, start, dur) => ({ ...c, atMs: start, durationMs: dur })
-      );
-      if (next) setFxTrack(next);
+      const next = splitClip(fxClips, selected.id, t);
+      if (next) setClipsFor("audiofx", next);
     }
   };
 
   const canSplit = (() => {
     if (!selected) return false;
-    const find = (arr: { id: string }[]) => arr.find((c) => c.id === selected.id);
-    if (selected.trackKind === "camera") {
-      const c = find(cameraTrack) as CameraClip | undefined;
-      return !!c && t > c.startMs && t < c.startMs + c.durationMs;
-    }
-    if (selected.trackKind === "character") {
-      const c = find(charTrack) as CharacterClip | undefined;
-      return !!c && t > c.startMs && t < c.startMs + c.durationMs;
-    }
-    if (selected.trackKind === "dialogue") {
-      const c = find(dlgTrack) as CutsceneDialogueClip | undefined;
-      return !!c && t > c.atMs && t < c.atMs + c.durationMs;
-    }
-    if (selected.trackKind === "audiofx") {
-      const c = find(fxTrack) as AudioFxClip | undefined;
-      const dur = c?.durationMs ?? 500;
-      return !!c && t > c.atMs && t < c.atMs + dur;
-    }
-    return false; // keyframes have nothing to split
+    let clip: CutsceneClip | undefined;
+    if (selected.trackKind === "camera") clip = cameraClips.find((c) => c.id === selected.id);
+    else if (selected.trackKind === "character") clip = findClipAnywhere(tracks, "character", selected.id)?.clip;
+    else if (selected.trackKind === "dialogue") clip = dlgClips.find((c) => c.id === selected.id);
+    else if (selected.trackKind === "audiofx") clip = fxClips.find((c) => c.id === selected.id);
+    return !!clip && t > clip.startMs && t < clip.startMs + clip.durationMs;
   })();
 
   const addCastMember = (characterId: string | undefined) => {
@@ -241,11 +206,11 @@ export function CutsceneTimeline({
   const removeCastMember = (characterId: string) => {
     updateEntry(entry.id, {
       cutsceneCastCharacterIds: cast.filter((id) => id !== characterId),
-      cutsceneCharacterTrack: charTrack.filter((c) => c.characterId !== characterId),
+      cutsceneTracks: removeCharacterTrack(tracks, characterId),
       cutsceneCharacterPositionKeys: charPosKeys.filter((k) => k.characterId !== characterId),
     });
     if (
-      (selected?.trackKind === "character" && charTrack.find((c) => c.id === selected.id)?.characterId === characterId) ||
+      (selected?.trackKind === "character" && findClipAnywhere(tracks, "character", selected.id)?.track.characterId === characterId) ||
       (selected?.trackKind === "characterKey" && selected.characterId === characterId)
     ) {
       onSelect(null);
@@ -636,10 +601,10 @@ export function CutsceneTimeline({
               onDoubleClick={(e) => {
                 if (lockedTracks.has(cameraTrackKey())) return;
                 const ms = Math.max(0, Math.round(msFromClientX(e.clientX)));
-                setCameraTrack([...cameraTrack, { id: nextId("cam"), startMs: ms, durationMs: 1000, kind: "shake" }]);
+                setClipsFor("camera", [...cameraClips, { id: nextId("cam"), startMs: ms, durationMs: 1000, component: { kind: "shake" } }]);
               }}
             >
-              {cameraTrack.map((c) =>
+              {cameraClips.map((c) =>
                 renderClip(
                   c.id,
                   { trackKind: "camera", id: c.id },
@@ -650,8 +615,9 @@ export function CutsceneTimeline({
                   true,
                   lockedTracks.has(cameraTrackKey()),
                   (p) =>
-                    setCameraTrack(
-                      cameraTrack.map((cc) =>
+                    setClipsFor(
+                      "camera",
+                      cameraClips.map((cc) =>
                         cc.id === c.id
                           ? { ...cc, ...(p.start !== undefined ? { startMs: p.start } : {}), ...(p.dur !== undefined ? { durationMs: p.dur } : {}) }
                           : cc
@@ -669,7 +635,7 @@ export function CutsceneTimeline({
             {!charsCollapsed &&
               cast.map((charId) => {
                 const ch = allEntries.find((e) => e.id === charId);
-                const clips = charTrack.filter((c) => c.characterId === charId);
+                const clips = trackClips(tracks, "character", charId);
                 const color = charColors[charId] ?? TRACK_COLOR.character;
                 const xKeys = charPosKeys.filter((k) => k.characterId === charId && k.axis === "x");
                 const yKeys = charPosKeys.filter((k) => k.characterId === charId && k.axis === "y");
@@ -735,29 +701,36 @@ export function CutsceneTimeline({
                       onDoubleClick={(e) => {
                         if (lockedTracks.has(characterTrackKey(charId))) return;
                         const ms = Math.max(0, Math.round(msFromClientX(e.clientX)));
-                        setCharTrack([...charTrack, { id: nextId("cclip"), startMs: ms, durationMs: 1000, characterId: charId, anim: "idle" }]);
+                        setClipsFor(
+                          "character",
+                          [...clips, { id: nextId("cclip"), startMs: ms, durationMs: 1000, component: { kind: "animation", anim: "idle" } }],
+                          charId
+                        );
                       }}
                     >
-                      {clips.map((c) =>
-                        renderClip(
+                      {clips.map((c) => {
+                        const anim = c.component.kind === "animation" ? c.component.anim ?? "idle" : "idle";
+                        return renderClip(
                           c.id,
                           { trackKind: "character", id: c.id },
                           c.startMs,
                           c.durationMs,
-                          `${ch?.name ?? "?"} — ${c.anim ?? "idle"}`,
+                          `${ch?.name ?? "?"} — ${anim}`,
                           color,
                           true,
                           lockedTracks.has(characterTrackKey(charId)),
                           (p) =>
-                            setCharTrack(
-                              charTrack.map((cc) =>
+                            setClipsFor(
+                              "character",
+                              clips.map((cc) =>
                                 cc.id === c.id
                                   ? { ...cc, ...(p.start !== undefined ? { startMs: p.start } : {}), ...(p.dur !== undefined ? { durationMs: p.dur } : {}) }
                                   : cc
-                              )
+                              ),
+                              charId
                             )
-                        )
-                      )}
+                        );
+                      })}
                     </div>
                   </div>
                 );
@@ -769,7 +742,7 @@ export function CutsceneTimeline({
               onDoubleClick={(e) => {
                 if (lockedTracks.has(dialogueTrackKey())) return;
                 const ms = Math.max(0, Math.round(msFromClientX(e.clientX)));
-                setDlgTrack([...dlgTrack, { id: nextId("dclip"), atMs: ms, durationMs: 3000 }]);
+                setClipsFor("dialogue", [...dlgClips, { id: nextId("dclip"), startMs: ms, durationMs: 3000, component: { kind: "dialogue" } }]);
               }}
               onDragOver={(e) => e.preventDefault()}
               onDrop={(e) => {
@@ -777,25 +750,30 @@ export function CutsceneTimeline({
                 const dialogueId = e.dataTransfer.getData(DIALOGUE_DRAG_MIME);
                 if (!dialogueId) return;
                 const ms = Math.max(0, Math.round(msFromClientX(e.clientX)));
-                setDlgTrack([...dlgTrack, { id: nextId("dclip"), atMs: ms, durationMs: 3000, dialogueId }]);
+                setClipsFor("dialogue", [
+                  ...dlgClips,
+                  { id: nextId("dclip"), startMs: ms, durationMs: 3000, component: { kind: "dialogue", dialogueId } },
+                ]);
               }}
             >
-              {dlgTrack.map((c) => {
-                const d = dialogues.find((dd) => dd.id === c.dialogueId);
+              {dlgClips.map((c) => {
+                const dialogueId = c.component.kind === "dialogue" ? c.component.dialogueId : undefined;
+                const d = dialogues.find((dd) => dd.id === dialogueId);
                 return renderClip(
                   c.id,
                   { trackKind: "dialogue", id: c.id },
-                  c.atMs,
+                  c.startMs,
                   c.durationMs,
                   d?.name ?? "Диалог",
                   TRACK_COLOR.dialogue,
                   true,
                   lockedTracks.has(dialogueTrackKey()),
                   (p) =>
-                    setDlgTrack(
-                      dlgTrack.map((cc) =>
+                    setClipsFor(
+                      "dialogue",
+                      dlgClips.map((cc) =>
                         cc.id === c.id
-                          ? { ...cc, ...(p.start !== undefined ? { atMs: p.start } : {}), ...(p.dur !== undefined ? { durationMs: p.dur } : {}) }
+                          ? { ...cc, ...(p.start !== undefined ? { startMs: p.start } : {}), ...(p.dur !== undefined ? { durationMs: p.dur } : {}) }
                           : cc
                       )
                     )
@@ -809,25 +787,37 @@ export function CutsceneTimeline({
               onDoubleClick={(e) => {
                 if (lockedTracks.has(audioFxTrackKey())) return;
                 const ms = Math.max(0, Math.round(msFromClientX(e.clientX)));
-                setFxTrack([...fxTrack, { id: nextId("fx"), atMs: ms, kind: "sound" }]);
+                setClipsFor("audiofx", [
+                  ...fxClips,
+                  { id: nextId("fx"), startMs: ms, durationMs: 0, component: { kind: "audio", audioKind: "sound" } },
+                ]);
               }}
             >
-              {fxTrack.map((c) => {
-                const resizable = c.kind === "fade" || c.kind === "flash";
+              {fxClips.map((c) => {
+                if (c.component.kind !== "audio") return null;
+                const audio = c.component;
+                const resizable = audio.audioKind === "fade" || audio.audioKind === "flash";
                 return renderClip(
                   c.id,
                   { trackKind: "audiofx", id: c.id },
-                  c.atMs,
-                  resizable ? c.durationMs ?? 500 : 200,
-                  c.kind === "sound" ? "Звук" : c.kind === "music" ? "Музыка" : c.kind === "fade" ? "Затемнение" : "Вспышка",
+                  c.startMs,
+                  resizable ? c.durationMs : 200,
+                  audio.audioKind === "sound"
+                    ? "Звук"
+                    : audio.audioKind === "music"
+                      ? "Музыка"
+                      : audio.audioKind === "fade"
+                        ? "Затемнение"
+                        : "Вспышка",
                   TRACK_COLOR.audiofx,
                   resizable,
                   lockedTracks.has(audioFxTrackKey()),
                   (p) =>
-                    setFxTrack(
-                      fxTrack.map((cc) =>
+                    setClipsFor(
+                      "audiofx",
+                      fxClips.map((cc) =>
                         cc.id === c.id
-                          ? { ...cc, ...(p.start !== undefined ? { atMs: p.start } : {}), ...(p.dur !== undefined ? { durationMs: p.dur } : {}) }
+                          ? { ...cc, ...(p.start !== undefined ? { startMs: p.start } : {}), ...(p.dur !== undefined ? { durationMs: p.dur } : {}) }
                           : cc
                       )
                     )
