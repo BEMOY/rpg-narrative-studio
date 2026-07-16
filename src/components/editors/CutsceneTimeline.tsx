@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import { X, Eye, EyeOff, Lock, Unlock, ChevronDown, ChevronRight, Flag, Plus, Scissors, Magnet } from "lucide-react";
 import type { AudioFxClip, CameraClip, CharacterClip, CutsceneDialogueClip, Entry } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
-import { cutsceneTotalDurationMs } from "../../lib/cutscenePreview";
+import { cutsceneTotalDurationMs, resolveCamera, resolveCharacters } from "../../lib/cutscenePreview";
 import { nextId } from "../../lib/mapDefaults";
 import { themedPrompt } from "../../lib/modals";
 import { CHARACTER_DRAG_MIME, DIALOGUE_DRAG_MIME } from "./CutsceneExplorerPanel";
@@ -85,6 +85,8 @@ export function CutsceneTimeline({
   const allEntries = useProjectStore((s) => s.project.entries);
   const dialogues = useProjectStore((s) => s.project.dialogues);
   const characters = allEntries.filter((e) => e.category === "character");
+  const boundMap = allEntries.find((e) => e.id === entry.cutsceneMapId);
+  const mapCenterCell = boundMap?.map ? { x: boundMap.map.width / 2, y: boundMap.map.height / 2 } : { x: 0, y: 0 };
 
   const [pxPerMs, setPxPerMs] = useState(0.08);
   // Collapsing the whole "Персонажи" group is a purely visual/session convenience (like
@@ -496,7 +498,11 @@ export function CutsceneTimeline({
               onDoubleClick={(e) => {
                 if (lockedTracks.has(cameraTrackKey())) return;
                 const ms = Math.max(0, Math.round(msFromClientX(e.clientX)));
-                setCameraTrack([...cameraTrack, { id: nextId("cam"), startMs: ms, durationMs: 1000, kind: "move", x: 0, y: 0 }]);
+                // Default to wherever the camera ALREADY resolves to at this time, not a
+                // hardcoded 0,0 (map corner) -- so adding a keyframe doesn't make the camera
+                // visually jump anywhere until you actually drag it.
+                const resolved = resolveCamera(cameraTrack, ms, mapCenterCell);
+                setCameraTrack([...cameraTrack, { id: nextId("cam"), startMs: ms, durationMs: 1000, kind: "move", x: resolved.x, y: resolved.y }]);
               }}
             >
               {cameraTrack.map((c) =>
@@ -536,7 +542,18 @@ export function CutsceneTimeline({
                   onDoubleClick={(e) => {
                     if (lockedTracks.has(characterTrackKey(charId))) return;
                     const ms = Math.max(0, Math.round(msFromClientX(e.clientX)));
-                    setCharTrack([...charTrack, { id: nextId("cclip"), startMs: ms, durationMs: 1000, kind: "move", characterId: charId, x: 0, y: 0 }]);
+                    // Same "don't jump to 0,0" fix as the camera lane -- default to wherever
+                    // THIS character already resolves to at this time.
+                    const resolved = resolveCharacters(
+                      charTrack.filter((c) => c.characterId === charId),
+                      ms,
+                      mapCenterCell
+                    );
+                    const pos = resolved.find((r) => r.characterId === charId) ?? mapCenterCell;
+                    setCharTrack([
+                      ...charTrack,
+                      { id: nextId("cclip"), startMs: ms, durationMs: 1000, kind: "move", characterId: charId, x: pos.x, y: pos.y },
+                    ]);
                   }}
                 >
                   {clips.map((c) =>

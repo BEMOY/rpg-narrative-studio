@@ -105,6 +105,15 @@ export function CutscenePreview({
   const [showGrid, setShowGrid] = useState(false);
   const [gridCells, setGridCells] = useState(1);
   const [dragChar, setDragChar] = useState<{ characterId: string; x: number; y: number } | null>(null);
+  const [dragCam, setDragCam] = useState<{ x: number; y: number } | null>(null);
+  const fps = entry.cutsceneFps ?? 60;
+  const oneFrameMs = Math.max(1, Math.round(1000 / fps));
+  // Half a frame's worth of tolerance when deciding whether a drag should UPDATE an existing
+  // keyframe vs. create a brand new one -- without this, scrubbing to "roughly" a keyframe's
+  // time (rounding/float drift from the playback clock) and then dragging would silently create
+  // a near-duplicate keyframe a couple ms away instead of adjusting the one you meant, which is
+  // exactly the kind of thing that makes dragging feel unpredictable.
+  const keyMatchToleranceMs = oneFrameMs / 2;
 
   useEffect(() => {
     if (!boundMap?.map || viewInitFor === boundMap.id) return;
@@ -148,13 +157,17 @@ export function CutscenePreview({
   const worldDisplayH = map.height * gridSize * displayScale;
 
   // The camera's OWN frame (what the player actually sees), drawn as a dashed rectangle inside
-  // the same world layer -- independent of the editor's pan/zoom above.
+  // the same world layer -- independent of the editor's pan/zoom above. Follows dragCam while
+  // the rectangle itself is being dragged, same idea as dragChar overriding a character's
+  // displayed position.
   const camViewW = NATIVE_W / Math.max(0.1, camera.zoom);
   const camViewH = NATIVE_H / Math.max(0.1, camera.zoom);
   const camRectW = camViewW * displayScale;
   const camRectH = camViewH * displayScale;
-  const camRectLeft = camera.x * gridSize * displayScale - camRectW / 2;
-  const camRectTop = camera.y * gridSize * displayScale - camRectH / 2;
+  const camDisplayX = dragCam ? dragCam.x : camera.x;
+  const camDisplayY = dragCam ? dragCam.y : camera.y;
+  const camRectLeft = camDisplayX * gridSize * displayScale - camRectW / 2;
+  const camRectTop = camDisplayY * gridSize * displayScale - camRectH / 2;
 
   const gridCellPx = gridCells * gridSize * displayScale;
 
@@ -217,9 +230,11 @@ export function CutscenePreview({
   const resetViewToCamera = () => setView({ x: camera.x, y: camera.y, zoom: camera.zoom });
 
   // Dragging a character already placed on stage repositions it AND sets/updates a keyframe at
-  // the current playhead time -- if a clip already starts exactly at (rounded) `t` for this
-  // character, its x/y are updated in place; otherwise a brand-new near-instant "move" clip is
-  // created there (durationMs: 1 -- effectively a keyframe/snap rather than a tween window).
+  // the current playhead time -- if a clip starts WITHIN keyMatchToleranceMs of `t` for this
+  // character, its x/y are updated in place (the tolerance absorbs tiny scrub/float imprecision
+  // instead of silently creating a near-duplicate stray keyframe a couple ms away); otherwise a
+  // brand-new one-frame "move" clip is created there (short enough to read as a keyframe/snap,
+  // not a slow tween).
   const startCharacterDrag = (e: React.MouseEvent, characterId: string, origX: number, origY: number) => {
     e.stopPropagation();
     const startX = e.clientX;
@@ -239,7 +254,7 @@ export function CutscenePreview({
       const newY = origY + dyCells;
       const charTrack = entry.cutsceneCharacterTrack ?? [];
       const roundedT = Math.round(t);
-      const existing = charTrack.find((c) => c.characterId === characterId && Math.round(c.startMs) === roundedT);
+      const existing = charTrack.find((c) => c.characterId === characterId && Math.abs(c.startMs - roundedT) <= keyMatchToleranceMs);
       if (existing) {
         updateEntry(entry.id, {
           cutsceneCharacterTrack: charTrack.map((c) => (c.id === existing.id ? { ...c, x: newX, y: newY } : c)),
@@ -248,11 +263,54 @@ export function CutscenePreview({
         updateEntry(entry.id, {
           cutsceneCharacterTrack: [
             ...charTrack,
-            { id: nextId("cclip"), startMs: Math.max(0, roundedT), durationMs: 1, kind: "move", characterId, x: newX, y: newY },
+            { id: nextId("cclip"), startMs: Math.max(0, roundedT), durationMs: oneFrameMs, kind: "move", characterId, x: newX, y: newY },
           ],
         });
       }
       setDragChar(null);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  // Same drag-to-key pattern as characters, applied to the camera's own frame rectangle --
+  // mousedown+drag on the dashed rect updates/creates a camera "move" clip at the current
+  // playhead time instead of x/y number fields.
+  const startCameraDrag = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const origX = camera.x;
+    const origY = camera.y;
+    setDragCam({ x: origX, y: origY });
+    const onMove = (ev: MouseEvent) => {
+      const dxCells = (ev.clientX - startX) / (gridSize * displayScale);
+      const dyCells = (ev.clientY - startY) / (gridSize * displayScale);
+      setDragCam({ x: origX + dxCells, y: origY + dyCells });
+    };
+    const onUp = (ev: MouseEvent) => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      const dxCells = (ev.clientX - startX) / (gridSize * displayScale);
+      const dyCells = (ev.clientY - startY) / (gridSize * displayScale);
+      const newX = origX + dxCells;
+      const newY = origY + dyCells;
+      const camTrack = entry.cutsceneCameraTrack ?? [];
+      const roundedT = Math.round(t);
+      const existing = camTrack.find((c) => c.kind === "move" && Math.abs(c.startMs - roundedT) <= keyMatchToleranceMs);
+      if (existing) {
+        updateEntry(entry.id, {
+          cutsceneCameraTrack: camTrack.map((c) => (c.id === existing.id ? { ...c, x: newX, y: newY } : c)),
+        });
+      } else {
+        updateEntry(entry.id, {
+          cutsceneCameraTrack: [
+            ...camTrack,
+            { id: nextId("cam"), startMs: Math.max(0, roundedT), durationMs: oneFrameMs, kind: "move", x: newX, y: newY },
+          ],
+        });
+      }
+      setDragCam(null);
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -347,6 +405,11 @@ export function CutscenePreview({
                   outline: isDragging ? "2px solid white" : undefined,
                 }}
               >
+                {isDragging && (
+                  <div className="absolute left-1/2 -translate-x-1/2 -top-5 whitespace-nowrap text-[10px] font-mono bg-black/80 text-white px-1.5 py-0.5 rounded pointer-events-none">
+                    {character.name}: {cx.toFixed(1)}, {cy.toFixed(1)}
+                  </div>
+                )}
                 {strip ? (
                   <SpriteAnimator strip={strip} size={size} speedMultiplier={rc.speed / 100} />
                 ) : character.image ? (
@@ -366,9 +429,17 @@ export function CutscenePreview({
           })}
 
           <div
-            className="absolute pointer-events-none border border-dashed border-white/50"
+            onMouseDown={startCameraDrag}
+            title="Перетащите, чтобы переместить камеру и поставить ключ в текущем времени"
+            className="absolute border border-dashed border-white/50 cursor-move"
             style={{ left: camRectLeft, top: camRectTop, width: camRectW, height: camRectH }}
-          />
+          >
+            {dragCam && (
+              <div className="absolute left-1/2 -translate-x-1/2 -top-5 whitespace-nowrap text-[10px] font-mono bg-black/80 text-white px-1.5 py-0.5 rounded pointer-events-none">
+                Камера: {dragCam.x.toFixed(1)}, {dragCam.y.toFixed(1)}
+              </div>
+            )}
+          </div>
         </div>
 
         {overlay.opacity > 0.01 && (
@@ -382,7 +453,7 @@ export function CutscenePreview({
         )}
       </div>
       <div className="text-[10px] text-[var(--op-30)] shrink-0">
-        Перетащите фон — панорама вида. Перетащите персонажа — переместить и поставить ключ в текущем времени. Пунктирная рамка — то, что реально видит камера.
+        Перетащите фон — панорама вида. Перетащите персонажа или пунктирную рамку камеры — переместить и поставить ключ в текущем времени (координаты видны над тем, что тащите).
       </div>
     </div>
   );
