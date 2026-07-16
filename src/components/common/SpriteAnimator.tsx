@@ -12,11 +12,13 @@ export function SpriteAnimator({
   playing = true,
   size = 64,
   className = "",
+  speedMultiplier = 1,
 }: {
   strip: SpriteStrip;
   playing?: boolean;
   size?: number;
   className?: string;
+  speedMultiplier?: number; // scales strip.fps -- e.g. 0.5 plays at half speed, matching a clip's "Скорость" %
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
@@ -46,7 +48,7 @@ export function SpriteAnimator({
       if (!alive) return;
       const img = imgRef.current;
       const frameCount = Math.max(1, strip.frameCount);
-      const fps = Math.max(0.01, strip.fps);
+      const fps = Math.max(0.01, strip.fps * speedMultiplier);
       if (playing) {
         if (lastTsRef.current === 0) lastTsRef.current = ts;
         const msPerFrame = 1000 / fps;
@@ -68,7 +70,7 @@ export function SpriteAnimator({
       alive = false;
       cancelAnimationFrame(raf);
     };
-  }, [strip, playing]);
+  }, [strip, playing, speedMultiplier]);
 
   return (
     <canvas

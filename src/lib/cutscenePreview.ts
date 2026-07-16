@@ -1,4 +1,4 @@
-import type { AudioFxClip, CameraClip, CharacterAnimState, CharacterClip, ClipEasing, CutsceneDialogueClip, Entry } from "../types/database";
+import type { AudioFxClip, CameraClip, CharacterAnchor, CharacterAnimState, CharacterClip, ClipEasing, CutsceneDialogueClip, Entry } from "../types/database";
 
 // Pure, framework-free math for the Cutscene live preview (Dynarain Phase 2) -- kept separate
 // from the React rendering component (CutscenePreview.tsx) so the actual interpolation logic is
@@ -105,12 +105,20 @@ export interface ResolvedCharacter {
   x: number;
   y: number;
   anim: CharacterAnimState;
+  speed: number; // percent, default 100
+  zIndex: number;
+  anchor: CharacterAnchor;
+  opacity: number; // 0-100
+  flipX: boolean;
 }
 
 // Groups character clips by characterId, resolves each one's tweened position, and picks
 // whichever anim state is active at `t` (the clip covering `t`, if any -- move defaults to
 // "walk" and animate defaults to "idle" when the clip itself doesn't specify one; a character
-// with no clip covering `t` at all just stands "idle" wherever they currently are).
+// with no clip covering `t` at all just stands "idle" wherever they currently are). The richer
+// per-appearance fields (speed/zIndex/anchor/opacity/flipX) are NOT tweened between clips --
+// like `anim`, they're just read off whichever clip is currently active, falling back to sane
+// defaults when no clip covers `t`.
 export function resolveCharacters(clips: CharacterClip[], t: number, defaultPos: { x: number; y: number }): ResolvedCharacter[] {
   const byChar = new Map<string, CharacterClip[]>();
   for (const c of clips) {
@@ -129,9 +137,29 @@ export function resolveCharacters(clips: CharacterClip[], t: number, defaultPos:
     const active = sorted.find((c) => t >= c.startMs && t <= c.startMs + c.durationMs);
     const anim: CharacterAnimState = active ? active.anim ?? (active.kind === "move" ? "walk" : "idle") : "idle";
 
-    result.push({ characterId, x: pos.x, y: pos.y, anim });
+    result.push({
+      characterId,
+      x: pos.x,
+      y: pos.y,
+      anim,
+      speed: active?.speed ?? 100,
+      zIndex: active?.zIndex ?? 0,
+      anchor: active?.anchor ?? "center",
+      opacity: active?.opacity ?? 100,
+      flipX: active?.flipX ?? false,
+    });
   }
   return result;
+}
+
+// Offset fraction (0..1) within the sprite's own box that a given anchor point refers to, e.g.
+// "bottom-center" (feet) means the box's horizontal center but its BOTTOM edge sits at the
+// clip's x/y, rather than always centering the whole box on x/y ("center", the default -- same
+// behavior as before this field existed).
+export function anchorOffset(anchor: CharacterAnchor): { ox: number; oy: number } {
+  const ox = anchor.includes("left") ? 0 : anchor.includes("right") ? 1 : 0.5;
+  const oy = anchor.includes("top") ? 0 : anchor.includes("bottom") ? 1 : 0.5;
+  return { ox, oy };
 }
 
 // The dialogue clip (if any) whose display window covers `t` -- used to show a speech-bubble
@@ -176,4 +204,29 @@ export function cutsceneTotalDurationMs(entry: Entry): number {
   for (const c of entry.cutsceneDialogueTrack ?? []) ends.push(c.atMs + c.durationMs);
   for (const c of entry.cutsceneAudioFxTrack ?? []) ends.push(c.atMs + (c.durationMs ?? 0));
   return Math.max(...ends);
+}
+
+// Every distinct clip boundary (start AND end time) across all four tracks, sorted ascending
+// with duplicates collapsed -- used by the editor's "jump to previous/next clip boundary"
+// transport buttons (coarser than the single-frame step buttons) so a director can hop straight
+// between edit points the way real NLEs let you jump keyframe-to-keyframe.
+export function allClipBoundaries(entry: Entry): number[] {
+  const set = new Set<number>();
+  for (const c of entry.cutsceneCameraTrack ?? []) {
+    set.add(c.startMs);
+    set.add(c.startMs + c.durationMs);
+  }
+  for (const c of entry.cutsceneCharacterTrack ?? []) {
+    set.add(c.startMs);
+    set.add(c.startMs + c.durationMs);
+  }
+  for (const c of entry.cutsceneDialogueTrack ?? []) {
+    set.add(c.atMs);
+    set.add(c.atMs + c.durationMs);
+  }
+  for (const c of entry.cutsceneAudioFxTrack ?? []) {
+    set.add(c.atMs);
+    set.add(c.atMs + (c.durationMs ?? 0));
+  }
+  return Array.from(set).sort((a, b) => a - b);
 }

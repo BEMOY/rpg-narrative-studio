@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from "react";
-import { X, Eye, EyeOff, Lock, Unlock, ChevronDown, ChevronRight, Flag, Plus } from "lucide-react";
+import { X, Eye, EyeOff, Lock, Unlock, ChevronDown, ChevronRight, Flag, Plus, Scissors, Magnet } from "lucide-react";
 import type { AudioFxClip, CameraClip, CharacterClip, CutsceneDialogueClip, Entry } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
 import { cutsceneTotalDurationMs } from "../../lib/cutscenePreview";
@@ -91,7 +91,14 @@ export function CutsceneTimeline({
   // collapsing a folder) -- not persisted, matches the mockup's Characters > Name grouping idea
   // without needing a real generic nested-track-folder system.
   const [charsCollapsed, setCharsCollapsed] = useState(false);
+  // Snap-to-frame is an editing-session convenience (like pxPerMs zoom) rather than persisted
+  // project data -- when on, dragging/resizing a clip rounds its start/duration to the nearest
+  // whole-frame boundary (1000/fps ms) instead of an arbitrary pixel-derived ms value.
+  const [snapToFrame, setSnapToFrame] = useState(true);
   const laneAreaRef = useRef<HTMLDivElement>(null);
+  const fps = entry.cutsceneFps ?? 60;
+  const frameMs = 1000 / fps;
+  const snap = (ms: number) => (snapToFrame ? Math.round(ms / frameMs) * frameMs : ms);
 
   const totalMs = cutsceneTotalDurationMs(entry);
   const timelineWidth = Math.max(400, totalMs * pxPerMs + 120);
@@ -117,6 +124,90 @@ export function CutsceneTimeline({
     updateEntry(entry.id, { cutsceneMarkers: [...markers, { id: nextId("marker"), atMs: Math.round(t), label: label || "Маркер" }] });
   };
   const removeMarker = (id: string) => updateEntry(entry.id, { cutsceneMarkers: markers.filter((m) => m.id !== id) });
+
+  // Generic split-at-time helper for the scissors tool below -- works identically across all
+  // four track kinds since they all reduce to "a clip with some start time and some duration".
+  // Returns null (no-op) if the given time doesn't fall STRICTLY inside the clip's own window
+  // (splitting exactly on a boundary would just produce a zero-length sliver).
+  function splitTrack<T extends { id: string }>(
+    track: T[],
+    clipId: string,
+    at: number,
+    getRange: (c: T) => { start: number; dur: number },
+    withRange: (c: T, start: number, dur: number) => T
+  ): T[] | null {
+    const idx = track.findIndex((c) => c.id === clipId);
+    if (idx === -1) return null;
+    const c = track[idx];
+    const { start, dur } = getRange(c);
+    if (at <= start || at >= start + dur) return null;
+    const first = withRange(c, start, at - start);
+    const second = withRange({ ...c, id: nextId("split") }, at, start + dur - at);
+    const next = [...track];
+    next.splice(idx, 1, first, second);
+    return next;
+  }
+
+  const splitSelected = () => {
+    if (!selected) return;
+    if (selected.trackKind === "camera") {
+      const next = splitTrack(
+        cameraTrack,
+        selected.id,
+        t,
+        (c) => ({ start: c.startMs, dur: c.durationMs }),
+        (c, start, dur) => ({ ...c, startMs: start, durationMs: dur })
+      );
+      if (next) setCameraTrack(next);
+    } else if (selected.trackKind === "character") {
+      const next = splitTrack(
+        charTrack,
+        selected.id,
+        t,
+        (c) => ({ start: c.startMs, dur: c.durationMs }),
+        (c, start, dur) => ({ ...c, startMs: start, durationMs: dur })
+      );
+      if (next) setCharTrack(next);
+    } else if (selected.trackKind === "dialogue") {
+      const next = splitTrack(
+        dlgTrack,
+        selected.id,
+        t,
+        (c) => ({ start: c.atMs, dur: c.durationMs }),
+        (c, start, dur) => ({ ...c, atMs: start, durationMs: dur })
+      );
+      if (next) setDlgTrack(next);
+    } else if (selected.trackKind === "audiofx") {
+      const next = splitTrack(
+        fxTrack,
+        selected.id,
+        t,
+        (c) => ({ start: c.atMs, dur: c.durationMs ?? 500 }),
+        (c, start, dur) => ({ ...c, atMs: start, durationMs: dur })
+      );
+      if (next) setFxTrack(next);
+    }
+  };
+
+  const canSplit = (() => {
+    if (!selected) return false;
+    const find = (arr: { id: string }[]) => arr.find((c) => c.id === selected.id);
+    if (selected.trackKind === "camera") {
+      const c = find(cameraTrack) as CameraClip | undefined;
+      return !!c && t > c.startMs && t < c.startMs + c.durationMs;
+    }
+    if (selected.trackKind === "character") {
+      const c = find(charTrack) as CharacterClip | undefined;
+      return !!c && t > c.startMs && t < c.startMs + c.durationMs;
+    }
+    if (selected.trackKind === "dialogue") {
+      const c = find(dlgTrack) as CutsceneDialogueClip | undefined;
+      return !!c && t > c.atMs && t < c.atMs + c.durationMs;
+    }
+    const c = find(fxTrack) as AudioFxClip | undefined;
+    const dur = c?.durationMs ?? 500;
+    return !!c && t > c.atMs && t < c.atMs + dur;
+  })();
 
   const addCastMember = (characterId: string | undefined) => {
     if (!characterId || cast.includes(characterId)) return;
@@ -165,8 +256,8 @@ export function CutsceneTimeline({
     const startX = e.clientX;
     const onMove = (ev: MouseEvent) => {
       const deltaMs = (ev.clientX - startX) / pxPerMs;
-      if (mode === "move") onChange({ start: Math.max(0, Math.round(origStart + deltaMs)) });
-      else onChange({ dur: Math.max(50, Math.round(origDur + deltaMs)) });
+      if (mode === "move") onChange({ start: Math.max(0, Math.round(snap(origStart + deltaMs))) });
+      else onChange({ dur: Math.max(50, Math.round(snap(origDur + deltaMs))) });
     };
     const onUp = () => {
       window.removeEventListener("mousemove", onMove);
@@ -295,6 +386,23 @@ export function CutsceneTimeline({
           className="flex items-center gap-1 text-xs px-2 py-1 rounded-md glass hover:bg-[var(--op-10)] text-[var(--op-55)]"
         >
           <Flag size={11} /> Маркер
+        </button>
+        <button
+          onClick={splitSelected}
+          disabled={!canSplit}
+          title="Разрезать выбранный клип по текущей позиции плейхеда"
+          className="flex items-center gap-1 text-xs px-2 py-1 rounded-md glass hover:bg-[var(--op-10)] text-[var(--op-55)] disabled:opacity-30 disabled:cursor-not-allowed"
+        >
+          <Scissors size={11} /> Разрезать
+        </button>
+        <button
+          onClick={() => setSnapToFrame((v) => !v)}
+          title={`Привязка к кадру (${fps} FPS): ${snapToFrame ? "включена" : "выключена"}`}
+          className={`flex items-center gap-1 text-xs px-2 py-1 rounded-md glass hover:bg-[var(--op-10)] ${
+            snapToFrame ? "text-accent" : "text-[var(--op-40)]"
+          }`}
+        >
+          <Magnet size={11} /> Привязка к кадру
         </button>
       </div>
 

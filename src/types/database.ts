@@ -636,6 +636,16 @@ export interface CameraClip {
   easing?: ClipEasing; // "move"/"zoom" only, defaults to "linear"
 }
 
+// Where a clip's x/y position refers to within the character's sprite box -- mirrors the
+// classic 3x3 "anchor/pivot" grid (top-left ... bottom-right), defaulting to "center". This is a
+// per-CLIP placement convenience (e.g. "bottom-center" so x/y tracks the character's feet on a
+// walk clip), NOT the permanent per-sprite origin-point editor the user explicitly flagged as a
+// separate "future, not now" item -- that would live on the sprite asset itself, not a clip.
+export type CharacterAnchor =
+  | "top-left" | "top-center" | "top-right"
+  | "middle-left" | "center" | "middle-right"
+  | "bottom-left" | "bottom-center" | "bottom-right";
+
 export interface CharacterClip {
   id: string;
   startMs: number;
@@ -646,6 +656,15 @@ export interface CharacterClip {
   y?: number;
   anim?: CharacterAnimState; // which sprite state plays during this clip (defaults to "walk" for move, "idle" for animate)
   easing?: ClipEasing; // "move" only, defaults to "linear"
+  // -- richer per-appearance actor properties (all optional, all additive) --
+  speed?: number; // playback speed of the sprite animation itself, percent, default 100
+  zIndex?: number; // draw order among characters on the same frame, default 0 (higher draws later/on top)
+  anchor?: CharacterAnchor; // default "center"
+  opacity?: number; // 0-100, default 100
+  flipX?: boolean; // mirror the sprite horizontally, default false
+  conditionExpr?: string; // free-text flag/condition expression (data-only -- captured for the writer's own reference and for a future GML export, not evaluated live in this preview)
+  tags?: string[];
+  notes?: string;
 }
 
 export interface CutsceneDialogueClip {

@@ -3,6 +3,7 @@ import type {
   AudioFxClip,
   AudioFxKind,
   CameraClip,
+  CharacterAnchor,
   CharacterAnimState,
   CharacterClip,
   ClipEasing,
@@ -58,6 +59,58 @@ function EasingField({ value, onChange }: { value: ClipEasing | undefined; onCha
         value={value ?? "linear"}
         onChange={(v) => onChange(v as ClipEasing)}
         options={EASING_OPTIONS.map((e) => ({ value: e, label: EASING_LABEL[e] }))}
+      />
+    </label>
+  );
+}
+
+// 3x3 anchor/pivot picker -- which point of the character's sprite box the clip's x/y refers to
+// (default "center", same behavior as before this field existed). Small square-button grid
+// rather than a dropdown so the spatial meaning (top-left vs bottom-center vs ...) is immediate.
+const ANCHOR_GRID: CharacterAnchor[][] = [
+  ["top-left", "top-center", "top-right"],
+  ["middle-left", "center", "middle-right"],
+  ["bottom-left", "bottom-center", "bottom-right"],
+];
+
+function AnchorField({ value, onChange }: { value: CharacterAnchor | undefined; onChange: (v: CharacterAnchor) => void }) {
+  const current = value ?? "center";
+  return (
+    <div className="flex items-start gap-1.5">
+      <span className="text-[10px] text-[var(--op-40)] pt-1">Точка привязки</span>
+      <div className="grid grid-cols-3 gap-0.5 w-[54px]">
+        {ANCHOR_GRID.flat().map((a) => (
+          <button
+            key={a}
+            type="button"
+            title={a}
+            onClick={() => onChange(a)}
+            className={`w-4 h-4 rounded-sm border ${
+              a === current ? "bg-accent border-accent" : "bg-[var(--op-6)] border-[var(--op-15)] hover:bg-[var(--op-15)]"
+            }`}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TagsField({ value, onChange }: { value: string[] | undefined; onChange: (v: string[]) => void }) {
+  return (
+    <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1 flex-1">
+      Теги
+      <input
+        className="input text-xs flex-1"
+        value={(value ?? []).join(", ")}
+        placeholder="радость, важное…"
+        onChange={(e) =>
+          onChange(
+            e.target.value
+              .split(",")
+              .map((t) => t.trim())
+              .filter(Boolean)
+          )
+        }
       />
     </label>
   );
@@ -174,12 +227,43 @@ export function ClipInspector({
             </>
           )}
           <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1">
-            Анимация
+            Действие
             <ThemedSelect
               className="input w-24"
               value={clip.anim ?? (clip.kind === "move" ? "walk" : "idle")}
               onChange={(v) => patch({ anim: v as CharacterAnimState })}
               options={CHAR_ANIM_OPTIONS.map((a) => ({ value: a, label: ANIM_STATE_LABEL[a] }))}
+            />
+          </label>
+          <NumField label="Скорость %" value={clip.speed ?? 100} onChange={(v) => patch({ speed: v })} />
+          <NumField label="Слой отрисовки" value={clip.zIndex ?? 0} onChange={(v) => patch({ zIndex: v })} />
+          <NumField label="Непрозрачность %" value={clip.opacity ?? 100} onChange={(v) => patch({ opacity: v })} />
+        </div>
+        <div className="flex items-center gap-3 flex-wrap pt-1">
+          <AnchorField value={clip.anchor} onChange={(v) => patch({ anchor: v })} />
+          <label className="flex items-center gap-1.5 text-xs text-[var(--op-50)]">
+            <input type="checkbox" checked={clip.flipX ?? false} onChange={(e) => patch({ flipX: e.target.checked })} />
+            Отражение по X
+          </label>
+        </div>
+        <div className="pt-1 space-y-1.5 border-t border-[var(--op-10)] mt-1">
+          <div className="text-[10px] uppercase tracking-wider text-[var(--op-30)] pt-1.5">Дополнительно</div>
+          <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1">
+            Условия запуска
+            <input
+              className="input text-xs flex-1"
+              value={clip.conditionExpr ?? ""}
+              placeholder="!flag.intro_end"
+              onChange={(e) => patch({ conditionExpr: e.target.value })}
+            />
+          </label>
+          <TagsField value={clip.tags} onChange={(v) => patch({ tags: v })} />
+          <label className="text-[10px] text-[var(--op-40)] flex flex-col gap-1">
+            Заметки
+            <textarea
+              className="input text-xs w-full min-h-[44px] resize-y"
+              value={clip.notes ?? ""}
+              onChange={(e) => patch({ notes: e.target.value })}
             />
           </label>
         </div>

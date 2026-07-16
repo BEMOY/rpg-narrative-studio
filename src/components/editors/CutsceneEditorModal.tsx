@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { X, Play, Pause, ChevronLeft, ChevronRight, Repeat } from "lucide-react";
+import { X, Play, Pause, ChevronLeft, ChevronRight, Repeat, SkipBack, SkipForward } from "lucide-react";
 import type { CutsceneDialogueClip, Entry } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
-import { cutsceneTotalDurationMs } from "../../lib/cutscenePreview";
+import { allClipBoundaries, cutsceneTotalDurationMs } from "../../lib/cutscenePreview";
 import { SearchSelect } from "../dialogue/SearchSelect";
 import { CutsceneTimeline } from "./CutsceneTimeline";
 import type { ClipRef } from "./CutsceneTimeline";
@@ -105,6 +105,21 @@ export function CutsceneEditorModal({ entry, onClose }: { entry: Entry; onClose:
     setT((prev) => Math.max(0, Math.min(totalMs, prev + (dir * 1000) / fps)));
   };
 
+  // Coarser than stepFrame -- jumps straight to the nearest previous/next clip boundary (start
+  // or end of ANY clip on ANY track) instead of moving one frame at a time, matching a real
+  // NLE's "jump to next edit point" transport buttons.
+  const jumpToBoundary = (dir: -1 | 1) => {
+    setPlaying(false);
+    const bounds = allClipBoundaries(entry);
+    if (dir === 1) {
+      const next = bounds.find((b) => b > t + 0.5);
+      if (next !== undefined) setT(next);
+    } else {
+      const prev = [...bounds].reverse().find((b) => b < t - 0.5);
+      if (prev !== undefined) setT(prev);
+    }
+  };
+
   const toggleHidden = (key: string) =>
     setHiddenTracks((prev) => {
       const next = new Set(prev);
@@ -149,6 +164,13 @@ export function CutsceneEditorModal({ entry, onClose }: { entry: Entry; onClose:
             />
           </div>
           <div className="w-px h-5 bg-[var(--op-10)] mx-1" />
+          <button
+            onClick={() => jumpToBoundary(-1)}
+            title="К предыдущей границе клипа"
+            className="w-7 h-7 grid place-items-center rounded-md hover:bg-[var(--op-10)]"
+          >
+            <SkipBack size={13} />
+          </button>
           <button onClick={() => stepFrame(-1)} title="Предыдущий кадр" className="w-7 h-7 grid place-items-center rounded-md hover:bg-[var(--op-10)]">
             <ChevronLeft size={14} />
           </button>
@@ -160,6 +182,13 @@ export function CutsceneEditorModal({ entry, onClose }: { entry: Entry; onClose:
           </button>
           <button onClick={() => stepFrame(1)} title="Следующий кадр" className="w-7 h-7 grid place-items-center rounded-md hover:bg-[var(--op-10)]">
             <ChevronRight size={14} />
+          </button>
+          <button
+            onClick={() => jumpToBoundary(1)}
+            title="К следующей границе клипа"
+            className="w-7 h-7 grid place-items-center rounded-md hover:bg-[var(--op-10)]"
+          >
+            <SkipForward size={13} />
           </button>
           <button
             onClick={() => setLoop((v) => !v)}

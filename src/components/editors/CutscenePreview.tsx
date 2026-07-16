@@ -3,7 +3,7 @@ import type { Dialogue, DialogueColorStyle, Entry } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
 import { MapThumbnail } from "../mapeditor/MapThumbnail";
 import { SpriteAnimator } from "../common/SpriteAnimator";
-import { activeDialogueClip, resolveCamera, resolveCharacters, resolveOverlay } from "../../lib/cutscenePreview";
+import { activeDialogueClip, anchorOffset, resolveCamera, resolveCharacters, resolveOverlay } from "../../lib/cutscenePreview";
 import { audioFxTrackKey, cameraTrackKey, characterTrackKey, dialogueTrackKey } from "./CutsceneTimeline";
 import { CHARACTER_DRAG_MIME, DIALOGUE_DRAG_MIME } from "./CutsceneExplorerPanel";
 import { nextId } from "../../lib/mapDefaults";
@@ -182,12 +182,25 @@ export function CutscenePreview({
             if (!character) return null;
             const strip = character.spriteAnimations?.[rc.anim];
             const size = Math.max(12, gridSize * displayScale);
-            const leftPx = rc.x * gridSize * displayScale - size / 2;
-            const topPx = rc.y * gridSize * displayScale - size / 2;
+            const { ox, oy } = anchorOffset(rc.anchor);
+            const leftPx = rc.x * gridSize * displayScale - size * ox;
+            const topPx = rc.y * gridSize * displayScale - size * oy;
             return (
-              <div key={rc.characterId} className="absolute" style={{ left: leftPx, top: topPx, width: size, height: size }}>
+              <div
+                key={rc.characterId}
+                className="absolute"
+                style={{
+                  left: leftPx,
+                  top: topPx,
+                  width: size,
+                  height: size,
+                  zIndex: rc.zIndex,
+                  opacity: rc.opacity / 100,
+                  transform: rc.flipX ? "scaleX(-1)" : undefined,
+                }}
+              >
                 {strip ? (
-                  <SpriteAnimator strip={strip} size={size} />
+                  <SpriteAnimator strip={strip} size={size} speedMultiplier={rc.speed / 100} />
                 ) : character.image ? (
                   <img
                     src={character.image}
