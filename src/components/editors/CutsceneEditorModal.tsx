@@ -10,6 +10,7 @@ import { CutsceneTimeline } from "./CutsceneTimeline";
 import type { ClipRef } from "./CutsceneTimeline";
 import { CutscenePreview } from "./CutscenePreview";
 import { ClipInspector } from "./ClipInspector";
+import { CutsceneDebugPanel } from "./CutsceneDebugPanel";
 import { CutsceneExplorerPanel } from "./CutsceneExplorerPanel";
 
 // The standalone Cutscene editor WINDOW (Dynarain Phase 2) -- a full-screen modal, same
@@ -331,8 +332,9 @@ export function CutsceneEditorModal({ entry, onClose }: { entry: Entry; onClose:
               )}
             </div>
           </div>
-          <div className="w-72 shrink-0 border-l border-[var(--op-10)] overflow-y-auto p-3">
+          <div className="w-72 shrink-0 border-l border-[var(--op-10)] overflow-y-auto p-3 space-y-3">
             <ClipInspector entry={entry} selected={selected} onClose={() => setSelected(null)} onOpenDialogue={openDialogueInEditor} />
+            <CutsceneDebugPanel entry={entry} t={t} totalMs={totalMs} awaitingDialogueEntry={awaitingDialogueEntry} />
           </div>
         </div>
       </div>
