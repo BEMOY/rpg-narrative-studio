@@ -16,6 +16,7 @@ import {
   characterPosYKey,
   characterTrackKey,
   dialogueTrackKey,
+  eventTrackKey,
 } from "./CutsceneTimeline";
 import { CHARACTER_DRAG_MIME, DIALOGUE_DRAG_MIME } from "./CutsceneExplorerPanel";
 import { nextId } from "../../lib/mapDefaults";
@@ -175,6 +176,7 @@ export function CutscenePreview({
     if (tr.kind === "camera") return !hiddenTracks.has(cameraTrackKey());
     if (tr.kind === "dialogue") return !hiddenTracks.has(dialogueTrackKey());
     if (tr.kind === "audiofx") return !hiddenTracks.has(audioFxTrackKey());
+    if (tr.kind === "event") return !hiddenTracks.has(eventTrackKey());
     return !tr.characterId || !hiddenTracks.has(characterTrackKey(tr.characterId));
   });
   const camPosX = hiddenTracks.has(cameraPosXKey()) ? [] : entry.cutsceneCameraPosX ?? [];

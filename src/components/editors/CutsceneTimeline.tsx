@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { X, Eye, EyeOff, Lock, Unlock, ChevronDown, ChevronRight, Flag, Scissors, Magnet } from "lucide-react";
-import type { CharacterPositionAxis, CutsceneClip, CutsceneTrackKind, Entry, Keyframe } from "../../types/database";
+import type { CharacterPositionAxis, CutsceneClip, CutsceneEventKind, CutsceneTrackKind, Entry, Keyframe } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
 import { cutsceneTotalDurationMs, resolveChannel } from "../../lib/cutscenePreview";
 import { findClipAnywhere, removeCharacterTrack, trackClips, withTrackClips } from "../../lib/cutsceneTracks";
@@ -23,6 +23,7 @@ export type ClipRef =
   | { trackKind: "character"; id: string }
   | { trackKind: "dialogue"; id: string }
   | { trackKind: "audiofx"; id: string }
+  | { trackKind: "event"; id: string }
   | { trackKind: "cameraKey"; channel: "x" | "y" | "zoom"; id: string }
   | { trackKind: "characterKey"; characterId: string; axis: CharacterPositionAxis; id: string };
 
@@ -91,6 +92,18 @@ export function dialogueTrackKey() {
 export function audioFxTrackKey() {
   return "audiofx";
 }
+export function eventTrackKey() {
+  return "event";
+}
+
+export const EVENT_KIND_LABEL: Record<CutsceneEventKind, string> = {
+  setFlag: "Флаг",
+  teleport: "Телепорт",
+  spawnObject: "Создать объект",
+  destroyObject: "Удалить объект",
+  startBattle: "Начать бой",
+  runScript: "Скрипт",
+};
 
 // One registered keyframe channel row -- everything the marquee/group-drag/delete logic needs to
 // read and write that row's keys, keyed by the same row-key strings used for hidden/locked track
@@ -171,6 +184,7 @@ export function CutsceneTimeline({
   const cameraClips = trackClips(tracks, "camera");
   const dlgClips = trackClips(tracks, "dialogue");
   const fxClips = trackClips(tracks, "audiofx");
+  const evtClips = trackClips(tracks, "event");
   const markers = entry.cutsceneMarkers ?? [];
   const charColors = entry.cutsceneCharacterTrackColors ?? {};
   const camPosX = entry.cutsceneCameraPosX ?? [];
@@ -231,6 +245,9 @@ export function CutsceneTimeline({
     } else if (selected.trackKind === "audiofx") {
       const next = splitClip(fxClips, selected.id, t);
       if (next) setClipsFor("audiofx", next);
+    } else if (selected.trackKind === "event") {
+      const next = splitClip(evtClips, selected.id, t);
+      if (next) setClipsFor("event", next);
     }
   };
 
@@ -241,6 +258,7 @@ export function CutsceneTimeline({
     else if (selected.trackKind === "character") clip = findClipAnywhere(tracks, "character", selected.id)?.clip;
     else if (selected.trackKind === "dialogue") clip = dlgClips.find((c) => c.id === selected.id);
     else if (selected.trackKind === "audiofx") clip = fxClips.find((c) => c.id === selected.id);
+    else if (selected.trackKind === "event") clip = evtClips.find((c) => c.id === selected.id);
     return !!clip && t > clip.startMs && t < clip.startMs + clip.durationMs;
   })();
 
@@ -798,6 +816,7 @@ export function CutsceneTimeline({
             })}
           {renderTrackHeader(dialogueTrackKey(), "Диалоги")}
           {renderTrackHeader(audioFxTrackKey(), "Аудио/FX")}
+          {renderTrackHeader(eventTrackKey(), "События")}
         </div>
 
         <div
@@ -842,41 +861,49 @@ export function CutsceneTimeline({
               ))}
             </div>
 
-            <div
-              style={{ height: LANE_H }}
-              className={`relative border-t border-[var(--op-7)] ${hiddenTracks.has(cameraTrackKey()) ? "opacity-40" : ""}`}
-              onDoubleClick={(e) => {
-                if (lockedTracks.has(cameraTrackKey())) return;
-                const ms = Math.max(0, Math.round(msFromClientX(e.clientX)));
-                setClipsFor("camera", [...cameraClips, { id: nextId("cam"), startMs: ms, durationMs: 1000, component: { kind: "shake" } }]);
-              }}
-            >
-              {!cameraCollapsed &&
-                cameraClips.map((c) =>
-                  renderClip(
-                    c.id,
-                    { trackKind: "camera", id: c.id },
-                    c.startMs,
-                    c.durationMs,
-                    "Тряска",
-                    TRACK_COLOR.camera,
-                    true,
-                    lockedTracks.has(cameraTrackKey()),
-                    (p) =>
-                      setClipsFor(
-                        "camera",
-                        cameraClips.map((cc) =>
-                          cc.id === c.id
-                            ? { ...cc, ...(p.start !== undefined ? { startMs: p.start } : {}), ...(p.dur !== undefined ? { durationMs: p.dur } : {}) }
-                            : cc
+            {/* Spacer aligning with the "Камера" object-header row (renderObjectHeader) in the
+                label column, which has no clips/keys of its own -- without this, every row below
+                would render one row too high relative to its header, the exact bug reported after
+                v72 (X/Y keys appearing to sit on the name/X rows above where they belong). */}
+            <div style={{ height: LANE_H }} className="border-t border-[var(--op-7)]" />
+            {!cameraCollapsed && (
+              <>
+                <div
+                  style={{ height: LANE_H }}
+                  className={`relative border-t border-[var(--op-7)] ${hiddenTracks.has(cameraTrackKey()) ? "opacity-40" : ""}`}
+                  onDoubleClick={(e) => {
+                    if (lockedTracks.has(cameraTrackKey())) return;
+                    const ms = Math.max(0, Math.round(msFromClientX(e.clientX)));
+                    setClipsFor("camera", [...cameraClips, { id: nextId("cam"), startMs: ms, durationMs: 1000, component: { kind: "shake" } }]);
+                  }}
+                >
+                  {cameraClips.map((c) =>
+                    renderClip(
+                      c.id,
+                      { trackKind: "camera", id: c.id },
+                      c.startMs,
+                      c.durationMs,
+                      "Тряска",
+                      TRACK_COLOR.camera,
+                      true,
+                      lockedTracks.has(cameraTrackKey()),
+                      (p) =>
+                        setClipsFor(
+                          "camera",
+                          cameraClips.map((cc) =>
+                            cc.id === c.id
+                              ? { ...cc, ...(p.start !== undefined ? { startMs: p.start } : {}), ...(p.dur !== undefined ? { durationMs: p.dur } : {}) }
+                              : cc
+                          )
                         )
-                      )
-                  )
-                )}
-            </div>
-            {!cameraCollapsed && camPosXRow.lane}
-            {!cameraCollapsed && camPosYRow.lane}
-            {!cameraCollapsed && camZoomRow.lane}
+                    )
+                  )}
+                </div>
+                {camPosXRow.lane}
+                {camPosYRow.lane}
+                {camZoomRow.lane}
+              </>
+            )}
 
             {cast.length > 0 && <div style={{ height: LANE_H }} className="border-t border-[var(--op-7)]" />}
 
@@ -1086,6 +1113,38 @@ export function CutsceneTimeline({
                         cc.id === c.id
                           ? { ...cc, ...(p.start !== undefined ? { startMs: p.start } : {}), ...(p.dur !== undefined ? { durationMs: p.dur } : {}) }
                           : cc
+                      )
+                    )
+                );
+              })}
+            </div>
+
+            <div
+              style={{ height: LANE_H }}
+              className={`relative border-t border-[var(--op-7)] ${hiddenTracks.has(eventTrackKey()) ? "opacity-40" : ""}`}
+              onDoubleClick={(e) => {
+                if (lockedTracks.has(eventTrackKey())) return;
+                const ms = Math.max(0, Math.round(msFromClientX(e.clientX)));
+                setClipsFor("event", [...evtClips, { id: nextId("evt"), startMs: ms, durationMs: 0, component: { kind: "event", eventKind: "setFlag" } }]);
+              }}
+            >
+              {evtClips.map((c) => {
+                if (c.component.kind !== "event") return null;
+                const evt = c.component;
+                return renderClip(
+                  c.id,
+                  { trackKind: "event", id: c.id },
+                  c.startMs,
+                  200,
+                  EVENT_KIND_LABEL[evt.eventKind],
+                  "#c95b6b",
+                  false,
+                  lockedTracks.has(eventTrackKey()),
+                  (p) =>
+                    setClipsFor(
+                      "event",
+                      evtClips.map((cc) =>
+                        cc.id === c.id ? { ...cc, ...(p.start !== undefined ? { startMs: p.start } : {}) } : cc
                       )
                     )
                 );

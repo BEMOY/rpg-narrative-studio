@@ -698,7 +698,14 @@ export type AudioFxKind = "sound" | "music" | "fade" | "flash";
 // They stay on their own Entry fields (cutsceneCameraPosX/PosY/ZoomKeys,
 // cutsceneCharacterPositionKeys) exactly as before -- this mirrors the reference architecture's
 // own phasing (Tracks/Clips come first, Channels/Keys are unlocked once a track exists).
-export type CutsceneTrackKind = "camera" | "character" | "dialogue" | "audiofx";
+export type CutsceneTrackKind = "camera" | "character" | "dialogue" | "audiofx" | "event";
+
+// Game-logic actions a cutscene can trigger -- this is what actually turns a cutscene from "a
+// clip that plays" into a piece of game script (per the reference architecture's Events phase).
+// Each is data-only for now (captured for a future GML export, same "no code-gen yet" philosophy
+// as the "audio" component's assetName field) -- nothing here is executed live by this preview,
+// the same way an audio clip doesn't actually play a sound file.
+export type CutsceneEventKind = "setFlag" | "teleport" | "spawnObject" | "destroyObject" | "startBattle" | "runScript";
 
 export type CutsceneComponent =
   | {
@@ -745,6 +752,24 @@ export type CutsceneComponent =
                            // is uploaded or played back in the preview, this is just a marker)
       color?: string; // "flash" -- overlay color, e.g. "#ffffff"
       direction?: "in" | "out"; // "fade" -- fade to black ("out") or from black ("in")
+      pausesForDialogue?: boolean;
+    }
+  | {
+      // A single game-logic action, triggered the instant playback crosses this clip's start
+      // (an "event" clip is conceptually a point in time -- durationMs is kept only for
+      // consistency with every other clip shape and for the timeline's "instant" bar-width
+      // convention, same as an "audio" sound/music cue). Which fields apply depends on
+      // `eventKind` -- see each field's own comment.
+      kind: "event";
+      eventKind: CutsceneEventKind;
+      flagName?: string; // "setFlag"
+      flagValue?: boolean; // "setFlag", default true
+      targetMapId?: string; // "teleport" -- Entry id, category "location"
+      targetX?: number; // "teleport" -- map cell coordinates
+      targetY?: number; // "teleport"
+      objectId?: string; // "spawnObject"/"destroyObject" -- Entry id (object/item/character)
+      battleId?: string; // "startBattle" -- Entry id, category "battle"
+      script?: string; // "runScript" -- free-text GML snippet reference/marker, data-only
       pausesForDialogue?: boolean;
     };
 

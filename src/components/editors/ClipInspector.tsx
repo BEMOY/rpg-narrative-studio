@@ -5,6 +5,7 @@ import type {
   CharacterAnimState,
   CharacterPositionKeyframe,
   ClipEasing,
+  CutsceneEventKind,
   Entry,
   Keyframe,
 } from "../../types/database";
@@ -12,6 +13,7 @@ import { useProjectStore } from "../../store/useProjectStore";
 import { findClipAnywhere, trackClips, withTrackClips } from "../../lib/cutsceneTracks";
 import { ThemedSelect } from "../common/ThemedSelect";
 import { SearchSelect } from "../dialogue/SearchSelect";
+import { EVENT_KIND_LABEL } from "./CutsceneTimeline";
 import type { ClipRef } from "./CutsceneTimeline";
 
 // Small inline label+number-input pair packing several numeric params onto one inspector row --
@@ -421,6 +423,110 @@ export function ClipInspector({
           <NumField label="Начало мс" value={clip.startMs} onChange={(v) => patch({ startMs: v })} />
           <NumField label="Показ мс" value={clip.durationMs} onChange={(v) => patch({ durationMs: v })} />
         </div>
+      </div>
+    );
+  }
+
+  if (selected.trackKind === "event") {
+    const clips = trackClips(tracks, "event");
+    const clip = clips.find((c) => c.id === selected.id);
+    if (!clip || clip.component.kind !== "event") return null;
+    const component = clip.component;
+    const patch = (p: { startMs?: number } & Partial<typeof component>) => {
+      const { startMs, ...componentPatch } = p;
+      updateEntry(entry.id, {
+        cutsceneTracks: withTrackClips(
+          tracks,
+          "event",
+          clips.map((c) =>
+            c.id === clip.id
+              ? {
+                  ...c,
+                  ...(startMs !== undefined ? { startMs } : {}),
+                  component: { ...component, ...componentPatch },
+                }
+              : c
+          )
+        ),
+      });
+    };
+    const remove = () => {
+      updateEntry(entry.id, { cutsceneTracks: withTrackClips(tracks, "event", clips.filter((c) => c.id !== clip.id)) });
+      onClose();
+    };
+    const objectOptions = allEntries
+      .filter((e) => e.category === "object" || e.category === "item" || e.category === "character")
+      .map((e) => ({ id: e.id, label: `${e.name} (${e.category})` }));
+    const locationOptions = allEntries.filter((e) => e.category === "location").map((e) => ({ id: e.id, label: e.name }));
+    const battleOptions = allEntries.filter((e) => e.category === "battle").map((e) => ({ id: e.id, label: e.name }));
+    return (
+      <div className="glass rounded-lg p-4 space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="text-xs uppercase tracking-wider text-[var(--op-35)]">Событие — клип</div>
+          <button onClick={remove} className="text-[var(--op-40)] hover:text-[var(--op-80)]">
+            <Trash2 size={13} />
+          </button>
+        </div>
+        <div className="text-[10px] text-[var(--op-30)]">
+          Игровое действие, срабатывающее в момент проигрывания катсцены. Данные — заготовка для будущего экспорта
+          в GML, вживую в этом превью не выполняются (как и ассеты звука на дорожке Аудио/FX).
+        </div>
+        <ThemedSelect
+          className="input"
+          value={component.eventKind}
+          onChange={(v) => patch({ eventKind: v as CutsceneEventKind })}
+          options={(Object.keys(EVENT_KIND_LABEL) as CutsceneEventKind[]).map((k) => ({ value: k, label: EVENT_KIND_LABEL[k] }))}
+        />
+        <div className="flex items-center gap-2 flex-wrap">
+          <NumField label="Момент мс" value={clip.startMs} onChange={(v) => patch({ startMs: v })} />
+          {component.eventKind === "setFlag" && (
+            <>
+              <label className="text-[10px] text-[var(--op-40)] flex items-center gap-1">
+                Флаг
+                <input
+                  className="input text-xs w-28"
+                  value={component.flagName ?? ""}
+                  placeholder="intro_end"
+                  onChange={(e) => patch({ flagName: e.target.value })}
+                />
+              </label>
+              <label className="flex items-center gap-1.5 text-xs text-[var(--op-50)]">
+                <input type="checkbox" checked={component.flagValue ?? true} onChange={(e) => patch({ flagValue: e.target.checked })} />
+                Значение
+              </label>
+            </>
+          )}
+        </div>
+        {component.eventKind === "teleport" && (
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="w-40">
+              <SearchSelect value={component.targetMapId} onChange={(id) => patch({ targetMapId: id })} options={locationOptions} placeholder="Локация…" />
+            </div>
+            <NumField label="X" value={component.targetX ?? 0} onChange={(v) => patch({ targetX: v })} />
+            <NumField label="Y" value={component.targetY ?? 0} onChange={(v) => patch({ targetY: v })} />
+          </div>
+        )}
+        {(component.eventKind === "spawnObject" || component.eventKind === "destroyObject") && (
+          <div className="w-52">
+            <SearchSelect value={component.objectId} onChange={(id) => patch({ objectId: id })} options={objectOptions} placeholder="Объект…" />
+          </div>
+        )}
+        {component.eventKind === "startBattle" && (
+          <div className="w-52">
+            <SearchSelect value={component.battleId} onChange={(id) => patch({ battleId: id })} options={battleOptions} placeholder="Бой…" />
+          </div>
+        )}
+        {component.eventKind === "runScript" && (
+          <label className="text-[10px] text-[var(--op-40)] flex flex-col gap-1">
+            Скрипт (GML, справочно)
+            <textarea
+              className="input text-xs w-full min-h-[44px] resize-y"
+              value={component.script ?? ""}
+              onChange={(e) => patch({ script: e.target.value })}
+            />
+          </label>
+        )}
+        <PausesForDialogueField value={component.pausesForDialogue} onChange={(v) => patch({ pausesForDialogue: v })} />
       </div>
     );
   }
