@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { X, Eye, EyeOff, Lock, Unlock, ChevronDown, ChevronRight, Flag, Scissors, Magnet } from "lucide-react";
-import type { CharacterPositionAxis, CutsceneClip, CutsceneEventKind, CutsceneTrackKind, Entry, Keyframe } from "../../types/database";
+import type { CharacterPositionAxis, CharacterPositionKeyframe, CutsceneClip, CutsceneEventKind, CutsceneTrackKind, Entry, Keyframe } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
 import { cutsceneTotalDurationMs, resolveActiveChannel, resolveChannel } from "../../lib/cutscenePreview";
 import {
@@ -377,6 +377,21 @@ export function CutsceneTimeline({
       const key = reg?.keys.find((k) => "id" in ref && k.id === ref.id);
       if (reg && key) origins.push({ ref, atMs: key.atMs });
     }
+    // Calling each row's own reg.setKeys(...) independently here used to be the culprit behind
+    // "some selected keys don't move": every row's setKeys (e.g. setAxisKeys) recomputes its
+    // "everything except this row" slice from the SAME shared render-time snapshot
+    // (camPosX/camPosY/charPosKeys/...), so when a single drag tick touches more than one row
+    // (e.g. X keys AND Y keys selected together, or an X key and a Y key from two different
+    // characters), each row's updateEntry call overwrites the entry with a patch computed
+    // BEFORE the previous row's call landed -- only the last row processed in a tick actually
+    // kept its new position, every other row silently snapped back. Fixed by computing every
+    // affected top-level field's next array in one pass and writing them all in ONE updateEntry
+    // call per tick instead.
+    const applyToArray = <K extends { id: string; atMs: number }>(arr: K[], items: { id: string; atMs: number }[] | undefined, deltaMs: number): K[] => {
+      if (!items || items.length === 0) return arr;
+      const origMap = new Map(items.map((i) => [i.id, i.atMs]));
+      return arr.map((k) => (origMap.has(k.id) ? { ...k, atMs: Math.max(0, Math.round(snap(origMap.get(k.id)! + deltaMs))) } : k));
+    };
     const apply = (deltaMs: number) => {
       const byRow = new Map<string, { id: string; atMs: number }[]>();
       for (const o of origins) {
@@ -385,12 +400,29 @@ export function CutsceneTimeline({
         if (!byRow.has(rowKey)) byRow.set(rowKey, []);
         byRow.get(rowKey)!.push({ id: o.ref.id, atMs: o.atMs });
       }
-      byRow.forEach((items, rowKey) => {
-        const reg = registry[rowKey];
-        if (!reg) return;
-        const origMap = new Map(items.map((i) => [i.id, i.atMs]));
-        reg.setKeys(reg.keys.map((k) => (origMap.has(k.id) ? { ...k, atMs: Math.max(0, Math.round(snap(origMap.get(k.id)! + deltaMs))) } : k)));
-      });
+
+      const patch: { cutsceneCameraPosX?: Keyframe[]; cutsceneCameraPosY?: Keyframe[]; cutsceneCameraZoomKeys?: Keyframe[]; cutsceneCharacterPositionKeys?: CharacterPositionKeyframe[] } = {};
+
+      const camXItems = byRow.get(cameraPosXKey());
+      if (camXItems) patch.cutsceneCameraPosX = applyToArray(camPosX, camXItems, deltaMs);
+      const camYItems = byRow.get(cameraPosYKey());
+      if (camYItems) patch.cutsceneCameraPosY = applyToArray(camPosY, camYItems, deltaMs);
+      const camZoomItems = byRow.get(cameraZoomKey());
+      if (camZoomItems) patch.cutsceneCameraZoomKeys = applyToArray(camZoom, camZoomItems, deltaMs);
+
+      // Every character row (X/Y/Активен, for every cast member) shares ONE combined array
+      // field (cutsceneCharacterPositionKeys), so all their touched ids merge into a single
+      // next-array computed in one shot, rather than one updateEntry call per row/axis.
+      const charRowKeys = [...byRow.keys()].filter(
+        (rk) => rk.startsWith("characterPosX:") || rk.startsWith("characterPosY:") || rk.startsWith("characterPosActive:")
+      );
+      if (charRowKeys.length > 0) {
+        const allItems: { id: string; atMs: number }[] = [];
+        for (const rk of charRowKeys) allItems.push(...byRow.get(rk)!);
+        patch.cutsceneCharacterPositionKeys = applyToArray(charPosKeys, allItems, deltaMs);
+      }
+
+      if (Object.keys(patch).length > 0) updateEntry(entry.id, patch);
     };
     const onMove = (ev: MouseEvent) => apply((ev.clientX - startX) / pxPerMs);
     const onUp = () => {

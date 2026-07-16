@@ -11,7 +11,6 @@ import type { ClipRef } from "./CutsceneTimeline";
 import { CutscenePreview } from "./CutscenePreview";
 import { ClipInspector } from "./ClipInspector";
 import { CutsceneDebugPanel } from "./CutsceneDebugPanel";
-import { CutsceneExplorerPanel } from "./CutsceneExplorerPanel";
 
 // The standalone Cutscene editor WINDOW (Dynarain Phase 2) -- a full-screen modal, same
 // architectural pattern as MapEditorModal.tsx, rather than settings buried inside the Entry
@@ -287,7 +286,6 @@ export function CutsceneEditorModal({ entry, onClose }: { entry: Entry; onClose:
         </div>
 
         <div className="flex-1 flex overflow-hidden">
-          <CutsceneExplorerPanel />
           <div className="flex-1 flex flex-col overflow-hidden">
             <div className="flex-1 overflow-hidden p-4 flex items-center justify-center">
               <CutscenePreview
