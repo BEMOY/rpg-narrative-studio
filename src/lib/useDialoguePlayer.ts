@@ -79,6 +79,14 @@ export function useDialoguePlayer(dialogue: Dialogue) {
   const displayName = speakerData?.displayName || speakerEntry?.name || currentLine?.speaker || "";
   const nameColor = resolveGmlColor(speakerData?.color);
   const showPortrait = !!currentLine && currentLine.side !== "none" && (!!displayName || !!currentLine.speaker);
+  // v77 emotions pipeline: the line's emotion picks that emotion's uploaded portrait picture
+  // (see DialogueSpeakerPortrait.image); falls back to the character's main card image when the
+  // emotion has no picture (or the line has no emotion), so the portrait never just vanishes.
+  const emotionPortrait =
+    currentLine?.emotion && speakerData
+      ? speakerData.portraits.find((p) => p.emotion === currentLine.emotion && p.image)?.image
+      : undefined;
+  const portraitImage = emotionPortrait ?? speakerEntry?.image;
 
   const restart = () => {
     setNodeId(dialogue.startNodeId);
@@ -269,6 +277,7 @@ export function useDialoguePlayer(dialogue: Dialogue) {
     revealCount,
     showPortrait,
     speakerEntry,
+    portraitImage,
     displayName,
     nameColor,
     atLastLine,

@@ -30,6 +30,7 @@ import { RarityBadge } from "../common/RarityBadge";
 import { statIcon } from "../../lib/statIcons";
 import { SLOT_LABEL, SLOT_ICON } from "../../lib/equipSlot";
 import { themedAlert, themedConfirm } from "../../lib/modals";
+import { UsageRows, useUsages } from "./UsageSection";
 
 const REL_LABEL: Record<string, string> = { friend: "Друг", neutral: "Нейтрален", enemy: "Враг" };
 
@@ -266,6 +267,8 @@ export function EntryDetail({ entry, onEdit }: { entry: Entry; onEdit: () => voi
 
       <RelationsBlock entry={entry} />
 
+      <UsagesBlock entry={entry} />
+
       <div className="flex justify-between pt-2">
         <button
           onClick={remove}
@@ -332,6 +335,17 @@ function EquipStatDisplayGroup({
           );
         })}
       </div>
+    </Block>
+  );
+}
+
+// v77 — the "пульт управления" from the vision: every place in the project that uses THIS
+// entry, grouped and clickable, computed live from the reverse-reference index (lib/usages.ts).
+function UsagesBlock({ entry }: { entry: Entry }) {
+  const usages = useUsages(entry.id);
+  return (
+    <Block title={`Где используется${usages.length > 0 ? ` (${usages.length})` : ""}`}>
+      <UsageRows usages={usages} />
     </Block>
   );
 }

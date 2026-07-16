@@ -23,6 +23,8 @@ export function SearchSelect({
   searchPlaceholder = "Поиск…",
   allowClear = true,
   clearLabel = "— нет —",
+  onCreate,
+  createLabel = "Создать",
 }: {
   value: string | undefined;
   onChange: (id: string | undefined) => void;
@@ -31,6 +33,11 @@ export function SearchSelect({
   searchPlaceholder?: string;
   allowClear?: boolean;
   clearLabel?: string;
+  // v77 инлайн-создание: when provided, the dropdown grows a "+ Создать «…»" row — the host
+  // mints a new properly-shaped entity from the typed name (usually via createEntryQuick) and
+  // is expected to select it itself (call onChange with the fresh id inside onCreate).
+  onCreate?: (name: string) => void;
+  createLabel?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -103,7 +110,28 @@ export function SearchSelect({
                 {o.sublabel && <span className="text-[var(--op-30)] ml-auto shrink-0">{o.sublabel}</span>}
               </button>
             ))}
-            {filtered.length === 0 && <div className="text-[10px] text-[var(--op-30)] px-2 py-2 text-center">Ничего не найдено</div>}
+            {filtered.length === 0 && !onCreate && (
+              <div className="text-[10px] text-[var(--op-30)] px-2 py-2 text-center">Ничего не найдено</div>
+            )}
+            {onCreate && (
+              <button
+                type="button"
+                onClick={() => {
+                  const name = q.trim();
+                  onCreate(name || "Новый объект");
+                  setOpen(false);
+                  setQ("");
+                }}
+                className="w-full text-left px-2 py-1.5 rounded-md text-[11px] flex items-center gap-1.5 text-accent hover:bg-accent/10 border-t border-[var(--op-8)] mt-0.5"
+                title="Создать новую запись и сразу привязать сюда — не покидая контекста"
+              >
+                <span className="text-sm leading-none">＋</span>
+                <span className="truncate">
+                  {createLabel}
+                  {q.trim() ? ` «${q.trim()}»` : "…"}
+                </span>
+              </button>
+            )}
           </div>
         </div>
       </PortalMenu>

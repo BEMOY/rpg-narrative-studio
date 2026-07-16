@@ -84,6 +84,21 @@ export function GraphView() {
           list.push({ from: e.id, to: dep.questId, note: dep.kind === "unlocks" ? "открывает" : "блокирует" });
         }
       }
+      // v77 — location-to-location transitions drawn on the map (zones tagged "transition"
+      // with a destination, see ZoneProperties in the Map Editor) show up here automatically,
+      // turning the graph into the "World Map со стрелочками" from the vision.
+      if (e.category === "location" && e.map) {
+        const seen = new Set<string>();
+        for (const layer of e.map.layers) {
+          if (layer.kind !== "zone") continue;
+          for (const z of layer.zones) {
+            if (z.tag !== "transition" || !z.targetMapId) continue;
+            if (z.targetMapId === e.id || !visibleIds.has(z.targetMapId) || seen.has(z.targetMapId)) continue;
+            seen.add(z.targetMapId);
+            list.push({ from: e.id, to: z.targetMapId, note: `переход: ${z.label || "дверь"}` });
+          }
+        }
+      }
     }
     return list;
   }, [visibleEntries, visibleIds]);

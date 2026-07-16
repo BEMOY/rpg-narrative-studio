@@ -619,6 +619,7 @@ function TagsSection({ entry }: { entry: Entry }) {
 function QuestPanel({ entry }: { entry: Entry }) {
   const updateEntry = useProjectStore((s) => s.updateEntry);
   const allEntries = useProjectStore((s) => s.project.entries);
+  const createEntryQuick = useProjectStore((s) => s.createEntryQuick);
   const dialogueFlags = useProjectStore((s) => s.project.dialogueFlags);
   const dialogueFlagDefs = useProjectStore((s) => s.project.dialogueFlagDefs);
   const objectives = entry.objectives ?? [];
@@ -849,6 +850,8 @@ function QuestPanel({ entry }: { entry: Entry }) {
                   placeholder="выбрать предмет…"
                   searchPlaceholder="Поиск предмета…"
                   clearLabel="— не выбрано —"
+                  onCreate={(name) => patchItem(i, { id: createEntryQuick("item", name) })}
+                  createLabel="Создать предмет"
                 />
               </div>
               <input
@@ -935,6 +938,8 @@ function ScenePanel({ entry }: { entry: Entry }) {
   const updateEntry = useProjectStore((s) => s.updateEntry);
   const allEntries = useProjectStore((s) => s.project.entries);
   const dialogues = useProjectStore((s) => s.project.dialogues);
+  const createEntryQuick = useProjectStore((s) => s.createEntryQuick);
+  const createDialogueAction = useProjectStore((s) => s.createDialogue);
 
   const locations = allEntries.filter((e) => e.category === "location");
   const cutscenes = allEntries.filter((e) => e.category === "cutscene");
@@ -1009,6 +1014,8 @@ function ScenePanel({ entry }: { entry: Entry }) {
           onChange={(id) => updateEntry(entry.id, { sceneMapId: id })}
           options={locations.map((l) => ({ id: l.id, label: l.name }))}
           placeholder="Выбрать локацию…"
+          onCreate={(name) => updateEntry(entry.id, { sceneMapId: createEntryQuick("location", name) })}
+          createLabel="Создать локацию"
         />
       </Field>
       {!entry.sceneMapId && (
@@ -1056,6 +1063,18 @@ function ScenePanel({ entry }: { entry: Entry }) {
                     step.kind === "trigger-zone" && !entry.sceneMapId
                       ? "Сначала выберите локацию"
                       : `Выбрать: ${SCENE_STEP_KIND_LABEL[step.kind].toLowerCase()}…`
+                  }
+                  onCreate={
+                    step.kind === "cutscene"
+                      ? (name) => patchStep(i, { refId: createEntryQuick("cutscene", name) })
+                      : step.kind === "battle"
+                        ? (name) => patchStep(i, { refId: createEntryQuick("battle", name) })
+                        : step.kind === "dialogue"
+                          ? (name) => patchStep(i, { refId: createDialogueAction(name, null) })
+                          : undefined
+                  }
+                  createLabel={
+                    step.kind === "cutscene" ? "Создать катсцену" : step.kind === "battle" ? "Создать бой" : "Создать диалог"
                   }
                 />
                 {refOptionsFor(step.kind).length === 0 && (step.kind !== "trigger-zone" || entry.sceneMapId) && (
@@ -1138,6 +1157,8 @@ function ScenePanel({ entry }: { entry: Entry }) {
                   onChange={(id) => patchTransition(i, { targetSceneId: id })}
                   options={otherScenes.map((s) => ({ id: s.id, label: s.name }))}
                   placeholder="Выбрать сцену…"
+                  onCreate={(name) => patchTransition(i, { targetSceneId: createEntryQuick("scene", name) })}
+                  createLabel="Создать сцену"
                 />
               </div>
               <input
@@ -1208,9 +1229,22 @@ function DialogueSpeakerSection({ entry }: { entry: Entry }) {
   const patch = (p: Partial<DialogueSpeakerData>) => updateEntry(entry.id, { dialogueSpeaker: { ...data, ...p } });
 
   const addPortrait = (emotion = "") => patch({ portraits: [...data.portraits, { emotion, sprite: "" }] });
-  const updatePortrait = (i: number, p: Partial<{ emotion: string; sprite: string }>) =>
+  const updatePortrait = (i: number, p: Partial<{ emotion: string; sprite: string; image: string | undefined }>) =>
     patch({ portraits: data.portraits.map((row, idx) => (idx === i ? { ...row, ...p } : row)) });
   const removePortrait = (i: number) => patch({ portraits: data.portraits.filter((_, idx) => idx !== i) });
+
+  // v77 emotions pipeline: each emotion can carry an actual uploaded portrait PICTURE (lossless
+  // — pixel-art portraits must not be recompressed) that the dialogue node cards and the
+  // 320x180 Live Preview then swap in automatically when a line uses that emotion.
+  const uploadPortraitImage = async (i: number, file: File | undefined) => {
+    if (!file) return;
+    try {
+      const dataUrl = await readImageFileLossless(file);
+      updatePortrait(i, { image: dataUrl });
+    } catch {
+      themedAlert("Не удалось загрузить портрет — попробуйте другой файл.");
+    }
+  };
 
   const missingSuggested = SUGGESTED_EMOTIONS.filter((e) => !data.portraits.some((p) => p.emotion === e));
 
@@ -1231,6 +1265,30 @@ function DialogueSpeakerSection({ entry }: { entry: Entry }) {
           <div className="space-y-1.5">
             {data.portraits.map((p, i) => (
               <div key={i} className="flex items-center gap-1.5">
+                <label
+                  title={p.image ? "Портрет загружен — кликните, чтобы заменить" : "Загрузить картинку портрета для этой эмоции"}
+                  className="relative w-9 h-9 shrink-0 rounded-md border border-[var(--op-15)] bg-[var(--op-5)] grid place-items-center cursor-pointer overflow-hidden hover:border-[var(--op-35)] transition-colors group"
+                >
+                  {p.image ? (
+                    <img src={p.image} alt="" className="w-full h-full object-cover" style={{ imageRendering: "pixelated" }} />
+                  ) : (
+                    <Upload size={12} className="text-[var(--op-35)]" />
+                  )}
+                  <input type="file" accept="image/*" className="hidden" onChange={(e) => uploadPortraitImage(i, e.target.files?.[0])} />
+                  {p.image && (
+                    <span
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        updatePortrait(i, { image: undefined });
+                      }}
+                      title="Убрать картинку"
+                      className="absolute -top-0 -right-0 w-3.5 h-3.5 rounded-bl-md bg-black/70 text-white text-[8px] hidden group-hover:grid place-items-center"
+                    >
+                      ×
+                    </span>
+                  )}
+                </label>
                 <input
                   className="input flex-1"
                   value={p.emotion}

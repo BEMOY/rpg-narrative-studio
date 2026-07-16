@@ -7,6 +7,7 @@
 // per-editor contextual panels described in the vision (stats, equipment slots, dependency
 // pickers) are a later phase's work once each editor gets its own reskin.
 import { useProjectStore } from "../../store/useProjectStore";
+import { UsageRows, useUsages } from "../editors/UsageSection";
 
 export function Inspector() {
   const activeIndex = useProjectStore((s) => s.activeTabIndex);
@@ -31,9 +32,21 @@ export function Inspector() {
             <Row label="Version" value={String(entry.version || 1)} />
             <Row label="Category" value={entry.category} />
             {entry.chapter && <Row label="Chapter" value={entry.chapter} />}
+            <InspectorUsages entryId={entry.id} />
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// v77 — compact live reverse-references right in the Inspector (full block lives on the card).
+function InspectorUsages({ entryId }: { entryId: string }) {
+  const usages = useUsages(entryId);
+  return (
+    <div className="pt-3 border-t border-[var(--op-8)]">
+      <div className="text-[10px] uppercase tracking-wider text-[var(--op-35)] mb-2">Где используется ({usages.length})</div>
+      <UsageRows usages={usages} compact />
     </div>
   );
 }

@@ -292,6 +292,11 @@ export interface Entry {
 export interface DialogueSpeakerPortrait {
   emotion: string; // e.g. "neutral" / "happy" / "angry" — matches the keys in speaker_define's portraits struct
   sprite: string; // GML sprite asset name, e.g. spr_port_test_neutral
+  // v77 emotions pipeline: an actual uploaded portrait PICTURE for this emotion (data URL,
+  // lossless — pixel-art portraits must not go through the lossy resize path). Optional and
+  // additive: the GML `sprite` name above stays the export source of truth, this image only
+  // drives the Studio's own previews (dialogue node thumbnails + Live Preview portrait swap).
+  image?: string;
 }
 
 export interface DialogueSpeakerData {
@@ -352,6 +357,44 @@ export interface DialogueFlagDef {
   max?: number; // number type only — slider upper bound (lower bound is always 0)
 }
 
+// --- v77: project-wide image tilesets (real 16px-grid PNG tilesets for the Map Editor) ---
+// One imported PNG sliced on a configurable square grid (default 16 — the game's own tile
+// size at 320x180). Tilesets are PROJECT-level (shared across every location's map, matching
+// the Shared_Assets idea from the vision) rather than per-map, so a forest tileset drawn once
+// is paintable on every forest map.
+export interface TilesetAutotile {
+  id: string;
+  name: string;
+  // Index (row-major, y * cols + x) of the TOP-LEFT tile of this autotile's 4x4 block inside
+  // the tileset image. The 16 sub-tiles cover every N/E/S/W neighbor bitmask: for mask m
+  // (bit 1 = North neighbor same, 2 = East, 4 = South, 8 = West) the drawn tile is at
+  // (baseCol + m % 4, baseRow + floor(m / 4)). See autotileSubIndex in lib/mapDefaults.ts.
+  baseIndex: number;
+}
+
+export interface Tileset {
+  id: string;
+  name: string;
+  image: string; // data URL, imported losslessly — slicing math needs exact source pixels
+  tileSize: number; // px per tile in the SOURCE image (configurable at import, default 16)
+  cols: number; // derived from the image dimensions at import, stored for fast math
+  rows: number;
+  autotiles: TilesetAutotile[];
+}
+
+// v77: settings for the exact-resolution (320x180) dialogue Live Preview — how big the
+// in-game dialogue box is, in REAL game pixels, so the Studio can both render a faithful
+// preview and statically flag lines that won't fit (see estimateDialogueOverflow in
+// lib/dialoguePreview.ts + the Problems scan). All optional; defaults live in that lib.
+export interface DialoguePreviewSettings {
+  boxWidthPx?: number; // dialogue box width on the 320x180 screen, default 300
+  boxHeightPx?: number; // text area height, default 46
+  fontSizePx?: number; // pixel font size, default 8
+  lineHeightPx?: number; // default 10
+  paddingPx?: number; // box inner padding, default 6
+  portraitSizePx?: number; // portrait square, default 32
+}
+
 export interface Project {
   name: string;
   entries: Entry[];
@@ -387,6 +430,10 @@ export interface Project {
   // minimum too), since height already has a sensible auto-computed default.
   questGraphChapterHeights?: Record<string, number>;
   uiSettings?: UiSettings;
+  // v77 — see the doc comments on Tileset / DialoguePreviewSettings above. Both optional so
+  // every pre-v77 saved project loads unchanged (normalize fills [] / defaults lazily).
+  tilesets?: Tileset[];
+  previewSettings?: DialoguePreviewSettings;
 }
 
 // Mirrors the real engine's color_lookup()/color_eval()/color_eval_glyph() system
@@ -415,6 +462,18 @@ export interface DialogueColorStyle {
 export interface MapTileValue {
   color: string;
   label?: string;
+  // v77 image tilesets: when set, this cell renders a real tile sliced out of a project
+  // Tileset image instead of the flat `color` (which stays as a fallback for the minimap,
+  // legacy cells, and cells whose tileset got deleted). Exactly ONE of tileIndex / autotileId
+  // is meaningful at a time:
+  //   tileIndex  — plain tile: index into the tileset's grid, row-major (y * cols + x).
+  //   autotileId — autotile group: the DRAWN sub-tile is resolved at render time from the
+  //                4-neighbor bitmask (see autotileSubIndex in lib/mapDefaults.ts), so
+  //                painting/erasing a neighbor automatically restitches the edges with no
+  //                repaint pass needed.
+  tilesetId?: string;
+  tileIndex?: number;
+  autotileId?: string;
 }
 
 interface MapLayerBase {
@@ -453,6 +512,14 @@ export interface MapZone {
   h: number;
   color: string;
   notes?: string;
+  // v77 location transitions — meaningful when tag === "transition": which OTHER location
+  // Entry this door/road leads to, and (optionally) which spawn zone (tag === "spawn") inside
+  // that location's own map the player appears at. Reuses the existing zone tooling (draw,
+  // drag, properties panel) instead of inventing a parallel "transition object" concept —
+  // a transition IS a zone, it just carries a destination. These also drive the automatic
+  // location-to-location arrows in the Relationship Graph (see GraphView).
+  targetMapId?: string;
+  targetSpawnZoneId?: string;
 }
 
 export interface MapZoneLayer extends MapLayerBase {
@@ -482,7 +549,17 @@ export interface MapImageLayer extends MapLayerBase {
   images: MapImageInstance[];
 }
 
-export type MapLayer = MapTileLayer | MapObjectLayer | MapZoneLayer | MapFreehandLayer | MapImageLayer;
+// v77 collision painting — the "красный полупрозрачный слой" from the Dynarain vision. A cell
+// key's presence means "solid / impassable". Kept as its own layer KIND (not a flag on tile
+// cells) so collision is drawn/erased/exported independently of what the ground art looks like,
+// and so a map can keep collision hidden while painting scenery. Exports straight into the
+// map's JSON like every other layer — a GMS2 importer turns each cell into its collision grid.
+export interface MapCollisionLayer extends MapLayerBase {
+  kind: "collision";
+  cells: Record<string, true>; // key: "x:y"
+}
+
+export type MapLayer = MapTileLayer | MapObjectLayer | MapZoneLayer | MapFreehandLayer | MapImageLayer | MapCollisionLayer;
 
 export interface MapPaletteColor {
   color: string;
@@ -887,6 +964,10 @@ export interface UiSettings {
   // Background grid on/off for the Dialogues canvas — deliberately a single window-wide switch
   // (not per-Dialogue) per the writer's request, unlike the per-dialogue camera above.
   dialoguesGridEnabled?: boolean;
+  // v77 Explorer tree mode: "categories" (default — one group per entity type, chapters
+  // inside) or "story" (Глава → Сцена → everything that scene actually uses, plus a Shared
+  // Assets bucket for entries no scene references). Pure view preference, no data change.
+  explorerMode?: "categories" | "story";
 }
 
 // MARKUP_TAGS moved to src/lib/dialogueMarkup.ts (now alongside the parser/renderer it drives).

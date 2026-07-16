@@ -33,6 +33,7 @@ import {
 import type {
   Category,
   Entry,
+  MapCollisionLayer,
   MapData,
   MapFreehandLayer,
   MapImageInstance,
@@ -42,12 +43,14 @@ import type {
   MapObjectLayer,
   MapPaletteColor,
   MapTileLayer,
+  MapTileValue,
   MapZone,
   MapZoneLayer,
+  Tileset,
 } from "../../types/database";
 import { CAT_COLOR, CAT_LABEL, CAT_ORDER } from "../../types/database";
 import { useProjectStore } from "../../store/useProjectStore";
-import { resizeImageFile, getImageDimensions } from "../../lib/image";
+import { resizeImageFile, getImageDimensions, readImageFileLossless } from "../../lib/image";
 import { usePasteImage } from "../../lib/usePasteImage";
 import { ResizablePanel } from "../common/ResizablePanel";
 import { PortalMenu } from "../common/PortalMenu";
@@ -55,7 +58,7 @@ import { Tour, type TourStep } from "../tour/Tour";
 import { mapEditorFocusState } from "../../lib/mapEditorFocus";
 import { PaletteImportModal } from "./PaletteImportModal";
 import { ThemedSelect } from "../common/ThemedSelect";
-import { themedAlert, themedConfirm } from "../../lib/modals";
+import { themedAlert, themedConfirm, themedPrompt } from "../../lib/modals";
 
 const MAP_EDITOR_TOUR: TourStep[] = [
   { target: '[data-tour="mapeditor-tools"]', title: "Инструменты", body: "Кисть и заливка красят тайлы, ластик стирает, «Зона» рисует прямоугольные области, «Перо» — попиксельный режим, «Панорама» двигает холст." },
@@ -64,13 +67,17 @@ const MAP_EDITOR_TOUR: TourStep[] = [
   { target: '[data-tour="mapeditor-canvas"]', title: "Холст", body: "Колесо мыши — зум, инструмент «Панорама» (или средняя кнопка) — сдвиг вида. Ctrl+Z/Y — отмена/повтор." },
 ];
 import {
+  autotileMask,
+  autotileSubIndex,
   cellKey,
+  createCollisionLayer,
   createDefaultMap,
   createFreehandLayer,
   createImageLayer,
   nextId,
   normalizeMap,
   parseCellKey,
+  tileBackgroundStyle,
   ZONE_TAGS,
 } from "../../lib/mapDefaults";
 
@@ -79,6 +86,8 @@ type Selection = { kind: "object"; id: string } | { kind: "zone"; id: string } |
 type Rect = { x: number; y: number; w: number; h: number };
 
 const MAX_HISTORY = 50;
+// Stable [] so the zustand selector doesn't return a new array identity every render.
+const EMPTY_TILESETS: Tileset[] = [];
 
 function clamp(v: number, min: number, max: number) {
   return Math.min(max, Math.max(min, v));
@@ -101,6 +110,17 @@ function isFreehand(l: MapLayer): l is MapFreehandLayer {
 function isImageLayer(l: MapLayer): l is MapImageLayer {
   return l.kind === "image";
 }
+function isCollision(l: MapLayer): l is MapCollisionLayer {
+  return l.kind === "collision";
+}
+
+// v77 — what the paint/fill tools actually put into a tile cell: a flat palette color (the
+// original mode), a single tile cut from a project tileset, or an autotile group whose edges
+// restitch themselves from neighbors at render time.
+type PaintSource =
+  | { kind: "color" }
+  | { kind: "tile"; tilesetId: string; tileIndex: number }
+  | { kind: "autotile"; tilesetId: string; autotileId: string };
 
 const LAYER_KIND_LABEL: Record<MapLayer["kind"], string> = {
   tile: "Тайлы",
@@ -108,6 +128,7 @@ const LAYER_KIND_LABEL: Record<MapLayer["kind"], string> = {
   zone: "Зоны",
   freehand: "Рисование",
   image: "Картинки",
+  collision: "Коллизии",
 };
 
 // Each layer kind has its own dedicated tool(s) — a tile layer only paints/fills/erases tiles,
@@ -124,6 +145,7 @@ const LAYER_ALLOWED_TOOLS: Record<MapLayer["kind"], Tool[]> = {
   zone: ["zone", "pan"],
   object: ["pan"],
   image: ["pan"],
+  collision: ["paint", "erase", "fill", "pan"],
 };
 const LAYER_DEFAULT_TOOL: Record<MapLayer["kind"], Tool> = {
   tile: "paint",
@@ -131,11 +153,17 @@ const LAYER_DEFAULT_TOOL: Record<MapLayer["kind"], Tool> = {
   zone: "zone",
   object: "pan",
   image: "pan",
+  collision: "paint",
 };
 
 export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () => void }) {
   const entries = useProjectStore((s) => s.project.entries);
   const updateEntry = useProjectStore((s) => s.updateEntry);
+  // v77 — project-wide image tilesets (shared across every location's map)
+  const tilesets = useProjectStore((s) => s.project.tilesets ?? EMPTY_TILESETS);
+  const addTileset = useProjectStore((s) => s.addTileset);
+  const updateTileset = useProjectStore((s) => s.updateTileset);
+  const removeTileset = useProjectStore((s) => s.removeTileset);
 
   const [map, setMapState] = useState<MapData>(() => (entry.map ? normalizeMap(cloneMap(entry.map)) : createDefaultMap()));
   const pastRef = useRef<MapData[]>([]);
@@ -147,6 +175,13 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
   const [activeLayerId, setActiveLayerId] = useState<string>(() => map.layers.find(isTile)?.id ?? map.layers[0]?.id ?? "");
   const [paintColor, setPaintColor] = useState(map.palette[0]?.color ?? "#6b7280");
   const [paintLabel, setPaintLabel] = useState(map.palette[0]?.label ?? "Тайл");
+  // v77 — what the brush/fill puts into tile cells: flat color / tileset tile / autotile group
+  const [paintSource, setPaintSource] = useState<PaintSource>({ kind: "color" });
+  // Which sub-panel of the paint palette is open: flat colors or image tilesets
+  const [paletteTab, setPaletteTab] = useState<"colors" | "tiles">("colors");
+  // "Click a tile in the grid to mark an autotile block" arming flag (see TilesetPalette)
+  const [autotilePickArmed, setAutotilePickArmed] = useState(false);
+  const tilesetUploadRef = useRef<HTMLInputElement>(null);
   const [zoneTag, setZoneTag] = useState(ZONE_TAGS[0]);
   const [brushSize, setBrushSize] = useState(6);
   const [brushColor, setBrushColor] = useState("#e8e9ee");
@@ -314,6 +349,26 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
     if (active && isImageLayer(active)) return active;
     return map.layers.find(isImageLayer);
   };
+  const effectiveCollisionLayer = (): MapCollisionLayer | undefined => {
+    const active = findLayer(activeLayerId);
+    if (active && isCollision(active)) return active;
+    return undefined; // collision painting must be explicit — never silently redirect to some other layer
+  };
+
+  // The MapTileValue the current PaintSource produces. `color` is always kept meaningful (used
+  // as the minimap/fallback rendering when a tileset is missing or the cell predates tilesets).
+  const paintValue = (): MapTileValue => {
+    if (paintSource.kind === "tile") {
+      const ts = tilesets.find((t) => t.id === paintSource.tilesetId);
+      return { color: paintColor, label: ts ? `${ts.name} #${paintSource.tileIndex}` : "тайл", tilesetId: paintSource.tilesetId, tileIndex: paintSource.tileIndex };
+    }
+    if (paintSource.kind === "autotile") {
+      const ts = tilesets.find((t) => t.id === paintSource.tilesetId);
+      const at = ts?.autotiles.find((a) => a.id === paintSource.autotileId);
+      return { color: paintColor, label: at ? `автотайл: ${at.name}` : "автотайл", tilesetId: paintSource.tilesetId, autotileId: paintSource.autotileId };
+    }
+    return { color: paintColor, label: paintLabel };
+  };
 
   // Force the selected tool back to a valid one for whichever layer is now active, any time
   // the active layer changes to a different kind — e.g. switching from a freehand layer (tool
@@ -341,6 +396,7 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
       else if (kind === "zone")
         layer = { id: nextId("layer"), kind: "zone", name: `Зоны ${count}`, visible: true, locked: false, opacity: 0.5, zones: [] };
       else if (kind === "freehand") layer = { ...createFreehandLayer(), name: `Рисование ${count}` };
+      else if (kind === "collision") layer = { ...createCollisionLayer(), name: count > 1 ? `Коллизии ${count}` : "Коллизии" };
       else layer = { ...createImageLayer(), name: `Картинки ${count}` };
       next.layers.push(layer);
       setActiveLayerId(layer.id);
@@ -580,6 +636,32 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
 
   usePasteImage((file) => pasteImageIntoMap(file));
 
+  // ---- v77: tileset import ----
+  // Lossless read (slicing math depends on exact pixels), configurable source tile size
+  // (default 16 — the game's own grid at 320x180). cols/rows derived once here.
+  const importTileset = async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      const sizeStr = await themedPrompt("Размер тайла в пикселях (сетка нарезки исходного PNG):", "16");
+      if (sizeStr === null) return;
+      const tileSize = clamp(parseInt(sizeStr, 10) || 16, 4, 128);
+      const dataUrl = await readImageFileLossless(file);
+      const { width, height } = await getImageDimensions(dataUrl);
+      const cols = Math.floor(width / tileSize);
+      const rows = Math.floor(height / tileSize);
+      if (cols < 1 || rows < 1) {
+        themedAlert(`Картинка ${width}×${height} меньше одного тайла ${tileSize}×${tileSize}.`);
+        return;
+      }
+      const name = file.name.replace(/\.[^.]+$/, "") || "Тайлсет";
+      const id = addTileset({ name, image: dataUrl, tileSize, cols, rows, autotiles: [] });
+      setPaintSource({ kind: "tile", tilesetId: id, tileIndex: 0 });
+      setPaletteTab("tiles");
+    } catch {
+      themedAlert("Не удалось импортировать тайлсет — попробуйте другой файл.");
+    }
+  };
+
   // ---- geometry ----
   const getCell = (e: { clientX: number; clientY: number }) => {
     const rect = stageRef.current?.getBoundingClientRect();
@@ -596,22 +678,69 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
 
   const paintCell = (x: number, y: number, mode: "paint" | "erase") => {
     if (x < 0 || y < 0 || x >= map.width || y >= map.height) return;
+    // v77 — the collision layer paints solid/impassable cells with the exact same brush
+    // gestures as tiles, it just writes into its own boolean cell set.
+    const colLayer = effectiveCollisionLayer();
+    if (colLayer) {
+      if (colLayer.locked) return;
+      setMap((prev) => {
+        const next = cloneMap(prev);
+        const l = next.layers.find((l) => l.id === colLayer.id);
+        if (!l || !isCollision(l)) return prev;
+        const key = cellKey(x, y);
+        if (mode === "erase") delete l.cells[key];
+        else l.cells[key] = true;
+        return next;
+      }, false);
+      return;
+    }
     const layer = effectiveTileLayer();
     if (!layer || layer.locked) return;
+    const value = paintValue();
     setMap((prev) => {
       const next = cloneMap(prev);
       const l = next.layers.find((l) => l.id === layer.id);
       if (!l || !isTile(l)) return prev;
       const key = cellKey(x, y);
       if (mode === "erase") delete l.cells[key];
-      else l.cells[key] = { color: paintColor, label: paintLabel };
+      else l.cells[key] = value;
       return next;
     }, false);
   };
 
   const floodFill = (startX: number, startY: number) => {
+    // v77 — fill on the collision layer floods the connected painted/empty region with solid cells.
+    const colLayer = effectiveCollisionLayer();
+    if (colLayer) {
+      if (colLayer.locked) return;
+      snapshot();
+      setMapState((prev) => {
+        const next = cloneMap(prev);
+        const l = next.layers.find((x) => x.id === colLayer.id);
+        if (!l || !isCollision(l)) return prev;
+        const startSolid = !!l.cells[cellKey(startX, startY)];
+        if (startSolid) return next; // already solid — nothing to fill
+        const visited = new Set<string>();
+        const stack: [number, number][] = [[startX, startY]];
+        let guard = 0;
+        while (stack.length && guard < next.width * next.height * 4) {
+          guard++;
+          const [x, y] = stack.pop()!;
+          if (x < 0 || y < 0 || x >= next.width || y >= next.height) continue;
+          const k = cellKey(x, y);
+          if (visited.has(k)) continue;
+          visited.add(k);
+          if (l.cells[k]) continue;
+          l.cells[k] = true;
+          stack.push([x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]);
+        }
+        return next;
+      });
+      return;
+    }
     const layer = effectiveTileLayer();
     if (!layer || layer.locked) return;
+    const value = paintValue();
     snapshot();
     setMapState((prev) => {
       const next = cloneMap(prev);
@@ -619,9 +748,13 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
       if (!l || !isTile(l)) return prev;
       const startKey = cellKey(startX, startY);
       const startVal = l.cells[startKey];
-      if (startVal?.color === paintColor) return next;
-      const matches = (v: typeof startVal) =>
-        (v === undefined && startVal === undefined) || (v !== undefined && startVal !== undefined && v.color === startVal.color);
+      // Two cells count as "the same region" if their full painted identity matches — color for
+      // legacy cells, tileset tile / autotile group for v77 cells.
+      const sameValue = (a: MapTileValue | undefined, b: MapTileValue | undefined) => {
+        if (a === undefined || b === undefined) return a === b;
+        return a.color === b.color && a.tilesetId === b.tilesetId && a.tileIndex === b.tileIndex && a.autotileId === b.autotileId;
+      };
+      if (sameValue(startVal, value)) return next;
       const visited = new Set<string>();
       const stack: [number, number][] = [[startX, startY]];
       let guard = 0;
@@ -632,8 +765,8 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
         const k = cellKey(x, y);
         if (visited.has(k)) continue;
         visited.add(k);
-        if (!matches(l.cells[k])) continue;
-        l.cells[k] = { color: paintColor, label: paintLabel };
+        if (!sameValue(l.cells[k], startVal)) continue;
+        l.cells[k] = { ...value };
         stack.push([x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]);
       }
       return next;
@@ -672,7 +805,7 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
     }
     const cell = getCell(e);
 
-    if (tool === "paint" || (tool === "erase" && effectiveTileLayer())) {
+    if (tool === "paint" || (tool === "erase" && (effectiveTileLayer() || effectiveCollisionLayer()))) {
       const active = findLayer(activeLayerId);
       if (active && isFreehand(active)) return; // freehand handled by its own canvas
       snapshot();
@@ -1144,22 +1277,77 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
                 {activeLayer ? `Слой «${LAYER_KIND_LABEL[activeLayer.kind]}» — доступны только его инструменты` : "Выберите слой"}
               </div>
 
-              {(tool === "paint" || tool === "fill") && !activeIsFreehand && (
-                <PaletteGrid
-                  palette={map.palette}
-                  activeColor={paintColor}
-                  onPick={(color, label) => {
-                    setPaintColor(color);
-                    setPaintLabel(label);
-                  }}
-                  onRemove={removePaletteColor}
-                  addColorDraft={addColorDraft}
-                  setAddColorDraft={setAddColorDraft}
-                  onAdd={addPaletteColor}
-                  onOpenImport={() => setPaletteImportOpen(true)}
-                  collapsed={paletteCollapsed}
-                  onToggleCollapsed={() => setPaletteCollapsed((v) => !v)}
-                />
+              {(tool === "paint" || tool === "fill") && activeLayer && isCollision(activeLayer) && (
+                <div className="mt-3 text-[10px] text-red-300/80 leading-relaxed bg-red-500/10 border border-red-500/20 rounded-md px-2 py-1.5">
+                  Режим коллизий: закрашивайте клетки, сквозь которые игрок не должен проходить. Ластик стирает, заливка
+                  заполняет область.
+                </div>
+              )}
+
+              {(tool === "paint" || tool === "fill") && !activeIsFreehand && !(activeLayer && isCollision(activeLayer)) && (
+                <>
+                  {/* v77 — the paint source now comes in two flavors: flat palette colors (the
+                      original mode) and real image tilesets with autotiles. */}
+                  <div className="mt-3 flex rounded-md overflow-hidden border border-[var(--op-10)] text-[10px]">
+                    <button
+                      onClick={() => {
+                        setPaletteTab("colors");
+                        setPaintSource({ kind: "color" });
+                      }}
+                      className={`flex-1 py-1 ${paletteTab === "colors" ? "bg-[var(--op-10)] text-[var(--op-90)]" : "text-[var(--op-40)] hover:text-[var(--op-70)]"}`}
+                    >
+                      Цвета
+                    </button>
+                    <button
+                      onClick={() => setPaletteTab("tiles")}
+                      className={`flex-1 py-1 ${paletteTab === "tiles" ? "bg-[var(--op-10)] text-[var(--op-90)]" : "text-[var(--op-40)] hover:text-[var(--op-70)]"}`}
+                    >
+                      Тайлсеты
+                    </button>
+                  </div>
+
+                  {paletteTab === "colors" && (
+                    <PaletteGrid
+                      palette={map.palette}
+                      activeColor={paintColor}
+                      onPick={(color, label) => {
+                        setPaintColor(color);
+                        setPaintLabel(label);
+                        setPaintSource({ kind: "color" });
+                      }}
+                      onRemove={removePaletteColor}
+                      addColorDraft={addColorDraft}
+                      setAddColorDraft={setAddColorDraft}
+                      onAdd={addPaletteColor}
+                      onOpenImport={() => setPaletteImportOpen(true)}
+                      collapsed={paletteCollapsed}
+                      onToggleCollapsed={() => setPaletteCollapsed((v) => !v)}
+                    />
+                  )}
+
+                  {paletteTab === "tiles" && (
+                    <TilesetPalette
+                      tilesets={tilesets}
+                      paintSource={paintSource}
+                      setPaintSource={setPaintSource}
+                      onImportClick={() => tilesetUploadRef.current?.click()}
+                      updateTileset={updateTileset}
+                      removeTileset={removeTileset}
+                      autotilePickArmed={autotilePickArmed}
+                      setAutotilePickArmed={setAutotilePickArmed}
+                    />
+                  )}
+                  <input
+                    ref={tilesetUploadRef}
+                    type="file"
+                    accept="image/png,image/*"
+                    className="hidden"
+                    onChange={(e) => {
+                      importTileset(e.target.files?.[0]);
+                      e.target.value = "";
+                    }}
+                  />
+                </>
               )}
 
               {(tool === "draw" || (tool === "erase" && activeIsFreehand)) && (
@@ -1262,6 +1450,7 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
                         ["zone", "Слой зон"],
                         ["freehand", "Слой рисования"],
                         ["image", "Слой картинок"],
+                        ["collision", "Слой коллизий"],
                       ] as [MapLayer["kind"], string][]
                     ).map(([kind, label]) => (
                       <button
@@ -1458,6 +1647,41 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
                     <div key={layer.id} style={{ position: "absolute", inset: 0, opacity: layer.opacity, pointerEvents: "none" }}>
                       {Object.entries(layer.cells).map(([key, val]) => {
                         const { x, y } = parseCellKey(key);
+                        const base: React.CSSProperties = {
+                          position: "absolute",
+                          left: x * map.gridSize,
+                          top: y * map.gridSize,
+                          width: map.gridSize,
+                          height: map.gridSize,
+                        };
+                        // v77 — image tileset cells: plain tile or autotile (sub-tile resolved
+                        // from the 4-neighbor mask at render time). Falls back to the flat
+                        // color when the referenced tileset no longer exists.
+                        if (val.tilesetId) {
+                          const ts = tilesets.find((t) => t.id === val.tilesetId);
+                          if (ts) {
+                            let index: number | undefined = val.tileIndex;
+                            if (val.autotileId) {
+                              const at = ts.autotiles.find((a) => a.id === val.autotileId);
+                              if (at) index = autotileSubIndex(at.baseIndex, ts.cols, autotileMask(layer.cells, x, y, val.autotileId));
+                            }
+                            if (index !== undefined) {
+                              return <div key={key} style={{ ...base, ...tileBackgroundStyle(ts, index, map.gridSize) }} title={val.label} />;
+                            }
+                          }
+                        }
+                        return <div key={key} style={{ ...base, background: val.color }} title={val.label} />;
+                      })}
+                    </div>
+                  );
+                }
+
+                if (isCollision(layer)) {
+                  // v77 — the red translucent "непроходимо" overlay from the vision
+                  return (
+                    <div key={layer.id} style={{ position: "absolute", inset: 0, opacity: layer.opacity, pointerEvents: "none" }}>
+                      {Object.keys(layer.cells).map((key) => {
+                        const { x, y } = parseCellKey(key);
                         return (
                           <div
                             key={key}
@@ -1467,9 +1691,11 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
                               top: y * map.gridSize,
                               width: map.gridSize,
                               height: map.gridSize,
-                              background: val.color,
+                              background: "#ef4444",
+                              outline: "1px solid rgba(255,255,255,0.25)",
+                              outlineOffset: -1,
                             }}
-                            title={val.label}
+                            title="Коллизия (непроходимо)"
                           />
                         );
                       })}
@@ -1752,6 +1978,8 @@ export function MapEditorModal({ entry, onClose }: { entry: Entry; onClose: () =
               <ZoneProperties
                 key={selectedZone.id}
                 zone={selectedZone}
+                entries={entries}
+                currentEntryId={entry.id}
                 onChange={(patch) =>
                   setMap((prev) => {
                     const next = cloneMap(prev);
@@ -2178,13 +2406,24 @@ function ObjectProperties({
 
 function ZoneProperties({
   zone,
+  entries,
+  currentEntryId,
   onChange,
   onDelete,
 }: {
   zone: MapZone;
+  entries: Entry[];
+  currentEntryId: string;
   onChange: (patch: Partial<MapZone>) => void;
   onDelete: () => void;
 }) {
+  // v77 location transitions — a zone tagged "transition" carries a destination: another
+  // location Entry, plus (optionally) a specific spawn zone inside that location's own map.
+  const locationOptions = entries.filter((e) => e.category === "location" && e.id !== currentEntryId);
+  const targetLocation = zone.targetMapId ? entries.find((e) => e.id === zone.targetMapId) : undefined;
+  const targetSpawns: MapZone[] =
+    targetLocation?.map?.layers.flatMap((l) => (l.kind === "zone" ? l.zones.filter((z) => z.tag === "spawn") : [])) ?? [];
+
   return (
     <div className="space-y-3">
       <div className="text-xs uppercase tracking-wider text-[var(--op-35)]">Зона</div>
@@ -2201,6 +2440,52 @@ function ZoneProperties({
           options={ZONE_TAGS.map((t) => ({ value: t.tag, label: t.label }))}
         />
       </div>
+
+      {zone.tag === "transition" && (
+        <div className="rounded-md border border-amber-500/25 bg-amber-500/5 p-2 space-y-2">
+          <div className="text-[10px] uppercase tracking-wider text-amber-300/80">Переход между локациями</div>
+          <div className="text-xs text-[var(--op-40)] block">
+            Куда ведёт
+            <ThemedSelect
+              className="input mt-1 w-full"
+              value={zone.targetMapId ?? ""}
+              onChange={(v) => onChange({ targetMapId: v || undefined, targetSpawnZoneId: undefined })}
+              options={[
+                { value: "", label: "— не выбрано —" },
+                ...locationOptions.map((e) => ({ value: e.id, label: e.name })),
+              ]}
+            />
+          </div>
+          {zone.targetMapId && (
+            <div className="text-xs text-[var(--op-40)] block">
+              Точка спавна
+              <ThemedSelect
+                className="input mt-1 w-full"
+                value={zone.targetSpawnZoneId ?? ""}
+                onChange={(v) => onChange({ targetSpawnZoneId: v || undefined })}
+                options={[
+                  { value: "", label: targetSpawns.length > 0 ? "— по умолчанию —" : "— на карте цели нет зон «Точка спавна» —" },
+                  ...targetSpawns.map((z) => ({ value: z.id, label: z.label || z.id })),
+                ]}
+              />
+              {targetSpawns.length === 0 && (
+                <div className="text-[10px] text-[var(--op-30)] mt-1 leading-relaxed">
+                  Откройте карту «{targetLocation?.name}» и нарисуйте зону с тегом «Точка спавна», чтобы выбрать её здесь.
+                </div>
+              )}
+            </div>
+          )}
+          <div className="text-[10px] text-[var(--op-30)] leading-relaxed">
+            Локации с переходами автоматически соединяются стрелками в Графе связей.
+          </div>
+        </div>
+      )}
+
+      {zone.tag === "spawn" && (
+        <div className="text-[10px] text-emerald-300/80 bg-emerald-500/10 border border-emerald-500/20 rounded-md px-2 py-1.5 leading-relaxed">
+          Точка спавна: переходы с других карт могут выбирать её как место появления игрока. Название зоны — её имя в списке.
+        </div>
+      )}
       <label className="text-xs text-[var(--op-40)] flex items-center justify-between">
         Цвет
         <input
@@ -2298,6 +2583,198 @@ function ImageProperties({
       >
         <Trash2 size={12} /> Удалить картинку
       </button>
+    </div>
+  );
+}
+
+// ---- v77: the "Тайлсеты" tab of the paint palette ----
+// Project-level tilesets (shared across all maps): pick a tileset, click a tile to paint with
+// it, or select one of its autotile groups. "＋ Автотайл" arms a pick: the next tile clicked in
+// the grid becomes the TOP-LEFT of that autotile's 4x4 block (the 16 neighbor-mask variants).
+const TILE_BTN_PX = 24;
+
+function TilesetPalette({
+  tilesets,
+  paintSource,
+  setPaintSource,
+  onImportClick,
+  updateTileset,
+  removeTileset,
+  autotilePickArmed,
+  setAutotilePickArmed,
+}: {
+  tilesets: Tileset[];
+  paintSource: PaintSource;
+  setPaintSource: (s: PaintSource) => void;
+  onImportClick: () => void;
+  updateTileset: (id: string, patch: Partial<Tileset>) => void;
+  removeTileset: (id: string) => void;
+  autotilePickArmed: boolean;
+  setAutotilePickArmed: (v: boolean) => void;
+}) {
+  // Which tileset the grid below shows — follows the paint source when it points at one.
+  const [openTilesetId, setOpenTilesetId] = useState<string | null>(
+    paintSource.kind !== "color" ? paintSource.tilesetId : tilesets[0]?.id ?? null
+  );
+  const ts = tilesets.find((t) => t.id === openTilesetId) ?? tilesets[0];
+
+  const pickTile = async (index: number) => {
+    if (!ts) return;
+    if (autotilePickArmed) {
+      const col = index % ts.cols;
+      const row = Math.floor(index / ts.cols);
+      if (col + 3 >= ts.cols || row + 3 >= ts.rows) {
+        themedAlert("Блок автотайла 4×4 не помещается: выберите тайл, от которого вправо-вниз есть ещё 3 столбца и 3 строки.");
+        return;
+      }
+      const name = await themedPrompt("Название автотайла:", "Автотайл");
+      if (name === null) return;
+      const at = { id: nextId("autotile"), name: name.trim() || "Автотайл", baseIndex: index };
+      updateTileset(ts.id, { autotiles: [...ts.autotiles, at] });
+      setAutotilePickArmed(false);
+      setPaintSource({ kind: "autotile", tilesetId: ts.id, autotileId: at.id });
+      return;
+    }
+    setPaintSource({ kind: "tile", tilesetId: ts.id, tileIndex: index });
+  };
+
+  return (
+    <div className="mt-3 space-y-2">
+      <div className="flex items-center gap-1.5">
+        <div className="flex-1 min-w-0">
+          <ThemedSelect
+            className="input text-xs py-1 w-full"
+            value={ts?.id ?? ""}
+            onChange={(v) => {
+              setOpenTilesetId(v);
+              setAutotilePickArmed(false);
+            }}
+            options={tilesets.map((t) => ({ value: t.id, label: `${t.name} (${t.tileSize}px)` }))}
+          />
+        </div>
+        <button
+          onClick={onImportClick}
+          title="Импортировать тайлсет (PNG, нарезка по сетке)"
+          className="w-7 h-7 shrink-0 grid place-items-center rounded-md glass hover:bg-[var(--op-10)]"
+        >
+          <Plus size={12} />
+        </button>
+        {ts && (
+          <button
+            onClick={async () => {
+              if (await themedConfirm(`Удалить тайлсет «${ts.name}»? Клетки, нарисованные им, останутся и будут показаны цветом-заглушкой.`)) {
+                removeTileset(ts.id);
+                setPaintSource({ kind: "color" });
+              }
+            }}
+            title="Удалить тайлсет из проекта"
+            className="w-7 h-7 shrink-0 grid place-items-center rounded-md glass hover:bg-[var(--op-10)] hover:text-red-300"
+          >
+            <Trash2 size={12} />
+          </button>
+        )}
+      </div>
+
+      {!ts && (
+        <div className="text-[10px] text-[var(--op-30)] leading-relaxed">
+          Тайлсетов пока нет — импортируйте PNG кнопкой «+». Сетка нарезки настраивается при импорте (по умолчанию 16 px, как в
+          игре 320×180).
+        </div>
+      )}
+
+      {ts && (
+        <>
+          <div
+            className="overflow-auto rounded-md border border-[var(--op-10)] bg-[var(--op-4)]"
+            style={{ maxHeight: 220 }}
+          >
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: `repeat(${ts.cols}, ${TILE_BTN_PX}px)`,
+                width: ts.cols * TILE_BTN_PX,
+              }}
+            >
+              {Array.from({ length: ts.cols * ts.rows }, (_, i) => {
+                const activeTile = paintSource.kind === "tile" && paintSource.tilesetId === ts.id && paintSource.tileIndex === i;
+                // highlight all 16 tiles of the selected autotile's block
+                const selectedAt =
+                  paintSource.kind === "autotile" && paintSource.tilesetId === ts.id
+                    ? ts.autotiles.find((a) => a.id === paintSource.autotileId)
+                    : undefined;
+                let inAutotileBlock = false;
+                if (selectedAt) {
+                  const bc = selectedAt.baseIndex % ts.cols;
+                  const br = Math.floor(selectedAt.baseIndex / ts.cols);
+                  const c = i % ts.cols;
+                  const r = Math.floor(i / ts.cols);
+                  inAutotileBlock = c >= bc && c < bc + 4 && r >= br && r < br + 4;
+                }
+                return (
+                  <button
+                    key={i}
+                    onClick={() => pickTile(i)}
+                    title={`Тайл #${i}`}
+                    style={{
+                      width: TILE_BTN_PX,
+                      height: TILE_BTN_PX,
+                      ...tileBackgroundStyle(ts, i, TILE_BTN_PX),
+                      outline: activeTile ? "2px solid var(--op-90)" : inAutotileBlock ? "1px solid #f59e0b" : "none",
+                      outlineOffset: -2,
+                      cursor: autotilePickArmed ? "crosshair" : "pointer",
+                    }}
+                  />
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-1">
+            {ts.autotiles.map((a) => {
+              const active = paintSource.kind === "autotile" && paintSource.autotileId === a.id;
+              return (
+                <span
+                  key={a.id}
+                  className={`group flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-md cursor-pointer border ${
+                    active ? "border-amber-400 text-amber-300 bg-amber-500/10" : "border-[var(--op-12)] text-[var(--op-50)] hover:text-[var(--op-80)]"
+                  }`}
+                  onClick={() => setPaintSource({ kind: "autotile", tilesetId: ts.id, autotileId: a.id })}
+                  title="Рисовать этим автотайлом — края сшиваются с соседями автоматически"
+                >
+                  <span
+                    className="w-4 h-4 rounded-sm shrink-0"
+                    style={{ ...tileBackgroundStyle(ts, autotileSubIndex(a.baseIndex, ts.cols, 15), 16) }}
+                  />
+                  {a.name}
+                  <span
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      updateTileset(ts.id, { autotiles: ts.autotiles.filter((x) => x.id !== a.id) });
+                      if (active) setPaintSource({ kind: "color" });
+                    }}
+                    className="opacity-0 group-hover:opacity-70 hover:!opacity-100"
+                  >
+                    <X size={10} />
+                  </span>
+                </span>
+              );
+            })}
+            <button
+              onClick={() => setAutotilePickArmed(!autotilePickArmed)}
+              className={`text-[10px] px-1.5 py-0.5 rounded-md border border-dashed ${
+                autotilePickArmed ? "border-amber-400 text-amber-300 animate-pulse" : "border-[var(--op-20)] text-[var(--op-40)] hover:text-[var(--op-70)]"
+              }`}
+              title="Пометить блок 4×4 в тайлсете как автотайл: после нажатия кликните по ЛЕВОМУ ВЕРХНЕМУ тайлу блока"
+            >
+              {autotilePickArmed ? "кликните тайл (или сюда — отмена)" : "＋ Автотайл 4×4"}
+            </button>
+          </div>
+          <div className="text-[10px] text-[var(--op-30)] leading-relaxed">
+            Автотайл — блок 4×4 в тайлсете: 16 вариантов краёв по маске соседей (N=1, E=2, S=4, W=8 → позиция в блоке). При
+            рисовании края сшиваются сами.
+          </div>
+        </>
+      )}
     </div>
   );
 }

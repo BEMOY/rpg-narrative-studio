@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Category, Dialogue, DialogueChoice, DialogueColorStyle, DialogueFlagDef, DialogueLine, DialogueNode, Entry, Project, StatPreset, UiSettings } from "../types/database";
+import type { Category, Dialogue, DialogueChoice, DialogueColorStyle, DialogueFlagDef, DialogueLine, DialogueNode, DialoguePreviewSettings, Entry, Project, StatPreset, Tileset, UiSettings } from "../types/database";
 import { sampleProject } from "../data/sampleProject";
 import { saveProjectData } from "../cloud/projects";
 import { createChoice, createDialogue as makeDialogue, createLine, createNode, normalizeDialogue } from "../lib/dialogueDefaults";
@@ -113,6 +113,16 @@ interface ProjectState {
   setQuestChapterHeight: (chapterKey: string, height: number) => void;
   updateUiSettings: (patch: Partial<UiSettings>) => void;
   resetDeleteConfirmSuppression: () => void;
+
+  // ---- v77 ----
+  // Like createEntry, but does NOT open a tab and lets the caller pre-fill the name — the
+  // "инлайн-создание" building block: any reference picker can mint a properly-shaped entry of
+  // the right category and immediately link it, without yanking the writer out of context.
+  createEntryQuick: (category: Category, name: string) => string;
+  addTileset: (tileset: Omit<Tileset, "id">) => string;
+  updateTileset: (id: string, patch: Partial<Tileset>) => void;
+  removeTileset: (id: string) => void;
+  updatePreviewSettings: (patch: Partial<DialoguePreviewSettings>) => void;
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -847,6 +857,67 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         dialogues: s.project.dialogues.map((d) => (d.skipDeleteConfirm ? { ...d, skipDeleteConfirm: false } : d)),
       },
     }));
+    triggerAutosavePulse(set);
+  },
+
+  // ---- v77 ----
+  createEntryQuick: (category, name) => {
+    // Readable id derived from the typed name (snake_case, ASCII-ish) with a short suffix to
+    // dodge collisions — matches the project's "id is immutable snake_case" convention while
+    // keeping the id recognizable in exports, unlike createEntry's opaque new_<cat>_<ts> ids.
+    const slug = name
+      .toLowerCase()
+      .replace(/[^a-z0-9а-яё]+/gi, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 32);
+    const id = `${slug || category}_${Date.now().toString(36).slice(-4)}`;
+    const entry: Entry = {
+      uuid: `u-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      id,
+      category,
+      version: 1,
+      name: name || "Untitled",
+      description: "",
+      created: new Date().toISOString(),
+      modified: new Date().toISOString(),
+      tags: [],
+      references: [],
+      notes: "",
+      props: [],
+      ...(category === "main_quest" || category === "side_quest" ? { objectives: [] } : {}),
+      ...(category === "character" ? { relationship: "neutral" as const } : {}),
+      ...(category === "equipment" || category === "item" || category === "object" ? { stats: {} } : {}),
+      ...(category === "equipment" ? { slot: "weapon" as const, rarityId: "common", value: 0, stack: 1, quest: false } : {}),
+      ...(category === "item" ? { rarityId: "common", value: 0, stack: 1, quest: false } : {}),
+      ...(category === "scene" ? { sceneFlow: [], sceneTransitions: [] } : {}),
+      ...(category === "cutscene" ? { cutsceneCast: [], cutsceneTracks: [] } : {}),
+    };
+    set((s) => ({ project: { ...s.project, entries: [...s.project.entries, entry] } }));
+    triggerAutosavePulse(set);
+    return id;
+  },
+
+  addTileset: (tileset) => {
+    const id = nextId("tileset");
+    set((s) => ({ project: { ...s.project, tilesets: [...(s.project.tilesets ?? []), { ...tileset, id }] } }));
+    triggerAutosavePulse(set);
+    return id;
+  },
+
+  updateTileset: (id, patch) => {
+    set((s) => ({
+      project: { ...s.project, tilesets: (s.project.tilesets ?? []).map((t) => (t.id === id ? { ...t, ...patch } : t)) },
+    }));
+    triggerAutosavePulse(set);
+  },
+
+  removeTileset: (id) => {
+    set((s) => ({ project: { ...s.project, tilesets: (s.project.tilesets ?? []).filter((t) => t.id !== id) } }));
+    triggerAutosavePulse(set);
+  },
+
+  updatePreviewSettings: (patch) => {
+    set((s) => ({ project: { ...s.project, previewSettings: { ...(s.project.previewSettings ?? {}), ...patch } } }));
     triggerAutosavePulse(set);
   },
 }));

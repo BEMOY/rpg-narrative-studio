@@ -7,6 +7,7 @@
 // check below for the closest real equivalent available right now.
 import type { Project } from "../types/database";
 import { isQuest, isEquip } from "../types/database";
+import { estimateDialogueOverflow, resolvePreviewSettings } from "./dialoguePreview";
 
 export type ProblemTarget = { kind: "entry"; id: string } | { kind: "dialogue"; id: string };
 
@@ -51,6 +52,9 @@ function dialogueHasNoReachableEnding(
 export function computeProblems(project: Project): Problem[] {
   const problems: Problem[] = [];
   const entryIds = new Set(project.entries.map((e) => e.id));
+  const dialogueIds = new Set(project.dialogues.map((d) => d.id));
+  const previewSettings = resolvePreviewSettings(project.previewSettings);
+  const byId = new Map(project.entries.map((e) => [e.id, e]));
 
   // 1. Dialogues with no reachable ending (likely stuck in an infinite loop).
   for (const d of project.dialogues) {
@@ -61,6 +65,33 @@ export function computeProblems(project: Project): Problem[] {
         message: `Диалог «${d.name}»: не найден путь к завершению — похоже, зацикливается без выхода.`,
         target: { kind: "dialogue", id: d.id },
       });
+    }
+
+    // v77-1. Line text that won't fit the configured 320x180 dialogue box (same math as the
+    // Test-Play preview's red border — see lib/dialoguePreview.ts; box metrics в Настройках).
+    // v77-2. Line emotion the linked character never registered (so no portrait can resolve).
+    for (const n of d.nodes) {
+      for (const l of n.lines) {
+        const overflow = estimateDialogueOverflow(l.text, previewSettings);
+        if (!overflow.fits) {
+          problems.push({
+            id: `dlg-overflow-${d.id}-${l.id}`,
+            message: `Диалог «${d.name}»: реплика не помещается в рамку (${overflow.lineCount} строк из ${overflow.maxLines}) — разбейте на две ноды.`,
+            target: { kind: "dialogue", id: d.id },
+          });
+        }
+        if (l.emotion && l.speakerEntryId) {
+          const speaker = byId.get(l.speakerEntryId);
+          const portraits = speaker?.dialogueSpeaker?.portraits ?? [];
+          if (portraits.length > 0 && !portraits.some((p) => p.emotion === l.emotion)) {
+            problems.push({
+              id: `dlg-emotion-${d.id}-${l.id}`,
+              message: `Диалог «${d.name}»: эмоция «${l.emotion}» не зарегистрирована у персонажа «${speaker?.name}».`,
+              target: { kind: "dialogue", id: d.id },
+            });
+          }
+        }
+      }
     }
   }
 
@@ -120,6 +151,45 @@ export function computeProblems(project: Project): Problem[] {
           message: `Квест «${e.name}»: зависимость от удалённого квеста (${dep.questId}).`,
           target: { kind: "entry", id: e.id },
         });
+      }
+    }
+
+    // v77-3. Map transition zones with no destination or a destination that no longer exists —
+    // an in-game door to nowhere.
+    if (e.category === "location" && e.map) {
+      for (const layer of e.map.layers) {
+        if (layer.kind !== "zone") continue;
+        for (const z of layer.zones) {
+          if (z.tag !== "transition") continue;
+          if (!z.targetMapId) {
+            problems.push({
+              id: `transition-no-target-${e.id}-${z.id}`,
+              message: `Карта «${e.name}»: переход «${z.label || z.id}» никуда не ведёт — выберите целевую локацию.`,
+              target: { kind: "entry", id: e.id },
+            });
+          } else if (!entryIds.has(z.targetMapId)) {
+            problems.push({
+              id: `transition-broken-${e.id}-${z.id}`,
+              message: `Карта «${e.name}»: переход «${z.label || z.id}» ведёт на удалённую локацию (${z.targetMapId}).`,
+              target: { kind: "entry", id: e.id },
+            });
+          }
+        }
+      }
+    }
+
+    // v77-4. Scene flow steps pointing at deleted dialogues/cutscenes/battles.
+    if (e.category === "scene") {
+      for (const step of e.sceneFlow ?? []) {
+        if (!step.refId) continue;
+        const ok = step.kind === "dialogue" ? dialogueIds.has(step.refId) : step.kind === "trigger-zone" ? true : entryIds.has(step.refId);
+        if (!ok) {
+          problems.push({
+            id: `scene-broken-step-${e.id}-${step.id}`,
+            message: `Сцена «${e.name}»: шаг «${step.kind}» ссылается на удалённый объект (${step.refId}).`,
+            target: { kind: "entry", id: e.id },
+          });
+        }
       }
     }
   }

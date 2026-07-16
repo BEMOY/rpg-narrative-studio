@@ -296,10 +296,18 @@ function LineBlock({
   const updateDialogueLine = useProjectStore((s) => s.updateDialogueLine);
   const deleteDialogueLine = useProjectStore((s) => s.deleteDialogueLine);
   const entries = useProjectStore((s) => s.project.entries);
+  const createEntryQuick = useProjectStore((s) => s.createEntryQuick);
   const characters = entries.filter((e) => e.category === "character");
   const elseTarget = dialogue.nodes.find((n) => n.id === line.elseNodeId);
 
   const patch = (p: Partial<DialogueLine>) => updateDialogueLine(dialogue.id, node.id, line.id, p);
+
+  // v77 emotions pipeline: the linked character's registered emotion list (see the character
+  // card's "Диалог (speaker_define)" section) drives the emotion picker for this line, and the
+  // matching uploaded portrait picture (if any) is shown right next to it.
+  const speakerEntry = line.speakerEntryId ? characters.find((c) => c.id === line.speakerEntryId) : undefined;
+  const speakerEmotions = (speakerEntry?.dialogueSpeaker?.portraits ?? []).filter((p) => p.emotion.trim() !== "");
+  const activePortrait = line.emotion ? speakerEmotions.find((p) => p.emotion === line.emotion) : undefined;
 
   // Same flag_set()/quest_* side effects a choice can fire — here they trigger the moment this
   // REPLICA is shown, not on a player choice (see renderLinePage in dialogueCompile.ts).
@@ -338,11 +346,16 @@ function LineBlock({
             placeholder="персонаж… (пусто — рассказчик)"
             searchPlaceholder="Поиск персонажа…"
             clearLabel="— без персонажа (рассказчик) —"
+            onCreate={(name) => {
+              const id = createEntryQuick("character", name);
+              patch({ speakerEntryId: id, speaker: name });
+            }}
+            createLabel="Создать персонажа"
           />
         </div>
       </div>
 
-      <div className="flex gap-1.5">
+      <div className="flex gap-1.5 items-center">
         <ThemedSelect
           value={line.side}
           onChange={(v) => patch({ side: v as DialogueSide })}
@@ -355,12 +368,40 @@ function LineBlock({
           className="input text-xs py-1 flex-1"
           panelClassName="min-w-[190px]"
         />
-        <input
-          value={line.emotion ?? ""}
-          onChange={(e) => patch({ emotion: e.target.value })}
-          placeholder="эмоция"
-          className="input text-xs py-1 flex-1"
-        />
+        {/* v77 emotions pipeline: when the linked character has registered emotions, this is a
+            dropdown over exactly those (each option previewing its uploaded portrait); the free
+            text input remains only for lines with no linked character / characters with no
+            registered emotions, so nothing existing breaks. */}
+        {speakerEmotions.length > 0 ? (
+          <div className="flex-1 min-w-0 flex items-center gap-1.5">
+            {activePortrait?.image && (
+              <img
+                src={activePortrait.image}
+                alt=""
+                title={`Портрет: ${line.emotion || "?"}`}
+                className="w-6 h-6 rounded shrink-0 object-cover border border-[var(--op-15)]"
+                style={{ imageRendering: "pixelated" }}
+              />
+            )}
+            <div className="flex-1 min-w-0">
+              <SearchSelect
+                value={line.emotion || undefined}
+                onChange={(v) => patch({ emotion: v ?? "" })}
+                options={speakerEmotions.map((p) => ({ id: p.emotion, label: p.emotion }))}
+                placeholder="эмоция…"
+                searchPlaceholder="Поиск эмоции…"
+                clearLabel="— без эмоции —"
+              />
+            </div>
+          </div>
+        ) : (
+          <input
+            value={line.emotion ?? ""}
+            onChange={(e) => patch({ emotion: e.target.value })}
+            placeholder="эмоция"
+            className="input text-xs py-1 flex-1"
+          />
+        )}
       </div>
 
       <LineTextEditor value={line.text} onChange={(text) => patch({ text })} speakerEntryId={line.speakerEntryId} />

@@ -3,6 +3,8 @@ import { createPortal } from "react-dom";
 import { X, Check, Plus, Trash2, RotateCcw } from "lucide-react";
 import { useProjectStore } from "../../store/useProjectStore";
 import { useTheme, type ThemeSpec } from "../../lib/theme";
+import type { DialoguePreviewSettings } from "../../types/database";
+import { previewCharsPerLine, previewMaxLines, resolvePreviewSettings } from "../../lib/dialoguePreview";
 
 // The dialogue toolbar used to have a color-palette icon that only opened the dialogue markup
 // "Стили" manager (named text-color styles for [c=...] tags — a genuinely different feature,
@@ -29,11 +31,50 @@ function ColorRow({ label, value, onChange }: { label: string; value: string; on
   );
 }
 
+// One numeric field of the v77 "Превью 320×180" group — commits on change, clamped.
+function PreviewNumField({
+  label,
+  k,
+  value,
+  onChange,
+  min,
+  max,
+}: {
+  label: string;
+  k: keyof DialoguePreviewSettings;
+  value: number;
+  onChange: (patch: Partial<DialoguePreviewSettings>) => void;
+  min: number;
+  max: number;
+}) {
+  return (
+    <label className="text-[11px] text-[var(--op-45)] block">
+      {label}
+      <input
+        type="number"
+        min={min}
+        max={max}
+        className="input mt-1 py-1"
+        value={value}
+        onChange={(e) => {
+          const n = Number(e.target.value);
+          if (Number.isFinite(n)) onChange({ [k]: Math.max(min, Math.min(max, n)) });
+        }}
+      />
+    </label>
+  );
+}
+
 export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const { activeId, activeTheme, presets, customThemes, selectTheme, saveCustomTheme, deleteCustomTheme } = useTheme();
   const uiSettings = useProjectStore((s) => s.project.uiSettings);
   const updateUiSettings = useProjectStore((s) => s.updateUiSettings);
   const resetDeleteConfirmSuppression = useProjectStore((s) => s.resetDeleteConfirmSuppression);
+  const previewSettings = useProjectStore((s) => s.project.previewSettings);
+  const updatePreviewSettings = useProjectStore((s) => s.updatePreviewSettings);
+  const previewResolved = resolvePreviewSettings(previewSettings);
+  const charsPerLine = previewCharsPerLine(previewResolved);
+  const maxLines = previewMaxLines(previewResolved);
 
   const [creatingTheme, setCreatingTheme] = useState(false);
   const [draftName, setDraftName] = useState("Моя тема");
@@ -209,6 +250,26 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
             >
               <RotateCcw size={12} /> Вернуть окно подтверждения
             </button>
+          </div>
+
+          {/* ---- v77: 320x180 dialogue Live Preview box metrics ---- */}
+          <div className="pt-4 border-t border-[var(--op-8)]">
+            <div className="text-sm font-medium text-[var(--op-80)] mb-1">Превью 320×180</div>
+            <div className="text-[11px] text-[var(--op-40)] mb-3 leading-relaxed">
+              Размеры рамки диалога в РЕАЛЬНЫХ пикселях игры — превью в тест-плеере и проверка «текст не помещается» (панель
+              Problems) считаются от этих значений. Подгоните под вашу рамку в GMS2.
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <PreviewNumField label="Ширина рамки" k="boxWidthPx" value={previewResolved.boxWidthPx} onChange={updatePreviewSettings} min={80} max={320} />
+              <PreviewNumField label="Высота текста" k="boxHeightPx" value={previewResolved.boxHeightPx} onChange={updatePreviewSettings} min={10} max={160} />
+              <PreviewNumField label="Размер шрифта" k="fontSizePx" value={previewResolved.fontSizePx} onChange={updatePreviewSettings} min={4} max={24} />
+              <PreviewNumField label="Межстрочный" k="lineHeightPx" value={previewResolved.lineHeightPx} onChange={updatePreviewSettings} min={4} max={32} />
+              <PreviewNumField label="Отступ рамки" k="paddingPx" value={previewResolved.paddingPx} onChange={updatePreviewSettings} min={0} max={24} />
+              <PreviewNumField label="Портрет" k="portraitSizePx" value={previewResolved.portraitSizePx} onChange={updatePreviewSettings} min={8} max={96} />
+            </div>
+            <div className="text-[10px] text-[var(--op-30)] mt-2 mono">
+              ≈ {charsPerLine} симв./строка · {maxLines} строк максимум
+            </div>
           </div>
 
           {resetNotice && (
